@@ -5,6 +5,12 @@ The standalone `payload_protocol.py` module signs verification metadata with
 RSA PKCS#1 v1.5 and SHA-256. It takes and returns bytes without file I/O or
 steganography dependencies. Requires Python 3.10+.
 
+## Documentation
+
+- [Agent instructions](AGENTS.md)
+- [Documentation index](docs/README.md)
+- [Agent navigation map](docs/AGENT_MAP.md)
+
 ```sh
 python -m pip install -r requirements.txt
 python -m unittest -v

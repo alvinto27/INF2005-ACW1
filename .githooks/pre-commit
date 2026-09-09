@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+# Check documentation only when a staged change can affect its structure.
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+relevant=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)[^/]+\.md$|^docs/|^scripts/(check-docs\.py|install-hooks\.sh)$|^\.githooks/pre-commit$|^\.gitmodules$' || true)
+[ -n "$relevant" ] || exit 0
+
+exec python3 scripts/check-docs.py
