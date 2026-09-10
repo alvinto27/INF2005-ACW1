@@ -1,8 +1,16 @@
-"""Sign and verify byte-only metadata packets; no steganography or file I/O.
+"""
+INF2005 ACW1
+FR3 - Payload Generation
+FR4 - Digital Signature
 
-Wire format: uint32 big-endian JSON byte length | JSON bytes | RSA signature.
-RSA-2048 signatures occupy 256 bytes; other RSA sizes use their key's byte size.
-Trailing bytes are ignored so a packet can be extracted from a larger buffer.
+This module:
+- detects whether supplied cover bytes are PNG image or WAV audio
+- creates a compact verification payload
+- digitally signs the payload using RSA-PSS with SHA-256
+- verifies the signature using the corresponding RSA public key
+- packs/unpacks payload + signature for later steganography integration
+
+No steganography is performed in this file.
 """
 
 from __future__ import annotations
@@ -18,114 +26,533 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 
-def generate_rsa_keypair(
-    key_size: int = 2048,
-) -> tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey]:
-    """Generate an RSA private/public key pair with public exponent 65537."""
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=key_size)
-    return private_key, private_key.public_key()
+RSA_KEY_SIZE = 2048
+
+MEDIA_PREFIXES = {
+    "image": "IMG",
+    "audio": "AUD",
+}
 
 
-def export_key_pem(key: rsa.RSAPrivateKey | rsa.RSAPublicKey) -> bytes:
-    """Export RSA keys as PEM (unencrypted PKCS8 private keys or SPKI public keys)."""
-    if isinstance(key, rsa.RSAPrivateKey):
-        return key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-    if isinstance(key, rsa.RSAPublicKey):
-        return key.public_bytes(
-            serialization.Encoding.PEM,
-            serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-    raise TypeError("Expected an RSA private or public key")
+# ============================================================
+# FR3 - MEDIA TYPE DETECTION
+# ============================================================
+
+def detect_media_type(cover_bytes: bytes) -> str:
+    """
+    Detect whether the supplied bytes represent a PNG image
+    or a WAV audio file.
+
+    Returns:
+        "image" for PNG
+        "audio" for WAV
+
+    Raises:
+        ValueError for unsupported media formats.
+    """
+
+    if not isinstance(cover_bytes, bytes):
+        raise TypeError("cover_bytes must be bytes")
+
+    # PNG files start with this 8-byte signature.
+    png_signature = b"\x89PNG\r\n\x1a\n"
+
+    if cover_bytes.startswith(png_signature):
+        return "image"
+
+    # Standard WAV files use a RIFF container:
+    # bytes 0-3  = RIFF
+    # bytes 8-11 = WAVE
+    if (
+        len(cover_bytes) >= 12
+        and cover_bytes[0:4] == b"RIFF"
+        and cover_bytes[8:12] == b"WAVE"
+    ):
+        return "audio"
+
+    raise ValueError(
+        "Unsupported media format. Expected PNG image or WAV audio."
+    )
 
 
-def load_key_pem(pem_bytes: bytes) -> rsa.RSAPrivateKey | rsa.RSAPublicKey:
-    """Load an unencrypted RSA private key or an RSA public key from PEM bytes."""
-    try:
-        key = serialization.load_pem_private_key(pem_bytes, password=None)
-    except ValueError:
-        key = serialization.load_pem_public_key(pem_bytes)
-    if not isinstance(key, (rsa.RSAPrivateKey, rsa.RSAPublicKey)):
-        raise TypeError("Expected an RSA private or public key")
-    return key
-
+# ============================================================
+# FR3 - PAYLOAD GENERATION
+# ============================================================
 
 def create_payload(
-    media_id: str, cover_bytes: bytes, custom_metadata: dict | None = None
+    cover_bytes: bytes,
+    team_id: str,
+    sender: str,
 ) -> bytes:
-    """Create canonical JSON with a UTC timestamp and a random 16-byte nonce.
-
-    Metadata is omitted when None. Non-JSON values (including NaN) are rejected.
-    Fresh calls intentionally differ because their timestamp and nonce are fresh.
     """
-    if not isinstance(media_id, str):
-        raise TypeError("media_id must be a string")
-    if custom_metadata is not None and not isinstance(custom_metadata, dict):
-        raise TypeError("custom_metadata must be a dictionary or None")
+    Create a compact verification payload.
+
+    FR3 required fields:
+    - media_id
+    - timestamp
+    - media_hash
+    - nonce
+    - team-defined metadata
+
+    Additional field:
+    - media_type, automatically detected as "image" or "audio"
+
+    The returned payload is UTF-8 encoded compact JSON bytes.
+    """
+
+    if not isinstance(cover_bytes, bytes):
+        raise TypeError("cover_bytes must be bytes")
+
+    if not isinstance(team_id, str):
+        raise TypeError("team_id must be a string")
+
+    if not isinstance(sender, str):
+        raise TypeError("sender must be a string")
+
+    team_id = team_id.strip()
+    sender = sender.strip()
+
+    if not team_id:
+        raise ValueError("team_id cannot be empty")
+
+    if not sender:
+        raise ValueError("sender cannot be empty")
+
+    # Automatically determine whether the cover is PNG or WAV.
+    media_type = detect_media_type(cover_bytes)
+
+    # Auto-generate a media ID.
+    # Example: IMG-a3f92c10 or AUD-51bc1234
+    prefix = MEDIA_PREFIXES[media_type]
+    media_id = f"{prefix}-{secrets.token_hex(4)}"
+
+    timestamp = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+    # SHA-256 fingerprint of the supplied cover bytes.
+    media_hash = hashlib.sha256(cover_bytes).hexdigest()
+
+    # 16 random bytes = 128-bit nonce.
+    nonce = secrets.token_hex(16)
+
+    # Team-defined metadata.
+    metadata = {
+        "team_id": team_id,
+        "sender": sender,
+    }
+
     payload = {
         "media_id": media_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "cover_hash": hashlib.sha256(cover_bytes).hexdigest(),
-        "nonce": secrets.token_hex(16),
+        "media_type": media_type,
+        "timestamp": timestamp,
+        "media_hash": media_hash,
+        "nonce": nonce,
+        "metadata": metadata,
     }
-    if custom_metadata is not None:
-        payload["metadata"] = custom_metadata
+
     return json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
 
 
-def pack_verification_packet(
-    payload_bytes: bytes, private_key: rsa.RSAPrivateKey
-) -> bytes:
-    """Frame and sign the exact supplied bytes with RSA PKCS#1 v1.5 / SHA-256."""
-    header = struct.pack(">I", len(payload_bytes))
-    signature = private_key.sign(payload_bytes, padding.PKCS1v15(), hashes.SHA256())
-    return header + payload_bytes + signature
+def decode_payload(payload_bytes: bytes) -> dict:
 
-
-def unpack_and_verify_packet(
-    raw_packet: bytes,
-    public_key: rsa.RSAPublicKey,
-    current_cover_bytes: bytes | None = None,
-) -> tuple[bool, str, dict | None]:
-    """Verify framing and signature, then optionally check the cover hash.
-
-    Incomplete buffers, invalid signatures, and invalid JSON return failure
-    verdicts. Cover comparison requires the same bytes originally hashed, such
-    as the original cover before embedding. Without a cover, only the signed
-    metadata is authenticated. Replay detection is the caller's responsibility.
-    """
-    signature_len = (public_key.key_size + 7) // 8
-    if len(raw_packet) < 4 + signature_len:
-        return False, "Payload Missing or Incomplete", None
-
-    payload_len = struct.unpack(">I", raw_packet[:4])[0]
-    payload_end = 4 + payload_len
-    if len(raw_packet) < payload_end + signature_len:
-        return False, "Payload Missing or Corrupted", None
-
-    payload_bytes = raw_packet[4:payload_end]
-    signature = raw_packet[payload_end:payload_end + signature_len]
-    try:
-        public_key.verify(signature, payload_bytes, padding.PKCS1v15(), hashes.SHA256())
-    except InvalidSignature:
-        return False, "Signature Invalid", None
+    if not isinstance(payload_bytes, bytes):
+        raise TypeError("payload_bytes must be bytes")
 
     try:
         payload = json.loads(payload_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        return False, "Payload Missing or Corrupted", None
+
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("Payload is not valid JSON") from error
+
     if not isinstance(payload, dict):
-        return False, "Payload Missing or Corrupted", None
+        raise ValueError("Payload must contain a JSON object")
 
-    if current_cover_bytes is not None:
-        if not isinstance(payload.get("cover_hash"), str):
-            return False, "Payload Missing or Corrupted", None
-        if hashlib.sha256(current_cover_bytes).hexdigest() != payload["cover_hash"]:
-            return False, "Tampered", payload
+    return payload
 
-    return True, "Authentic", payload
+
+# ============================================================
+# FR4 - RSA KEY GENERATION
+# ============================================================
+
+def generate_rsa_keypair(
+) -> tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey]:
+    """
+    Generate an RSA-2048 private/public key pair.
+
+    Private key -> signing
+    Public key  -> verification
+    """
+
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=RSA_KEY_SIZE,
+    )
+
+    return private_key, private_key.public_key()
+
+
+def _get_pss_padding() -> padding.PSS:
+    """
+    Return the RSA-PSS padding configuration used by both
+    signing and verification.
+    """
+
+    return padding.PSS(
+        mgf=padding.MGF1(hashes.SHA256()),
+        salt_length=padding.PSS.MAX_LENGTH,
+    )
+
+
+# ============================================================
+# FR4 - SIGN AND VERIFY
+# ============================================================
+
+def sign_payload(
+    payload_bytes: bytes,
+    private_key: rsa.RSAPrivateKey,
+) -> bytes:
+    """
+    Digitally sign the exact FR3 payload bytes.
+
+    Algorithm:
+    - RSA-2048
+    - RSA-PSS padding
+    - SHA-256
+    """
+
+    if not isinstance(payload_bytes, bytes):
+        raise TypeError("payload_bytes must be bytes")
+
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise TypeError(
+            "private_key must be an RSA private key"
+        )
+
+    return private_key.sign(
+        payload_bytes,
+        _get_pss_padding(),
+        hashes.SHA256(),
+    )
+
+
+def verify_signature(
+    payload_bytes: bytes,
+    signature: bytes,
+    public_key: rsa.RSAPublicKey,
+) -> bool:
+    """
+    Verify the digital signature using the corresponding
+    RSA public key.
+
+    Returns:
+        True  -> signature valid
+        False -> signature invalid
+    """
+
+    if not isinstance(payload_bytes, bytes):
+        raise TypeError("payload_bytes must be bytes")
+
+    if not isinstance(signature, bytes):
+        raise TypeError("signature must be bytes")
+
+    if not isinstance(public_key, rsa.RSAPublicKey):
+        raise TypeError(
+            "public_key must be an RSA public key"
+        )
+
+    try:
+        public_key.verify(
+            signature,
+            payload_bytes,
+            _get_pss_padding(),
+            hashes.SHA256(),
+        )
+
+        return True
+
+    except InvalidSignature:
+        return False
+
+
+# ============================================================
+# INTEGRATION - PACKET BUILDING
+# ============================================================
+
+def build_verification_packet(
+    payload_bytes: bytes,
+    signature: bytes,
+) -> bytes:
+    """
+    Combine payload and signature into one byte packet.
+
+    Format:
+        4-byte big-endian payload length
+        + payload bytes
+        + RSA signature
+
+    For RSA-2048, the signature is 256 bytes.
+    """
+
+    if not isinstance(payload_bytes, bytes):
+        raise TypeError("payload_bytes must be bytes")
+
+    if not isinstance(signature, bytes):
+        raise TypeError("signature must be bytes")
+
+    header = struct.pack(
+        ">I",
+        len(payload_bytes),
+    )
+
+    return header + payload_bytes + signature
+
+
+def unpack_verification_packet(
+    raw_packet: bytes,
+    public_key: rsa.RSAPublicKey,
+) -> tuple[bytes, bytes]:
+    """
+    Extract payload bytes and signature bytes from a packet.
+
+    Extra trailing bytes are ignored because steganography
+    extraction may return a larger buffer.
+    """
+
+    if not isinstance(raw_packet, bytes):
+        raise TypeError("raw_packet must be bytes")
+
+    if not isinstance(public_key, rsa.RSAPublicKey):
+        raise TypeError(
+            "public_key must be an RSA public key"
+        )
+
+    signature_length = (
+        public_key.key_size + 7
+    ) // 8
+
+    minimum_size = 4 + signature_length
+
+    if len(raw_packet) < minimum_size:
+        raise ValueError(
+            "Payload missing or incomplete"
+        )
+
+    payload_length = struct.unpack(
+        ">I",
+        raw_packet[:4],
+    )[0]
+
+    payload_start = 4
+    payload_end = (
+        payload_start + payload_length
+    )
+
+    signature_end = (
+        payload_end + signature_length
+    )
+
+    if len(raw_packet) < signature_end:
+        raise ValueError(
+            "Payload missing or corrupted"
+        )
+
+    payload_bytes = raw_packet[
+        payload_start:payload_end
+    ]
+
+    signature = raw_packet[
+        payload_end:signature_end
+    ]
+
+    return payload_bytes, signature
+
+
+def verify_verification_packet(
+    raw_packet: bytes,
+    public_key: rsa.RSAPublicKey,
+) -> tuple[bool, str, dict | None]:
+    """
+    Verify a complete payload/signature packet.
+
+    Performs:
+    1. packet extraction
+    2. FR4 signature verification
+    3. payload JSON decoding
+
+    This function intentionally does NOT perform FR9
+    media-hash verification.
+    """
+
+    try:
+        payload_bytes, signature = (
+            unpack_verification_packet(
+                raw_packet,
+                public_key,
+            )
+        )
+
+    except ValueError as error:
+        return False, str(error), None
+
+    if not verify_signature(
+        payload_bytes,
+        signature,
+        public_key,
+    ):
+        return (
+            False,
+            "Signature Invalid",
+            None,
+        )
+
+    try:
+        payload = decode_payload(
+            payload_bytes
+        )
+
+    except ValueError:
+        return (
+            False,
+            "Payload Missing or Corrupted",
+            None,
+        )
+
+    return (
+        True,
+        "Signature Valid",
+        payload,
+    )
+
+
+# ============================================================
+# FR4 - KEY EXPORT / IMPORT
+# ============================================================
+
+def export_private_key_pem(
+    private_key: rsa.RSAPrivateKey,
+    password: str,
+) -> bytes:
+    """
+    Export an RSA private key as password-encrypted PEM bytes.
+    """
+
+    if not isinstance(
+        private_key,
+        rsa.RSAPrivateKey,
+    ):
+        raise TypeError(
+            "Expected an RSA private key"
+        )
+
+    if not isinstance(password, str):
+        raise TypeError(
+            "password must be a string"
+        )
+
+    if not password:
+        raise ValueError(
+            "password cannot be empty"
+        )
+
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+
+        format=serialization.PrivateFormat.PKCS8,
+
+        encryption_algorithm=(
+            serialization.BestAvailableEncryption(
+                password.encode("utf-8")
+            )
+        ),
+    )
+
+
+def export_public_key_pem(
+    public_key: rsa.RSAPublicKey,
+) -> bytes:
+    """
+    Export an RSA public key as PEM bytes.
+    """
+
+    if not isinstance(
+        public_key,
+        rsa.RSAPublicKey,
+    ):
+        raise TypeError(
+            "Expected an RSA public key"
+        )
+
+    return public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+
+        format=(
+            serialization.PublicFormat.SubjectPublicKeyInfo
+        ),
+    )
+
+
+def load_private_key_pem(
+    pem_bytes: bytes,
+    password: str,
+) -> rsa.RSAPrivateKey:
+    """
+    Load a password-encrypted RSA private key from PEM bytes.
+    """
+
+    if not isinstance(pem_bytes, bytes):
+        raise TypeError(
+            "pem_bytes must be bytes"
+        )
+
+    if not isinstance(password, str):
+        raise TypeError(
+            "password must be a string"
+        )
+
+    key = serialization.load_pem_private_key(
+        pem_bytes,
+        password=password.encode("utf-8"),
+    )
+
+    if not isinstance(
+        key,
+        rsa.RSAPrivateKey,
+    ):
+        raise TypeError(
+            "Expected an RSA private key"
+        )
+
+    return key
+
+
+def load_public_key_pem(
+    pem_bytes: bytes,
+) -> rsa.RSAPublicKey:
+    """
+    Load an RSA public key from PEM bytes.
+    """
+
+    if not isinstance(pem_bytes, bytes):
+        raise TypeError(
+            "pem_bytes must be bytes"
+        )
+
+    key = serialization.load_pem_public_key(
+        pem_bytes
+    )
+
+    if not isinstance(
+        key,
+        rsa.RSAPublicKey,
+    ):
+        raise TypeError(
+            "Expected an RSA public key"
+        )
+
+    return key
