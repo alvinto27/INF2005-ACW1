@@ -24,7 +24,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Area | Start here |
 | --- | --- |
 | Signed payload protocol | [payload_protocol.py](../payload_protocol.py) |
-| FR1 and FR5 algorithm notebook | [notebooks/FR1_FR5.ipynb](../notebooks/FR1_FR5.ipynb) |
+| FR1–FR12 prototype notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | FR1 and FR5 Python functions | [FR1_FR5.py](../FR1_FR5.py) |
 | Protocol tests | [test_payload_protocol.py](../test_payload_protocol.py) |
 | Python dependencies | [requirements.txt](../requirements.txt) |

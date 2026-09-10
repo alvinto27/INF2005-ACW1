@@ -79,8 +79,18 @@ def detect_media_type(cover_bytes: bytes) -> str:
 # FR3 - PAYLOAD GENERATION
 # ============================================================
 
+def calculate_media_hash(cover_bytes: bytes) -> str:
+    """Return the SHA-256 hexadecimal digest of the cover bytes."""
+
+    if not isinstance(cover_bytes, bytes):
+        raise TypeError("cover_bytes must be bytes")
+
+    return hashlib.sha256(cover_bytes).hexdigest()
+
+
 def create_payload(
     cover_bytes: bytes,
+    media_hash: str,
     team_id: str,
     sender: str,
 ) -> bytes:
@@ -103,14 +113,24 @@ def create_payload(
     if not isinstance(cover_bytes, bytes):
         raise TypeError("cover_bytes must be bytes")
 
+    if not isinstance(media_hash, str):
+        raise TypeError("media_hash must be a string")
+
     if not isinstance(team_id, str):
         raise TypeError("team_id must be a string")
 
     if not isinstance(sender, str):
         raise TypeError("sender must be a string")
 
+    media_hash = media_hash.strip().lower()
     team_id = team_id.strip()
     sender = sender.strip()
+
+    if (
+        len(media_hash) != 64
+        or any(character not in "0123456789abcdef" for character in media_hash)
+    ):
+        raise ValueError("media_hash must be a SHA-256 hexadecimal digest")
 
     if not team_id:
         raise ValueError("team_id cannot be empty")
@@ -129,9 +149,6 @@ def create_payload(
     timestamp = datetime.now(timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
-
-    # SHA-256 fingerprint of the supplied cover bytes.
-    media_hash = hashlib.sha256(cover_bytes).hexdigest()
 
     # 16 random bytes = 128-bit nonce.
     nonce = secrets.token_hex(16)
