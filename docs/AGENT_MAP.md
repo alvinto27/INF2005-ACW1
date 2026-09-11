@@ -17,7 +17,6 @@ Use this map before editing an unfamiliar part of the repository.
 | Repository instructions | [AGENTS.md](../AGENTS.md) |
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](INF2005-ACW1-spec_v5-f2f.md) |
-| FR1 and FR5 algorithm checklist | [TODO.md](TODO.md) |
 
 ## Implementation locations
 
