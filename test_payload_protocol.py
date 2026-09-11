@@ -24,7 +24,11 @@ from payload_protocol import (
     verify_verification_packet,
 )
 
-
+from FR9_FR10 import (
+    calculate_media_hash,
+    verify_media_hash,
+    generate_verdict,
+)
 class PayloadProtocolTests(unittest.TestCase):
 
     @classmethod
@@ -760,6 +764,78 @@ class PayloadProtocolTests(unittest.TestCase):
             export_public_key_pem(
                 ec_private_key.public_key()
             )
+
+
+    # ======================================================
+    # FR9 - HASH VERIFICATION
+    # ======================================================
+
+    def test_fr9_hash_matches(self):
+
+        result = verify_media_hash(
+            self.png_cover,
+            self.payload["media_hash"],
+        )
+
+        self.assertTrue(result)
+
+
+    def test_fr9_hash_detects_modified_media(self):
+
+        changed_cover = (
+            bytes([self.png_cover[0] ^ 1])
+            + self.png_cover[1:]
+        )
+
+        result = verify_media_hash(
+            changed_cover,
+            self.payload["media_hash"],
+        )
+
+        self.assertFalse(result)
+
+
+    # ======================================================
+    # FR10 - VERDICT GENERATION
+    # ======================================================
+
+    def test_fr10_authentic(self):
+
+        result = generate_verdict(
+            signature_valid=True,
+            hash_valid=True,
+        )
+
+        self.assertEqual(
+            result,
+            (True, "Authentic"),
+        )
+
+
+    def test_fr10_tampered(self):
+
+        result = generate_verdict(
+            signature_valid=True,
+            hash_valid=False,
+        )
+
+        self.assertEqual(
+            result,
+            (False, "Tampered"),
+        )
+
+
+    def test_fr10_signature_invalid(self):
+
+        result = generate_verdict(
+            signature_valid=False,
+            hash_valid=True,
+        )
+
+        self.assertEqual(
+            result,
+            (False, "Signature Invalid"),
+        )
 
 
 if __name__ == "__main__":
