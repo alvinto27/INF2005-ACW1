@@ -1,45 +1,59 @@
 # INF2005-ACW1
-A GUI-based LSB Replacement steganography program (window-based or web-based) that protects and verifies both image and audio cover objects using steganography, hashing and digital signatures
 
-The standalone `payload_protocol.py` module signs verification metadata with
-RSA PKCS#1 v1.5 and SHA-256. It takes and returns bytes without file I/O or
-steganography dependencies. Requires Python 3.10+.
+This repository contains the cryptographic payload protocol and a localhost
+Flask web scaffold for an image/audio LSB steganography coursework project.
 
-## Documentation
+## Existing byte protocol
+
+[`payload_protocol.py`](payload_protocol.py) accepts bytes only. It detects PNG
+and WAV covers, creates canonical JSON metadata (media ID, type, UTC timestamp,
+SHA-256 cover hash, nonce, team ID, and sender), signs it with RSA-2048/PSS and
+SHA-256, and packs it with a four-byte big-endian length prefix. Key export and
+import use PEM; private keys are password-encrypted.
+
+```python
+from payload_protocol import (
+    build_verification_packet, create_payload, generate_rsa_keypair,
+    sign_payload, verify_verification_packet,
+)
+
+private_key, public_key = generate_rsa_keypair()
+cover = b"\x89PNG\r\n\x1a\nexample PNG bytes"
+payload = create_payload(cover, "P1-4", "Alice")
+packet = build_verification_packet(payload, sign_payload(payload, private_key))
+valid, verdict, metadata = verify_verification_packet(packet, public_key)
+```
+
+## Web scaffold
+
+[`stego_web/`](stego_web/) is the primary Flask architecture. It provides `/`
+for the GUI, `/encode` for signed LSB embedding, and `/decode` for extraction,
+signature verification, and optional original-cover hash verification. The
+steganography engine is split from routes and crypto services; PNG and
+uncompressed PCM/WAV are implemented. `run.py` starts the server on localhost.
+
+```sh
+python -m pip install -r requirements.txt
+python run.py
+```
+
+The web API accepts 1–8 LSBs and a passphrase-derived, non-zero start location.
+The generated key pair is held in memory for the process and should be replaced
+with persistent, authenticated key storage before deployment. Do not expose the
+private key returned by the starter `/encode` response outside local testing.
+
+`webapp/` is an additional lower-level example showing reusable carrier and bit
+packing adapters; use one scaffold consistently rather than combining both
+route implementations.
+
+## Tests and documentation
+
+```sh
+python -m unittest -v
+python scripts/check-docs.py
+```
 
 - [Agent instructions](AGENTS.md)
 - [Documentation index](docs/README.md)
 - [Agent navigation map](docs/AGENT_MAP.md)
-
-```sh
-python -m pip install -r requirements.txt
-python -m unittest -v
-```
-
-```python
-from payload_protocol import (
-    create_payload, generate_rsa_keypair,
-    pack_verification_packet, unpack_and_verify_packet,
-)
-
-private_key, public_key = generate_rsa_keypair()
-cover = b"original cover bytes"
-payload = create_payload("media-001", cover, {"author": "Alice"})
-packet = pack_verification_packet(payload, private_key)
-valid, verdict, metadata = unpack_and_verify_packet(packet, public_key, cover)
-assert valid and verdict == "Authentic"
-```
-
-Packets contain a four-byte big-endian JSON byte length, canonical JSON bytes,
-and a signature (256 bytes for the default RSA-2048 key). The parser derives the
-signature length from the public key and permits trailing bytes. Packing the
-same payload with the same key is deterministic; creating a fresh payload adds
-a new UTC timestamp and random nonce. Omitted custom metadata is absent from JSON.
-
-Verification returns `Authentic`, `Tampered`, `Signature Invalid`,
-`Payload Missing or Incomplete`, or `Payload Missing or Corrupted`.
-Signed invalid JSON also returns `Payload Missing or Corrupted`. Cover hashes
-must be compared against the original bytes that were hashed; embedding data
-into a cover changes its bytes. Without a cover argument, `Authentic` confirms
-the metadata signature only. Nonces do not enforce replay protection by themselves.
-PEM export returns unencrypted private keys or public keys as bytes.
+- [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)

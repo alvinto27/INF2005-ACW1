@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Steganography Lab</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main>
+    <h1>Local Steganography Lab</h1>
+    <p>Encode a PNG/WAV cover, then decode the downloaded stego file.</p>
+    <section class="grid">
+      <form action="/encode" method="post" enctype="multipart/form-data">
+        <h2>Encode</h2>
+        <label>Cover file <input name="file" type="file" accept=".png,.wav" required></label>
+        <label>Team ID <input name="team_id" value="team-local"></label>
+        <label>Sender <input name="sender" value="localhost"></label>
+        <label>LSB count <input name="lsb" type="number" min="1" max="8" value="1"></label>
+        <button type="submit">Download stego file</button>
+      </form>
+      <form id="decode-form" action="/decode" method="post" enctype="multipart/form-data">
+        <h2>Decode</h2>
+        <label>Stego file <input name="file" type="file" accept=".png,.wav" required></label>
+        <label>LSB count <input name="lsb" type="number" min="1" max="8" value="1"></label>
+        <button type="submit">Verify</button>
+        <pre id="result" aria-live="polite"></pre>
+      </form>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

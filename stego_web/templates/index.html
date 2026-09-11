@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StegoVerify</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <p class="eyebrow">INF2005 · LOCAL SECURITY TOOL</p>
+    <h1>StegoVerify</h1>
+    <p>Hide a signed verification packet in PNG or PCM/WAV media, then extract and validate it.</p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Encode</h2>
+      <form id="encode-form" enctype="multipart/form-data">
+        <label>PNG or WAV cover<input type="file" name="cover" accept=".png,.wav,image/png,audio/wav" required></label>
+        <div class="row">
+          <label>Team ID<input name="team_id" value="P1-4" required></label>
+          <label>Sender<input name="sender" required></label>
+        </div>
+        <label>Start secret<input type="password" name="start_secret" minlength="8" autocomplete="new-password" required></label>
+        <label>Private-key password<input type="password" name="key_password" minlength="8" autocomplete="new-password" required></label>
+        <label>LSBs: <output id="encode-lsb-output">1</output>
+          <input id="encode-lsb" type="range" name="lsb_bits" min="1" max="8" value="1">
+        </label>
+        <button type="submit">Create signed stego object</button>
+      </form>
+      <div class="comparison">
+        <figure><figcaption>Cover</figcaption><div id="cover-preview" class="preview">Choose a file</div></figure>
+        <figure><figcaption>Stego</figcaption><div id="stego-preview" class="preview">Awaiting encode</div></figure>
+      </div>
+      <div id="encode-result" class="result" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Decode and verify</h2>
+      <form id="decode-form" enctype="multipart/form-data">
+        <label>Stego PNG or WAV<input type="file" name="stego" accept=".png,.wav,image/png,audio/wav" required></label>
+        <label>Public key (.pem)<input type="file" name="public_key" accept=".pem,text/plain" required></label>
+        <label>Original cover (required for an Authentic verdict)<input type="file" name="original_cover" accept=".png,.wav,image/png,audio/wav"></label>
+        <label>Start secret<input type="password" name="start_secret" minlength="8" required></label>
+        <label>LSBs: <output id="decode-lsb-output">1</output>
+          <input id="decode-lsb" type="range" name="lsb_bits" min="1" max="8" value="1">
+        </label>
+        <button type="submit">Extract and verify</button>
+      </form>
+      <div id="decode-result" class="result" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer>Runs on localhost. Uploaded media is processed in memory.</footer>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>

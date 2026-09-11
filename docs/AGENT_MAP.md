@@ -7,7 +7,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Scope | Map or rule |
 | --- | --- |
 | Current repository | This file: `docs/AGENT_MAP.md` |
-| Parent workspace checkout | [School Repos map](../../../docs/AGENT_MAP.md); this repository is currently an untracked nested repository there. |
+| Parent workspace checkout | The parent `School-Repos` map is outside this standalone repository; this repository is currently an untracked nested repository there. |
 
 ## Documentation locations
 
@@ -24,6 +24,8 @@ Use this map before editing an unfamiliar part of the repository.
 | --- | --- |
 | Signed payload protocol | [payload_protocol.py](../payload_protocol.py) |
 | FR1 and FR5 Python functions | [FR1_FR5.py](../FR1_FR5.py) |
+| Flask web scaffold | [stego_web/](../stego_web/) and [run.py](../run.py) |
+| Lower-level Flask/LSB example | [webapp/](../webapp/) |
 | Protocol tests | [test_payload_protocol.py](../test_payload_protocol.py) |
 | Python dependencies | [requirements.txt](../requirements.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |
