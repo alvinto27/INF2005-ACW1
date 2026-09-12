@@ -27,7 +27,7 @@ Use this map before editing an unfamiliar part of the repository.
 | --- | --- |
 | Signed v1 steganography protocol | [stego_v1.py](../stego_v1.py) |
 | FR1–FR12 prototype notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
-| Signed v1 protocol tests | [test_stego_v1.py](../test_stego_v1.py) |
+| Masked-media v1 protocol tests | [test_stego_v1.py](../test_stego_v1.py) |
 | Python dependencies | [requirements.txt](../requirements.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |
 | Git-hook installer | [scripts/install-hooks.sh](../scripts/install-hooks.sh) |
