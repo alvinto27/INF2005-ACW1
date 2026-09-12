@@ -25,8 +25,11 @@ Use this map before editing an unfamiliar part of the repository.
 | Signed payload protocol | [payload_protocol.py](../payload_protocol.py) |
 | FR1 and FR5 Python functions | [FR1_FR5.py](../FR1_FR5.py) |
 | Flask web scaffold | [stego_web/](../stego_web/) and [run.py](../run.py) |
-| Lower-level Flask/LSB example | [webapp/](../webapp/) |
+| Seven-step encoding controller | [encoding_pipeline.py](../stego_web/services/encoding_pipeline.py) |
+| Cover validation and payload building | [cover_media.py](../stego_web/services/cover_media.py) and [payload_builder.py](../stego_web/services/payload_builder.py) |
+| Cryptography and LSB engines | [crypto_service.py](../stego_web/services/crypto_service.py) and [steganography.py](../stego_web/services/steganography.py) |
 | Protocol tests | [test_payload_protocol.py](../test_payload_protocol.py) |
+| Web/pipeline tests | [test_webapp.py](../test_webapp.py) |
 | Python dependencies | [requirements.txt](../requirements.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |
 | Git-hook installer | [scripts/install-hooks.sh](../scripts/install-hooks.sh) |
@@ -35,5 +38,5 @@ Use this map before editing an unfamiliar part of the repository.
 
 | Boundary | Rule |
 | --- | --- |
-| This repository | Independent Git repository on branch `yx`; commit and push its work from this directory. |
+| This repository | Independent Git repository on branch `Alvin`; commit and push its work from this directory. |
 | Parent `School-Repos` checkout | It does not track this directory as a submodule or gitlink. Do not treat changes here as parent-repository changes unless its owner explicitly adds this repository. |

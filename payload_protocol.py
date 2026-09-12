@@ -83,6 +83,7 @@ def create_payload(
     cover_bytes: bytes,
     team_id: str,
     sender: str,
+    custom_metadata: dict[str, object] | None = None,
 ) -> bytes:
     """
     Create a compact verification payload.
@@ -109,6 +110,9 @@ def create_payload(
     if not isinstance(sender, str):
         raise TypeError("sender must be a string")
 
+    if custom_metadata is not None and not isinstance(custom_metadata, dict):
+        raise TypeError("custom_metadata must be a dictionary")
+
     team_id = team_id.strip()
     sender = sender.strip()
 
@@ -118,8 +122,59 @@ def create_payload(
     if not sender:
         raise ValueError("sender cannot be empty")
 
-    # Automatically determine whether the cover is PNG or WAV.
     media_type = detect_media_type(cover_bytes)
+    media_hash = hashlib.sha256(cover_bytes).hexdigest()
+    return create_payload_from_hash(
+        media_type,
+        media_hash,
+        team_id,
+        sender,
+        custom_metadata,
+    )
+
+
+def create_payload_from_hash(
+    media_type: str,
+    media_hash: str,
+    team_id: str,
+    sender: str,
+    custom_metadata: dict[str, object] | None = None,
+) -> bytes:
+    """Build canonical payload bytes from an already-computed SHA-256 hash.
+
+    Args:
+        media_type: ``"image"`` or ``"audio"`` from validated cover media.
+        media_hash: Lowercase hexadecimal SHA-256 digest of the original cover.
+        team_id: Team-defined identifier stored in signed metadata.
+        sender: Sender name stored in signed metadata.
+        custom_metadata: Optional JSON-compatible metadata fields.
+
+    Returns:
+        Compact, canonical UTF-8 JSON bytes ready for signing.
+    """
+    if media_type not in MEDIA_PREFIXES:
+        raise ValueError("media_type must be 'image' or 'audio'")
+    if not isinstance(media_hash, str):
+        raise TypeError("media_hash must be a string")
+    if len(media_hash) != 64:
+        raise ValueError("media_hash must be a SHA-256 hexadecimal digest")
+    try:
+        bytes.fromhex(media_hash)
+    except ValueError as error:
+        raise ValueError("media_hash must be a SHA-256 hexadecimal digest") from error
+    if not isinstance(team_id, str):
+        raise TypeError("team_id must be a string")
+    if not isinstance(sender, str):
+        raise TypeError("sender must be a string")
+    if custom_metadata is not None and not isinstance(custom_metadata, dict):
+        raise TypeError("custom_metadata must be a dictionary")
+
+    team_id = team_id.strip()
+    sender = sender.strip()
+    if not team_id:
+        raise ValueError("team_id cannot be empty")
+    if not sender:
+        raise ValueError("sender cannot be empty")
 
     # Auto-generate a media ID.
     # Example: IMG-a3f92c10 or AUD-51bc1234
@@ -130,17 +185,22 @@ def create_payload(
         "%Y-%m-%dT%H:%M:%SZ"
     )
 
-    # SHA-256 fingerprint of the supplied cover bytes.
-    media_hash = hashlib.sha256(cover_bytes).hexdigest()
-
     # 16 random bytes = 128-bit nonce.
     nonce = secrets.token_hex(16)
 
-    # Team-defined metadata.
+    # Required team metadata is always present.  Additional team-defined
+    # fields are copied into the signed metadata object without allowing them
+    # to replace the protocol-owned identity fields.
     metadata = {
         "team_id": team_id,
         "sender": sender,
     }
+    if custom_metadata:
+        reserved = set(metadata).intersection(custom_metadata)
+        if reserved:
+            names = ", ".join(sorted(reserved))
+            raise ValueError(f"custom_metadata cannot replace reserved fields: {names}")
+        metadata.update(custom_metadata)
 
     payload = {
         "media_id": media_id,

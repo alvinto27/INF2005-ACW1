@@ -15,7 +15,3 @@ class CapacityError(StegoError):
 
 class WrongStartLocationError(StegoError):
     """No valid frame exists at the location derived from the secret."""
-
-
-class FeatureUnavailableError(StegoError):
-    """The requested engine exists as a boundary but is not implemented yet."""

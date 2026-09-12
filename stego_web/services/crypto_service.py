@@ -1,17 +1,17 @@
-"""OOP adapter around the repository's existing signed-payload protocol."""
+"""Cryptographic operations used by encoding and verification pipelines."""
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 from dataclasses import dataclass
 
 from payload_protocol import (
     build_verification_packet,
-    create_payload,
-    decode_payload,
     export_private_key_pem,
     export_public_key_pem,
     generate_rsa_keypair,
+    load_private_key_pem,
     load_public_key_pem,
     sign_payload,
     verify_verification_packet,
@@ -22,33 +22,64 @@ from stego_web.models import VerificationResult, Verdict
 
 @dataclass(frozen=True)
 class SignedPacket:
+    """Signed payload packet and its corresponding public key."""
+
     packet: bytes
     payload: dict
+    public_key_pem: bytes
+
+
+@dataclass(frozen=True)
+class GeneratedKeyPair:
+    """Password-protected key material created during explicit key setup."""
+
     private_key_pem: bytes
     public_key_pem: bytes
 
 
-class CryptographyService:
-    """Create signed packets and turn protocol results into strict verdicts."""
+class CryptoManager:
+    """Hash covers, load existing keys, sign payloads, and verify packets."""
 
-    def create_signed_packet(
-        self,
-        cover_bytes: bytes,
-        team_id: str,
-        sender: str,
-        key_password: str,
-    ) -> SignedPacket:
-        if len(key_password) < 8:
+    @staticmethod
+    def hash_cover(cover_bytes: bytes) -> str:
+        """Return the SHA-256 hex digest of the exact original cover bytes."""
+        if not isinstance(cover_bytes, bytes):
+            raise TypeError("cover_bytes must be bytes")
+        return hashlib.sha256(cover_bytes).hexdigest()
+
+    @staticmethod
+    def load_signing_key(private_key_pem: bytes, password: str):
+        """Load a user-supplied, password-encrypted RSA private key.
+
+        Args:
+            private_key_pem: PKCS#8 PEM bytes uploaded for this signing action.
+            password: Password used when the private key was exported.
+
+        Returns:
+            A validated RSA private-key object.
+        """
+        if not isinstance(password, str) or len(password) < 8:
             raise ValueError("key password must contain at least 8 characters")
+        return load_private_key_pem(private_key_pem, password)
 
-        private_key, public_key = generate_rsa_keypair()
-        payload_bytes = create_payload(cover_bytes, team_id, sender)
+    @staticmethod
+    def sign_packet(payload_bytes: bytes, payload: dict, private_key) -> SignedPacket:
+        """Sign exact payload bytes and package the payload plus signature."""
         signature = sign_payload(payload_bytes, private_key)
-
         return SignedPacket(
             packet=build_verification_packet(payload_bytes, signature),
-            payload=decode_payload(payload_bytes),
-            private_key_pem=export_private_key_pem(private_key, key_password),
+            payload=payload,
+            public_key_pem=export_public_key_pem(private_key.public_key()),
+        )
+
+    @staticmethod
+    def generate_key_pair(password: str) -> GeneratedKeyPair:
+        """Generate initial local demo keys outside the encoding pipeline."""
+        if not isinstance(password, str) or len(password) < 8:
+            raise ValueError("key password must contain at least 8 characters")
+        private_key, public_key = generate_rsa_keypair()
+        return GeneratedKeyPair(
+            private_key_pem=export_private_key_pem(private_key, password),
             public_key_pem=export_public_key_pem(public_key),
         )
 
@@ -58,6 +89,7 @@ class CryptographyService:
         public_key_pem: bytes,
         original_cover: bytes | None = None,
     ) -> VerificationResult:
+        """Verify packet signature and, when supplied, the original-cover hash."""
         try:
             public_key = load_public_key_pem(public_key_pem)
         except (TypeError, ValueError) as error:
@@ -68,11 +100,7 @@ class CryptographyService:
 
         valid, message, payload = verify_verification_packet(packet, public_key)
         if not valid:
-            verdict = (
-                Verdict.SIGNATURE_INVALID
-                if message == "Signature Invalid"
-                else Verdict.PAYLOAD_MISSING
-            )
+            verdict = Verdict.SIGNATURE_INVALID if message == "Signature Invalid" else Verdict.PAYLOAD_MISSING
             return VerificationResult(verdict, message)
 
         if original_cover is None:
@@ -83,9 +111,9 @@ class CryptographyService:
                 signature_valid=True,
             )
 
-        actual_hash = hashlib.sha256(original_cover).hexdigest()
+        actual_hash = self.hash_cover(original_cover)
         expected_hash = payload.get("media_hash") if payload else None
-        if not isinstance(expected_hash, str) or not hmac_safe_equal(actual_hash, expected_hash):
+        if not isinstance(expected_hash, str) or not hmac.compare_digest(actual_hash, expected_hash):
             return VerificationResult(
                 Verdict.TAMPERED,
                 "The signature is valid, but the supplied original cover hash does not match.",
@@ -103,8 +131,5 @@ class CryptographyService:
         )
 
 
-def hmac_safe_equal(left: str, right: str) -> bool:
-    """Compare fixed-format hashes without data-dependent early exit."""
-    import hmac
-
-    return hmac.compare_digest(left, right)
+class CryptographyService(CryptoManager):
+    """Compatibility alias retained for existing imports."""

@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from payload_protocol import (
     build_verification_packet,
     create_payload,
+    create_payload_from_hash,
     decode_payload,
     detect_media_type,
     export_private_key_pem,
@@ -194,6 +195,49 @@ class PayloadProtocolTests(unittest.TestCase):
                 self.wav_cover
             ).hexdigest(),
         )
+
+    def test_custom_team_metadata_is_signed_and_canonical(self):
+        payload = decode_payload(
+            create_payload(
+                self.png_cover,
+                "P1-4",
+                "Sitt",
+                {"project": "stego", "version": 2},
+            )
+        )
+
+        self.assertEqual(
+            payload["metadata"],
+            {
+                "team_id": "P1-4",
+                "sender": "Sitt",
+                "project": "stego",
+                "version": 2,
+            },
+        )
+
+    def test_custom_metadata_cannot_replace_identity(self):
+        with self.assertRaises(ValueError):
+            create_payload(
+                self.png_cover,
+                "P1-4",
+                "Sitt",
+                {"team_id": "attacker"},
+            )
+
+    def test_payload_can_use_a_precomputed_cover_hash(self):
+        media_hash = hashlib.sha256(self.wav_cover).hexdigest()
+        payload = decode_payload(
+            create_payload_from_hash(
+                "audio",
+                media_hash,
+                "P1-4",
+                "Sitt",
+                {"purpose": "demo"},
+            )
+        )
+        self.assertEqual(payload["media_hash"], media_hash)
+        self.assertEqual(payload["media_type"], "audio")
 
 
     def test_compact_canonical_json(self):

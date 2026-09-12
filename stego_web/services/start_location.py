@@ -47,6 +47,9 @@ class HmacStartLocation(StartLocationStrategy):
             self._SALT,
             self._ROUNDS,
         )
-        context = f"{media_type}|{slot_count}|{lsb_bits}".encode("ascii")
+        # LSB depth is validated but deliberately excluded from the location
+        # context, allowing the seven-step controller to derive the location
+        # before the embedding-depth choice is applied.
+        context = f"{media_type}|{slot_count}".encode("ascii")
         digest = hmac.new(key, context, hashlib.sha256).digest()
         return 1 + int.from_bytes(digest[:8], "big") % (slot_count - 1)

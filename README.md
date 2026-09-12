@@ -37,14 +37,12 @@ python -m pip install -r requirements.txt
 python run.py
 ```
 
-The web API accepts 1–8 LSBs and a passphrase-derived, non-zero start location.
-The generated key pair is held in memory for the process and should be replaced
-with persistent, authenticated key storage before deployment. Do not expose the
-private key returned by the starter `/encode` response outside local testing.
-
-`webapp/` is an additional lower-level example showing reusable carrier and bit
-packing adapters; use one scaffold consistently rather than combining both
-route implementations.
+The web API accepts 1-8 LSBs and a passphrase-derived, non-zero start location.
+Encoding requires an existing password-encrypted RSA private-key upload. The
+optional `/keys/generate` setup endpoint can create initial localhost demo keys;
+`/encode` itself never generates or returns private-key material.
+The wizard calls `/location/derive` to display the same PBKDF2-HMAC-SHA256
+location that the encoding pipeline will use.
 
 ## Tests and documentation
 

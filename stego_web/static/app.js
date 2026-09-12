@@ -8,8 +8,8 @@ let currentStep = 0;
 function showStep(nextStep) {
   currentStep = nextStep;
   cards.forEach((card, index) => { const active = index === currentStep; card.hidden = !active; card.classList.toggle("is-active", active); });
-  stepCount.textContent = currentStep <= 4 ? `Step ${currentStep + 1} of 5` : "Complete";
-  progressBar.style.width = `${Math.min(100, ((currentStep + 1) / 5) * 100)}%`;
+  stepCount.textContent = `Step ${currentStep + 1} of 7`;
+  progressBar.style.width = `${((currentStep + 1) / 7) * 100}%`;
   cards[currentStep].querySelector("input, textarea, button")?.focus();
 }
 
@@ -28,8 +28,9 @@ async function simulate(card, status, detail, completeStatus, completeDetail) {
 
 document.querySelectorAll(".next").forEach(button => button.addEventListener("click", async () => {
   if (!validCurrentCard()) return;
-  if (currentStep === 1) await simulate(cards[1], document.querySelector("#payload-status"), document.querySelector("#payload-detail"), "Payload initialized", "Hash and metadata are ready for signing.");
-  if (currentStep === 2) await simulate(cards[2], document.querySelector("#signature-status"), document.querySelector("#signature-detail"), "Signature ready", "The backend will sign the exact payload bytes during encoding.");
+  if (currentStep === 1) await simulate(cards[1], document.querySelector("#hash-status"), document.querySelector("#hash-detail"), "Hash initialized", "The validated cover is ready for authoritative SHA-256 hashing.");
+  if (currentStep === 2) await simulate(cards[2], document.querySelector("#payload-status"), document.querySelector("#payload-detail"), "Payload ready", "Required fields and custom metadata are ready for canonical serialization.");
+  if (currentStep === 3) await simulate(cards[3], document.querySelector("#signature-status"), document.querySelector("#signature-detail"), "Existing key ready", "The backend will load this key and sign the exact payload bytes.");
   showStep(currentStep + 1);
 }));
 document.querySelectorAll(".back").forEach(button => button.addEventListener("click", () => showStep(Math.max(0, currentStep - 1))));
@@ -45,10 +46,29 @@ document.querySelector("#derive-location").addEventListener("click", async () =>
   const secret = document.querySelector("#start-secret"); const status = document.querySelector("#location-status");
   if (!secret.checkValidity()) { secret.reportValidity(); return; }
   const file = document.querySelector("#cover-input").files[0];
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${secret.value}|${file?.name ?? "cover"}|${lsb.value}`));
-  const preview = 1 + (new DataView(digest).getUint32(0) % 9999);
-  status.className = "status-box status-ready"; status.textContent = `Preview location: unit ${preview}. The backend will derive and enforce the authoritative value.`;
-  document.querySelector("[data-step='3'] .next").disabled = false;
+  if (!file) { document.querySelector("#cover-input").reportValidity(); return; }
+  status.className = "status-box"; status.textContent = "Deriving with PBKDF2-HMAC-SHA256...";
+  try {
+    const body = new FormData(); body.set("cover", file); body.set("start_secret", secret.value); body.set("lsb_bits", lsb.value);
+    const response = await fetch("/location/derive", { method: "POST", body }); const data = await response.json();
+    if (!response.ok) throw new Error(data.error ?? "Location derivation failed");
+    status.className = "status-box status-ready";
+    status.textContent = `${data.algorithm}: ${data.media_type} unit ${data.start_location} of ${data.carrier_units.toLocaleString()} units.`;
+    document.querySelector("[data-step='4'] .next").disabled = false;
+  } catch (error) { status.className = "status-box verdict-error"; status.textContent = `Error: ${error.message}`; }
+});
+
+document.querySelector("#generate-keys").addEventListener("click", async () => {
+  const password = encodeForm.elements.key_password; const resultBox = document.querySelector("#key-result");
+  if (!password.checkValidity()) { password.reportValidity(); return; }
+  resultBox.textContent = "Generating RSA demo keys...";
+  try {
+    const body = new FormData(); body.set("key_password", password.value);
+    const response = await fetch("/keys/generate", { method: "POST", body }); const data = await response.json();
+    if (!response.ok) throw new Error(data.error ?? "Key generation failed");
+    resultBox.className = "result";
+    resultBox.replaceChildren(downloadLink(textUrl(data.private_key_pem), "private-key.pem", "Download encrypted private key"), downloadLink(textUrl(data.public_key_pem), "public-key.pem", "Download public key"), document.createTextNode(" Download the private key, then select it above."));
+  } catch (error) { resultBox.className = "result verdict-error"; resultBox.textContent = `Error: ${error.message}`; }
 });
 
 encodeForm.addEventListener("submit", async event => {
@@ -59,12 +79,12 @@ encodeForm.addEventListener("submit", async event => {
     if (!response.ok) throw new Error(data.error ?? "Encode failed");
     const stegoUrl = base64Url(data.stego_base64, data.mime_type); renderMedia(document.querySelector("#stego-preview"), stegoUrl, data.mime_type);
     document.querySelector("#success-summary").textContent = `Embedded at unit ${data.start_location}; capacity ${data.capacity_bytes} bytes.`;
-    document.querySelector("#download-links").replaceChildren(downloadLink(stegoUrl, data.filename, "Download stego media"), downloadLink(textUrl(data.public_key_pem), "public-key.pem", "Download public key"), downloadLink(textUrl(data.private_key_pem), "private-key.pem", "Download encrypted private key"));
-    resultBox.textContent = ""; showStep(5);
+    document.querySelector("#download-links").replaceChildren(downloadLink(stegoUrl, data.filename, "Download stego media"), downloadLink(textUrl(data.public_key_pem), "public-key.pem", "Download public key"));
+    resultBox.textContent = ""; showStep(6);
   } catch (error) { resultBox.className = "result verdict-error"; resultBox.textContent = `Error: ${error.message}`; } finally { button.disabled = false; }
 });
 
-document.querySelector("#start-over").addEventListener("click", () => { encodeForm.reset(); document.querySelector("#encode-lsb-output").value = "1"; document.querySelector("#location-status").textContent = "No location derived yet."; document.querySelector("#location-status").className = "status-box"; showStep(0); });
+document.querySelector("#start-over").addEventListener("click", () => { encodeForm.reset(); document.querySelector("#encode-lsb-output").value = "1"; document.querySelector("#location-status").textContent = "No location derived yet."; document.querySelector("#location-status").className = "status-box"; document.querySelector("[data-step='4'] .next").disabled = true; showStep(0); });
 
 const decodeForm = document.querySelector("#decode-form");
 decodeForm.addEventListener("submit", async event => {
@@ -78,3 +98,5 @@ function base64Url(value, mime) { const bytes = Uint8Array.from(atob(value), cha
 function textUrl(value) { return URL.createObjectURL(new Blob([value], { type: "application/x-pem-file" })); }
 function downloadLink(url, filename, label) { const link = document.createElement("a"); link.href = url; link.download = filename; link.textContent = label; return link; }
 function slug(value) { return value.toLowerCase().replaceAll(" ", "-"); }
+
+showStep(0);

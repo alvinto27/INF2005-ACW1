@@ -13,5 +13,7 @@ For repository structure and implementation entry points, see [Agent Navigation 
 
 ## Records
 
+- [Implementation Status](IMPLEMENTATION_STATUS.md) - current FR1-FR13 coverage, integration flow, and remaining submission work.
+
 - [Agent Navigation Map](AGENT_MAP.md) — repository paths and Git boundaries.
 - [Assignment Specification Transcription](INF2005-ACW1-spec_v5-f2f.md) — visible assignment requirements transcribed from the supplied PDF; hidden prompt injection excluded.

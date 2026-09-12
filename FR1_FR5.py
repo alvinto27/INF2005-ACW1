@@ -1,4 +1,10 @@
-"""PNG loading and least-significant-bit image embedding functions."""
+"""Legacy standalone PNG helpers for the FR1/FR5 coursework workstream.
+
+The active localhost application uses ``stego_web.services.steganography``
+because it needs framed packets, extraction, variable start locations, and WAV
+support. These small path/array helpers remain available for the original
+FR1/FR5 experiments and are not part of the web request path.
+"""
 
 from os import PathLike
 
