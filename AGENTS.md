@@ -29,8 +29,6 @@ bash scripts/install-hooks.sh
 - This is a standalone Python module repository with no package build configuration or CI workflow.
 - The `stego/` package requires Python 3.10+ and uses `cryptography`, NumPy, and Pillow.
 - `test_stego.py` is the unit-test entry point.
-- This independent repository is a tracked submodule in the `School-Repos` checkout.
-- Work is initialized on the local `yx` branch. Do not merge it into `main` unless the repository owner requests it.
 
 ## Conventions
 

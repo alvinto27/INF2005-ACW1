@@ -2,13 +2,6 @@
 
 Use this map before editing an unfamiliar part of the repository.
 
-## Map chain
-
-| Scope | Map or rule |
-| --- | --- |
-| Current repository | This file: `AGENT_docs/AGENT_MAP.md` |
-| Parent workspace checkout | [School Repos map](../../../docs/AGENT_MAP.md); this repository is a tracked submodule there. |
-
 ## Documentation locations
 
 | Content | Location |
@@ -45,5 +38,4 @@ Use this map before editing an unfamiliar part of the repository.
 
 | Boundary | Rule |
 | --- | --- |
-| This repository | Independent Git repository on branch `yx`; commit and push its work from this directory. |
-| Parent `School-Repos` checkout | It tracks this directory as a submodule or gitlink. Do not treat changes here as parent-repository changes unless its owner explicitly requests them. |
+| This repository | This is an independent Git repository. Commit and push work from this directory. |
