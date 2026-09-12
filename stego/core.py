@@ -25,14 +25,14 @@ from .constants import (
     MEDIA_PREFIXES,
     PACKET_HEADER_SIZE,
     RSA_SIGNATURE_SIZE,
-    V1_NONCE_SIZE,
+    NONCE_SIZE,
 )
 from .keys import (
     display_rsa_public_key_fingerprint,
-    sign_v1_bytes,
+    sign_bytes,
     validate_rsa_private_key,
     validate_rsa_public_key,
-    verify_v1_signature,
+    verify_signature,
 )
 from .layout import (
     EmbeddingLayout,
@@ -58,12 +58,12 @@ from .media import (
 from .packet import (
     PacketHeader,
     StartMagicCandidate,
-    V1PayloadRecord,
+    PayloadRecord,
     parse_packet_header,
-    parse_v1_payload,
+    parse_payload,
     scan_start_magic,
     serialize_packet_header,
-    serialize_v1_payload,
+    serialize_payload,
 )
 
 
@@ -79,7 +79,7 @@ def _embed_packet(carrier_units, layout, packet):
     return result
 
 
-def encode_v1_carrier(carrier_units, media_code, media_context, private_key, start_unit, lsb_count, user_payload, metadata):
+def encode_carrier(carrier_units, media_code, media_context, private_key, start_unit, lsb_count, user_payload, metadata):
     carrier_units = _validate_carrier_units(carrier_units).copy()
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
@@ -95,14 +95,14 @@ def encode_v1_carrier(carrier_units, media_code, media_context, private_key, sta
 
     media_id = f"{MEDIA_PREFIXES[media_code]}-{secrets.token_hex(16)}"
     timestamp = int(datetime.now(timezone.utc).timestamp())
-    nonce = secrets.token_bytes(V1_NONCE_SIZE)
+    nonce = secrets.token_bytes(NONCE_SIZE)
     payload_length = 1 + len(media_id.encode("utf-8")) + 8 + 16 + 32 + 4 + len(user_payload) + 4 + len(metadata)
     layout = build_embedding_layout(carrier_units.size, start_unit, lsb_count, payload_length)
     media_hash = calculate_masked_media_hash(carrier_units, media_code, lsb_count, start_unit, layout.footprint)
-    payload = V1PayloadRecord(media_id, timestamp, nonce, media_hash, user_payload, metadata)
-    payload_bytes = serialize_v1_payload(payload)
+    payload = PayloadRecord(media_id, timestamp, nonce, media_hash, user_payload, metadata)
+    payload_bytes = serialize_payload(payload)
     signing_input = encode_signing_input(media_code, media_context, layout, payload_bytes)
-    signature = sign_v1_bytes(signing_input, private_key)
+    signature = sign_bytes(signing_input, private_key)
     packet = serialize_packet_header(lsb_count, media_code, len(payload_bytes)) + payload_bytes + signature
     return _embed_packet(carrier_units, layout, packet), layout, payload
 
@@ -149,7 +149,7 @@ def resolve_candidate(carrier_units, candidate, expected_media_code):
     return ResolvedCandidate(candidate, header, layout)
 
 
-def verify_resolved_v1_candidate(carrier_units, media_code, media_context, public_key, resolved):
+def verify_resolved_candidate(carrier_units, media_code, media_context, public_key, resolved):
     carrier_units = _validate_carrier_units(carrier_units)
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
@@ -168,10 +168,10 @@ def verify_resolved_v1_candidate(carrier_units, media_code, media_context, publi
     payload_start = PACKET_HEADER_SIZE
     payload_end = payload_start + header.payload_length
     payload_bytes = packet[payload_start:payload_end]
-    payload = parse_v1_payload(payload_bytes)
+    payload = parse_payload(payload_bytes)
     signature = packet[payload_end:]
     signing_input = encode_signing_input(media_code, media_context, layout, payload_bytes)
-    if not verify_v1_signature(signing_input, signature, public_key):
+    if not verify_signature(signing_input, signature, public_key):
         raise SignatureVerificationError("RSA-PSS signature verification failed")
     calculated_hash = calculate_masked_media_hash(carrier_units, media_code, layout.lsb_count, layout.start_unit, layout.footprint)
     if calculated_hash != payload.media_hash:
@@ -180,11 +180,11 @@ def verify_resolved_v1_candidate(carrier_units, media_code, media_context, publi
 
 
 @dataclass(frozen=True)
-class V1VerificationResult:
+class VerificationResult:
     valid: bool
     verdict: str
     detail: str
-    payload: V1PayloadRecord | None
+    payload: PayloadRecord | None
     key_fingerprint: str | None
     start_unit: int | None
     lsb_count: int | None
@@ -193,10 +193,10 @@ class V1VerificationResult:
 
 
 def _failure_result(verdict, detail):
-    return V1VerificationResult(False, verdict, detail, None, None, None, None, None, None)
+    return VerificationResult(False, verdict, detail, None, None, None, None, None, None)
 
 
-def decode_v1_carrier(carrier_units, media_code, media_context, public_key):
+def decode_carrier(carrier_units, media_code, media_context, public_key):
     carrier_units = _validate_carrier_units(carrier_units)
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
@@ -213,7 +213,7 @@ def decode_v1_carrier(carrier_units, media_code, media_context, public_key):
     for candidate in candidates:
         try:
             resolved = resolve_candidate(carrier_units, candidate, media_code)
-            payload = verify_resolved_v1_candidate(carrier_units, media_code, media_context, public_key, resolved)
+            payload = verify_resolved_candidate(carrier_units, media_code, media_context, public_key, resolved)
             valid.append((payload, resolved.layout))
         except WrongStartLocationError as error:
             failures.append(("Wrong Start Location", candidate, str(error)))
@@ -230,7 +230,7 @@ def decode_v1_carrier(carrier_units, media_code, media_context, public_key):
         preserved_bits = preserved_bit_count(layout.total_units, layout.footprint, layout.lsb_count)
         total_bits = layout.total_units * 8
         ratio = preserved_bits / total_bits if total_bits else 0.0
-        return V1VerificationResult(
+        return VerificationResult(
             True,
             "Authentic",
             "signature and masked media hash are valid under the supplied public key",
@@ -255,43 +255,43 @@ def _paths_resolve_same(first_path, second_path):
     return os.path.normcase(os.path.realpath(os.fsdecode(fspath(first_path)))) == os.path.normcase(os.path.realpath(os.fsdecode(fspath(second_path))))
 
 
-def encode_png_v1(input_path, output_path, private_key, start_unit, lsb_count, user_payload, metadata):
+def encode_png(input_path, output_path, private_key, start_unit, lsb_count, user_payload, metadata):
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
     image = load_png_from_path(input_path)
     carrier = rgb_array_to_carrier(image)
     context = encode_png_media_context(image.shape, carrier.size)
-    encoded, layout, payload = encode_v1_carrier(carrier, IMAGE_MEDIA_CODE, context, private_key, start_unit, lsb_count, user_payload, metadata)
+    encoded, layout, payload = encode_carrier(carrier, IMAGE_MEDIA_CODE, context, private_key, start_unit, lsb_count, user_payload, metadata)
     save_rgb_png_to_path(carrier_to_rgb_array(encoded, image.shape), output_path)
     return layout, payload
 
 
-def verify_png_v1(input_path, public_key):
+def verify_png(input_path, public_key):
     try:
         image = load_png_from_path(input_path)
         carrier = rgb_array_to_carrier(image)
         context = encode_png_media_context(image.shape, carrier.size)
     except (OSError, ValueError, UnSupportedFileType) as error:
         return _failure_result("Cannot Verify", str(error))
-    return decode_v1_carrier(carrier, IMAGE_MEDIA_CODE, context, public_key)
+    return decode_carrier(carrier, IMAGE_MEDIA_CODE, context, public_key)
 
 
-def encode_wav_v1(input_path, output_path, private_key, start_unit, lsb_count, user_payload, metadata):
+def encode_wav(input_path, output_path, private_key, start_unit, lsb_count, user_payload, metadata):
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
     wav_data = load_pcm_wav_from_path(input_path)
     carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes)
     context = encode_wav_media_context(wav_data, carrier.size)
-    encoded, layout, payload = encode_v1_carrier(carrier, AUDIO_MEDIA_CODE, context, private_key, start_unit, lsb_count, user_payload, metadata)
+    encoded, layout, payload = encode_carrier(carrier, AUDIO_MEDIA_CODE, context, private_key, start_unit, lsb_count, user_payload, metadata)
     save_pcm_wav_to_path(wav_data_with_carrier(wav_data, encoded), output_path)
     return layout, payload
 
 
-def verify_wav_v1(input_path, public_key):
+def verify_wav(input_path, public_key):
     try:
         wav_data = load_pcm_wav_from_path(input_path)
         carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes)
         context = encode_wav_media_context(wav_data, carrier.size)
     except (OSError, ValueError) as error:
         return _failure_result("Cannot Verify", str(error))
-    return decode_v1_carrier(carrier, AUDIO_MEDIA_CODE, context, public_key)
+    return decode_carrier(carrier, AUDIO_MEDIA_CODE, context, public_key)

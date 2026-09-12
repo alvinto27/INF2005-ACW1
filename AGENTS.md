@@ -26,7 +26,7 @@ bash scripts/install-hooks.sh
 
 - This is a standalone Python module repository with no package build configuration or CI workflow.
 - The `stego/` package requires Python 3.10+ and uses `cryptography`, NumPy, and Pillow.
-- `test_stego_v1.py` is the unit-test entry point.
+- `test_stego.py` is the unit-test entry point.
 - This independent repository is nested in the `School-Repos` checkout, but the parent does not track it as a submodule or gitlink.
 - Work is initialized on the local `yx` branch. Do not merge it into `main` unless the repository owner requests it.
 
@@ -34,7 +34,7 @@ bash scripts/install-hooks.sh
 
 - Keep the shared protocol media-neutral and use the fixed PNG and WAV adapters for file I/O.
 - Preserve the documented packet format and verification verdicts when changing protocol behavior.
-- Keep dependencies in `requirements.txt` and tests in `test_stego_v1.py` unless the repository adopts a different layout.
+- Keep dependencies in `requirements.txt` and tests in `test_stego.py` unless the repository adopts a different layout.
 - Store each durable record—such as an architecture note, plan, runbook, status record, release note, or ADR—in its own aptly named file under `docs/`, and list it in `docs/README.md`.
 - `git commit --no-verify` intentionally bypasses the documentation hook when necessary.
 

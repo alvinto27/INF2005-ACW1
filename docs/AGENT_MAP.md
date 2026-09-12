@@ -32,7 +32,7 @@ Use this map before editing an unfamiliar part of the repository.
 | PNG and WAV adapters | [stego/media.py](../stego/media.py) |
 | End-to-end encode and verification | [stego/core.py](../stego/core.py) |
 | FR1–FR12 demonstration notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
-| Masked-media v1 protocol tests | [test_stego_v1.py](../test_stego_v1.py) |
+| Masked-media protocol tests | [test_stego.py](../test_stego.py) |
 | Python dependencies | [requirements.txt](../requirements.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |
 | Git-hook installer | [scripts/install-hooks.sh](../scripts/install-hooks.sh) |

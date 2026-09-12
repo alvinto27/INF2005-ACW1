@@ -38,7 +38,7 @@ def validate_rsa_private_key(private_key):
     return private_key
 
 
-def generate_v1_rsa_keypair():
+def generate_rsa_keypair():
     private_key = rsa.generate_private_key(public_exponent=RSA_PUBLIC_EXPONENT, key_size=RSA_KEY_SIZE)
     return private_key, private_key.public_key()
 
@@ -74,26 +74,26 @@ def display_rsa_public_key_fingerprint(public_key):
     return FINGERPRINT_DISPLAY_PREFIX + encoded
 
 
-def v1_rsa_pss_padding():
+def rsa_pss_padding():
     return padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=RSA_PSS_SALT_LENGTH)
 
 
-def sign_v1_bytes(signing_input, private_key):
+def sign_bytes(signing_input, private_key):
     signing_input = _require_bytes(signing_input, "signing_input")
-    signature = validate_rsa_private_key(private_key).sign(signing_input, v1_rsa_pss_padding(), hashes.SHA256())
+    signature = validate_rsa_private_key(private_key).sign(signing_input, rsa_pss_padding(), hashes.SHA256())
     if len(signature) != RSA_SIGNATURE_SIZE:
         raise ValueError("RSA signature has an unexpected length")
     return signature
 
 
-def verify_v1_signature(signing_input, signature, public_key):
+def verify_signature(signing_input, signature, public_key):
     signing_input = _require_bytes(signing_input, "signing_input")
     signature = _require_bytes(signature, "signature")
     public_key = validate_rsa_public_key(public_key)
     if len(signature) != RSA_SIGNATURE_SIZE:
         return False
     try:
-        public_key.verify(signature, signing_input, v1_rsa_pss_padding(), hashes.SHA256())
+        public_key.verify(signature, signing_input, rsa_pss_padding(), hashes.SHA256())
     except InvalidSignature:
         return False
     return True

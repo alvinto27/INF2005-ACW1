@@ -29,7 +29,7 @@ from .constants import (
     SHA256_DIGEST_SIZE,
     START_MAGIC,
     SUPPORTED_LSB_COUNTS,
-    V1_NONCE_SIZE,
+    NONCE_SIZE,
 )
 from .layout import ceil_unit_count
 
@@ -66,7 +66,7 @@ def parse_packet_header(header_bytes):
 
 
 @dataclass(frozen=True)
-class V1PayloadRecord:
+class PayloadRecord:
     media_id: str
     timestamp: int
     nonce: bytes
@@ -85,7 +85,7 @@ class V1PayloadRecord:
         media_hash = _require_bytes(self.media_hash, "media_hash")
         user_payload = _require_bytes(self.user_payload, "user_payload")
         metadata = _require_bytes(self.metadata, "metadata")
-        if len(nonce) != V1_NONCE_SIZE:
+        if len(nonce) != NONCE_SIZE:
             raise ValueError("nonce must contain exactly 16 bytes")
         if len(media_hash) != SHA256_DIGEST_SIZE:
             raise ValueError("media_hash must contain exactly 32 bytes")
@@ -102,9 +102,9 @@ class V1PayloadRecord:
         object.__setattr__(self, "metadata", bytes(metadata))
 
 
-def serialize_v1_payload(record):
-    if not isinstance(record, V1PayloadRecord):
-        raise TypeError("record must be a V1PayloadRecord")
+def serialize_payload(record):
+    if not isinstance(record, PayloadRecord):
+        raise TypeError("record must be a PayloadRecord")
     media_id = record.media_id.encode("utf-8")
     payload = (
         bytes((len(media_id),))
@@ -127,14 +127,14 @@ def _take_payload_field(payload_bytes, offset, length, name):
     return payload_bytes[offset:end], end
 
 
-def parse_v1_payload(payload_bytes):
+def parse_payload(payload_bytes):
     payload_bytes = validate_payload_bytes(payload_bytes)
     if not payload_bytes:
         raise ValueError("payload is truncated before media_id length")
     media_id_length = payload_bytes[0]
     offset = 1
     media_id_bytes, offset = _take_payload_field(payload_bytes, offset, media_id_length, "media_id")
-    fixed, offset = _take_payload_field(payload_bytes, offset, 8 + V1_NONCE_SIZE + SHA256_DIGEST_SIZE, "fixed fields")
+    fixed, offset = _take_payload_field(payload_bytes, offset, 8 + NONCE_SIZE + SHA256_DIGEST_SIZE, "fixed fields")
     timestamp = struct.unpack(">Q", fixed[:8])[0]
     nonce = fixed[8:24]
     media_hash = fixed[24:56]
@@ -150,14 +150,14 @@ def parse_v1_payload(payload_bytes):
         media_id = media_id_bytes.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValueError("media_id must contain valid UTF-8") from error
-    return V1PayloadRecord(media_id, timestamp, nonce, media_hash, user_payload, metadata)
+    return PayloadRecord(media_id, timestamp, nonce, media_hash, user_payload, metadata)
 
 
-def create_v1_payload_record(media_code, media_hash, user_payload, metadata):
+def create_payload_record(media_code, media_hash, user_payload, metadata):
     media_code = _validate_media_code(media_code)
     media_id = f"{MEDIA_PREFIXES[media_code]}-{secrets.token_hex(16)}"
     timestamp = int(datetime.now(timezone.utc).timestamp())
-    return V1PayloadRecord(media_id, timestamp, secrets.token_bytes(V1_NONCE_SIZE), media_hash, user_payload, metadata)
+    return PayloadRecord(media_id, timestamp, secrets.token_bytes(NONCE_SIZE), media_hash, user_payload, metadata)
 
 
 @dataclass(frozen=True)

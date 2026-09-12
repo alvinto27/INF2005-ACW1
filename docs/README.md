@@ -10,7 +10,7 @@ For repository structure and implementation entry points, see [Agent Navigation 
 
 - [README](../README.md) — setup and the masked-media integrity invariant.
 - [stego package](../stego/__init__.py) — public API for the modular signed steganography implementation.
-- [test_stego_v1.py](../test_stego_v1.py) — masked-media v1 implementation tests.
+- [test_stego.py](../test_stego.py) — masked-media protocol implementation tests.
 - [AGENTS](../AGENTS.md) — agent working instructions.
 
 ## Records
