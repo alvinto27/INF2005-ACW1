@@ -8,7 +8,6 @@ import unittest
 import wave
 from dataclasses import FrozenInstanceError
 from pathlib import Path
-from stat import S_IMODE, S_IRUSR, S_IWUSR
 from tempfile import TemporaryDirectory
 
 import numpy as np
@@ -19,8 +18,6 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 import stego_v1
 from stego_v1 import *
 from stego_v1 import (
-    _ENCRYPTED_PRIVATE_KEY_BEGIN,
-    _ENCRYPTED_PRIVATE_KEY_END,
     _find_magic_start_mask,
     _validate_lsb_count,
     _validate_uint64,
@@ -44,13 +41,9 @@ _invalid_1024_public = _invalid_1024_private.public_key()
 _invalid_3_private = rsa.generate_private_key(public_exponent=3, key_size=2048)
 _invalid_3_public = _invalid_3_private.public_key()
 
-_private_password = b"correct horse battery staple"
 _wav_mono_bytes = bytes((0, 1, 127, 128, 254, 255))
 _wav_stereo_bytes = bytes(range(16))
 
-_trusted_a = TrustedKeyRecord(_v1_der, "zeta")
-_trusted_b = TrustedKeyRecord(serialize_rsa_public_key(_signing_public), "alpha")
-_trusted_records = normalize_trusted_key_records((_trusted_a, _trusted_b))
 
 
 class TestStegoV1(unittest.TestCase):
@@ -544,14 +537,14 @@ class TestStegoV1(unittest.TestCase):
     def test_focused_checks_for_canonical_rsa_2048_public_key_encoding_and_fingerprints(self):
         # Focused checks for canonical RSA-2048 public-key encoding and fingerprints.
         assert isinstance(_v1_der, bytes)
-        assert len(_v1_der) <= MAX_PUBLIC_KEY_DER_LENGTH
-        assert serialize_rsa_public_key(parse_rsa_public_key_der(_v1_der)) == _v1_der
+        assert len(_v1_der) <= MAX_PUBLIC_KEY_ENCODING_LENGTH
+        assert serialize_rsa_public_key(parse_rsa_public_key(_v1_der)) == _v1_der
         assert validate_rsa_public_key(_v1_public_key) is _v1_public_key
 
         _v1_fingerprint = fingerprint_rsa_public_key(_v1_public_key)
         assert len(_v1_fingerprint) == 32
         assert _v1_fingerprint == hashlib.sha256(_v1_der).digest()
-        assert _v1_fingerprint == fingerprint_rsa_public_key(parse_rsa_public_key_der(_v1_der))
+        assert _v1_fingerprint == fingerprint_rsa_public_key(parse_rsa_public_key(_v1_der))
         _display_fingerprint = display_rsa_public_key_fingerprint(_v1_public_key)
         assert _display_fingerprint.startswith("SHA256:")
         assert _display_fingerprint == "SHA256:" + base64.b64encode(_v1_fingerprint).decode("ascii").rstrip("=")
@@ -578,12 +571,12 @@ class TestStegoV1(unittest.TestCase):
             b"",
             b"not-der",
             _v1_der + b"\x00",
-            b"\x00" * (MAX_PUBLIC_KEY_DER_LENGTH + 1),
+            b"\x00" * (MAX_PUBLIC_KEY_ENCODING_LENGTH + 1),
             bytearray(_v1_der),
             memoryview(_v1_der),
         ):
             try:
-                parse_rsa_public_key_der(_invalid_der)
+                parse_rsa_public_key(_invalid_der)
             except (TypeError, ValueError):
                 pass
             else:
@@ -755,12 +748,12 @@ class TestStegoV1(unittest.TestCase):
 
         # Focused checks for the minimal canonical version-1 payload record.
         assert V1_PAYLOAD_FIELDS == {
-            "media_type", "media_context", "public_key_der", "unembedded_carrier_hash",
+            "media_type", "media_context", "unembedded_carrier_hash",
             "reserved_upper_bits_hash", "media_id", "timestamp", "nonce", "message", "metadata",
         }
         assert MAX_MEDIA_CONTEXT_LENGTH == 4096
         assert V1_NONCE_SIZE == 16
-        assert MAX_PUBLIC_KEY_DER_LENGTH == 512
+        assert MAX_PUBLIC_KEY_ENCODING_LENGTH == 512
         assert MAX_MESSAGE_LENGTH == 15 * 1024 * 1024
 
         _payload_context = b"\x00\xff"
@@ -770,7 +763,6 @@ class TestStegoV1(unittest.TestCase):
         _payload_record = V1PayloadRecord(
             media_type=IMAGE_MEDIA_CODE,
             media_context=_payload_context,
-            public_key_der=_v1_der,
             unembedded_carrier_hash=_payload_hash,
             reserved_upper_bits_hash=_reserved_hash,
             media_id="é",
@@ -780,12 +772,10 @@ class TestStegoV1(unittest.TestCase):
             metadata=(("z", "last"), ("a", "first")),
         )
         _payload_bytes = serialize_v1_payload(_payload_record)
-        _expected_der_b64 = base64.b64encode(_v1_der).decode("ascii")
         _expected_known_payload = (
             '{"media_context":"AP8=","media_id":"é","media_type":1,'
             '"message":"Hi 🌍","metadata":{"a":"first","z":"last"},'
             '"nonce":"000102030405060708090a0b0c0d0e0f",'
-            '"public_key_der":"' + _expected_der_b64 + '",'
             '"reserved_upper_bits_hash":"' + ("ff" * SHA256_DIGEST_SIZE) + '",'
             '"timestamp":"2024-02-29T12:34:56Z",'
             '"unembedded_carrier_hash":"' + bytes(range(SHA256_DIGEST_SIZE)).hex() + '"}'
@@ -816,7 +806,6 @@ class TestStegoV1(unittest.TestCase):
         _audio_record = V1PayloadRecord(
             media_type=AUDIO_MEDIA_CODE,
             media_context=b"future-wav-context",
-            public_key_der=_v1_der,
             unembedded_carrier_hash=_payload_hash,
             reserved_upper_bits_hash=_reserved_hash,
             media_id="audio",
@@ -851,11 +840,6 @@ class TestStegoV1(unittest.TestCase):
 
         for _duplicate in (
             b'{"media_type":1,"media_type":1}',
-            b'{"media_type":1,"media_context":"","public_key_der":"",'
-            b'"unembedded_carrier_hash":"0000000000000000000000000000000000000000000000000000000000000000",'
-            b'"reserved_upper_bits_hash":"0000000000000000000000000000000000000000000000000000000000000000",'
-            b'"media_id":"x","timestamp":"2024-01-01T00:00:00Z","nonce":"00000000000000000000000000000000",'
-            b'"message":"","metadata":{},"message":""}',
         ):
             _assert_payload_rejected(_duplicate, "duplicate key")
         _missing = _payload_document(); del _missing["message"]
@@ -869,8 +853,6 @@ class TestStegoV1(unittest.TestCase):
         for _field, _value in (
             ("media_context", "AP8"),
             ("media_context", "!!!!"),
-            ("public_key_der", "AP8"),
-            ("public_key_der", "!!!!"),
         ):
             _bad = _payload_document(); _bad[_field] = _value
             _assert_payload_rejected(_payload_document_bytes(_bad), "malformed or noncanonical Base64")
@@ -899,10 +881,10 @@ class TestStegoV1(unittest.TestCase):
             _assert_payload_rejected(_payload_document_bytes(_bad), "control character")
 
         for _bad_record in (
-            dict(media_type=IMAGE_MEDIA_CODE, media_context=b"", public_key_der=_v1_der, unembedded_carrier_hash=_payload_hash, reserved_upper_bits_hash=_reserved_hash, media_id="", timestamp="2024-01-01T00:00:00Z", nonce=_payload_nonce, message="", metadata=()),
-            dict(media_type=IMAGE_MEDIA_CODE, media_context=b"x" * (MAX_MEDIA_CONTEXT_LENGTH + 1), public_key_der=_v1_der, unembedded_carrier_hash=_payload_hash, reserved_upper_bits_hash=_reserved_hash, media_id="x", timestamp="2024-01-01T00:00:00Z", nonce=_payload_nonce, message="", metadata=()),
-            dict(media_type=IMAGE_MEDIA_CODE, media_context=b"", public_key_der=_v1_der, unembedded_carrier_hash=_payload_hash, reserved_upper_bits_hash=_reserved_hash, media_id="x", timestamp="2024-01-01T00:00:00Z", nonce=_payload_nonce, message="", metadata=(("", "value"),)),
-            dict(media_type=IMAGE_MEDIA_CODE, media_context=b"", public_key_der=_v1_der, unembedded_carrier_hash=_payload_hash, reserved_upper_bits_hash=_reserved_hash, media_id="x", timestamp="2024-01-01T00:00:00Z", nonce=_payload_nonce, message="", metadata=(("key", "bad\tvalue"),)),
+            dict(media_type=IMAGE_MEDIA_CODE, media_context=b"", unembedded_carrier_hash=_payload_hash, reserved_upper_bits_hash=_reserved_hash, media_id="", timestamp="2024-01-01T00:00:00Z", nonce=_payload_nonce, message="", metadata=()),
+            dict(media_type=IMAGE_MEDIA_CODE, media_context=b"x" * (MAX_MEDIA_CONTEXT_LENGTH + 1), unembedded_carrier_hash=_payload_hash, reserved_upper_bits_hash=_reserved_hash, media_id="x", timestamp="2024-01-01T00:00:00Z", nonce=_payload_nonce, message="", metadata=()),
+            dict(media_type=IMAGE_MEDIA_CODE, media_context=b"", unembedded_carrier_hash=_payload_hash, reserved_upper_bits_hash=_reserved_hash, media_id="x", timestamp="2024-01-01T00:00:00Z", nonce=_payload_nonce, message="", metadata=(("", "value"),)),
+            dict(media_type=IMAGE_MEDIA_CODE, media_context=b"", unembedded_carrier_hash=_payload_hash, reserved_upper_bits_hash=_reserved_hash, media_id="x", timestamp="2024-01-01T00:00:00Z", nonce=_payload_nonce, message="", metadata=(("key", "bad\tvalue"),)),
         ):
             try:
                 V1PayloadRecord(**_bad_record)
@@ -918,14 +900,11 @@ class TestStegoV1(unittest.TestCase):
             ("not-a-pair",),
         ):
             try:
-                V1PayloadRecord(IMAGE_MEDIA_CODE, b"", _v1_der, _payload_hash, _reserved_hash, "x", "2024-01-01T00:00:00Z", _payload_nonce, "", _bad_metadata)
+                V1PayloadRecord(IMAGE_MEDIA_CODE, b"", _payload_hash, _reserved_hash, "x", "2024-01-01T00:00:00Z", _payload_nonce, "", _bad_metadata)
             except (TypeError, ValueError):
                 pass
             else:
                 raise AssertionError("invalid metadata was accepted")
-
-        _bad_der = _payload_document(); _bad_der["public_key_der"] = base64.b64encode(_v1_der + b"\x00").decode("ascii")
-        _assert_payload_rejected(_payload_document_bytes(_bad_der), "noncanonical DER")
 
         _original_payload_limit = MAX_PAYLOAD_LENGTH
         try:
@@ -949,7 +928,6 @@ class TestStegoV1(unittest.TestCase):
             _factory_record = create_v1_payload_record(
                 _media_type,
                 _factory_context,
-                _signing_public,
                 _factory_hash,
                 _factory_reserved,
                 "generated 🌍 message",
@@ -963,7 +941,6 @@ class TestStegoV1(unittest.TestCase):
             assert _factory_record.timestamp.endswith("Z")
             assert len(_factory_record.nonce) == V1_NONCE_SIZE
             assert _factory_record.media_context == _factory_context
-            assert _factory_record.public_key_der == serialize_rsa_public_key(_signing_public)
             assert _factory_record.unembedded_carrier_hash == _factory_hash
             assert _factory_record.reserved_upper_bits_hash == _factory_reserved
             assert _factory_record.message == "generated 🌍 message"
@@ -971,10 +948,10 @@ class TestStegoV1(unittest.TestCase):
             assert parse_v1_payload(serialize_v1_payload(_factory_record)) == _factory_record
 
         _factory_record_a = create_v1_payload_record(
-            IMAGE_MEDIA_CODE, b"ctx", _signing_public, _factory_hash, _factory_reserved, "m", {}
+            IMAGE_MEDIA_CODE, b"ctx", _factory_hash, _factory_reserved, "m", {}
         )
         _factory_record_b = create_v1_payload_record(
-            IMAGE_MEDIA_CODE, b"ctx", _signing_public, _factory_hash, _factory_reserved, "m", {}
+            IMAGE_MEDIA_CODE, b"ctx", _factory_hash, _factory_reserved, "m", {}
         )
         for _record in (_factory_record_a, _factory_record_b):
             assert isinstance(_record, V1PayloadRecord)
@@ -982,12 +959,11 @@ class TestStegoV1(unittest.TestCase):
             assert len(_record.nonce) == V1_NONCE_SIZE
 
         for _bad_factory_args in (
-            (0, b"ctx", _signing_public, _factory_hash, _factory_reserved, "m", {}),
-            (IMAGE_MEDIA_CODE, b"x" * (MAX_MEDIA_CONTEXT_LENGTH + 1), _signing_public, _factory_hash, _factory_reserved, "m", {}),
-            (IMAGE_MEDIA_CODE, b"ctx", _non_rsa_public_key, _factory_hash, _factory_reserved, "m", {}),
-            (IMAGE_MEDIA_CODE, b"ctx", _signing_public, b"short", _factory_reserved, "m", {}),
-            (IMAGE_MEDIA_CODE, b"ctx", _signing_public, _factory_hash, _factory_reserved, "m" * (MAX_MESSAGE_LENGTH + 1), {}),
-            (IMAGE_MEDIA_CODE, b"ctx", _signing_public, _factory_hash, _factory_reserved, "m", {"bad": 1}),
+            (0, b"ctx", _factory_hash, _factory_reserved, "m", {}),
+            (IMAGE_MEDIA_CODE, b"x" * (MAX_MEDIA_CONTEXT_LENGTH + 1), _factory_hash, _factory_reserved, "m", {}),
+            (IMAGE_MEDIA_CODE, b"ctx", b"short", _factory_reserved, "m", {}),
+            (IMAGE_MEDIA_CODE, b"ctx", _factory_hash, _factory_reserved, "m" * (MAX_MESSAGE_LENGTH + 1), {}),
+            (IMAGE_MEDIA_CODE, b"ctx", _factory_hash, _factory_reserved, "m", {"bad": 1}),
         ):
             try:
                 create_v1_payload_record(*_bad_factory_args)
@@ -1697,527 +1673,9 @@ class TestStegoV1(unittest.TestCase):
             else:
                 raise AssertionError("invalid WAV output path was accepted")
 
-    def test_focused_checks_for_encrypted_v1_rsa_private_key_serialization_and_parsing(self):
-        # Focused checks for encrypted v1 RSA private-key serialization and parsing.
-        _encrypted_private_pem = serialize_encrypted_rsa_private_key(_signing_private, _private_password)
-        assert _encrypted_private_pem.startswith(_ENCRYPTED_PRIVATE_KEY_BEGIN)
-        assert _encrypted_private_pem.endswith(b"-----END ENCRYPTED PRIVATE KEY-----\n")
-        assert b"BEGIN PRIVATE KEY" not in _encrypted_private_pem
-        assert len(_encrypted_private_pem) <= MAX_ENCRYPTED_PRIVATE_KEY_PEM_LENGTH
-        _parsed_private = parse_encrypted_rsa_private_key(_encrypted_private_pem, _private_password)
-        assert isinstance(_parsed_private, rsa.RSAPrivateKey)
-        assert _parsed_private.public_key().public_numbers() == _signing_private.public_key().public_numbers()
-        _private_numbers_before = _signing_private.private_numbers()
-        assert parse_encrypted_rsa_private_key(_encrypted_private_pem, bytes(_private_password)).private_numbers() == _private_numbers_before
 
-        for _bad_password in (b"", bytearray(b"password"), memoryview(b"password"), "password", b"x" * (MAX_PRIVATE_KEY_PASSWORD_LENGTH + 1)):
-            for _key_operation in (serialize_encrypted_rsa_private_key, parse_encrypted_rsa_private_key):
-                try:
-                    if _key_operation is serialize_encrypted_rsa_private_key:
-                        _key_operation(_signing_private, _bad_password)
-                    else:
-                        _key_operation(_encrypted_private_pem, _bad_password)
-                except (TypeError, ValueError):
-                    pass
-                else:
-                    raise AssertionError("invalid private-key password was accepted")
 
-        for _bad_pem in (
-            b"",
-            b"not pem",
-            _encrypted_private_pem + b"trailing",
-            _encrypted_private_pem + b"\n",
-            bytearray(_encrypted_private_pem),
-            memoryview(_encrypted_private_pem),
-            b"x" * (MAX_ENCRYPTED_PRIVATE_KEY_PEM_LENGTH + 1),
-        ):
-            try:
-                parse_encrypted_rsa_private_key(_bad_pem, _private_password)
-            except (TypeError, ValueError):
-                pass
-            else:
-                raise AssertionError("malformed or non-bytes PEM was accepted")
-        try:
-            parse_encrypted_rsa_private_key(_encrypted_private_pem, b"wrong password")
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("wrong private-key password was accepted")
 
-        _unencrypted_pem = _signing_private.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-        try:
-            parse_encrypted_rsa_private_key(_unencrypted_pem, _private_password)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("unencrypted private key was accepted")
-
-        for _invalid_key in (_invalid_ec_private, _invalid_1024_private, _invalid_3_private):
-            _invalid_pem = _invalid_key.private_bytes(
-                serialization.Encoding.PEM,
-                serialization.PrivateFormat.PKCS8,
-                serialization.BestAvailableEncryption(_private_password),
-            )
-            try:
-                parse_encrypted_rsa_private_key(_invalid_pem, _private_password)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("unsupported encrypted private key was accepted")
-        for _invalid_key in (_signing_public, _invalid_ec_public, _invalid_1024_public, _invalid_3_private.public_key()):
-            try:
-                serialize_encrypted_rsa_private_key(_invalid_key, _private_password)
-            except (TypeError, ValueError):
-                pass
-            else:
-                raise AssertionError("unsupported private-key object was accepted")
-        for _bad_pem_type in (None, 123):
-            try:
-                parse_encrypted_rsa_private_key(_bad_pem_type, _private_password)
-            except TypeError:
-                pass
-            else:
-                raise AssertionError("invalid PEM type was accepted")
-        assert _signing_private.private_numbers() == _private_numbers_before
-
-    def test_focused_checks_for_immutable_trusted_key_records_and_canonical_trust_store_bytes(self):
-        # Focused checks for immutable trusted-key records and canonical trust-store bytes.
-        assert serialize_trust_store(()) == b"{\"keys\":[],\"version\":1}"
-        assert parse_trust_store(serialize_trust_store(())) == ()
-        assert MAX_TRUSTED_KEY_RECORDS == 64
-        assert MAX_TRUST_STORE_LENGTH == 128 * 1024
-        assert TRUST_STORE_VERSION == 1
-
-        assert _trusted_records == tuple(sorted((_trusted_a, _trusted_b), key=lambda record: record.public_key_der))
-        _store_bytes = serialize_trust_store((_trusted_a, _trusted_b))
-        _expected_store = json.dumps(
-            {
-                "keys": [
-                    {
-                        "label": record.label,
-                        "public_key_der": base64.b64encode(record.public_key_der).decode("ascii"),
-                    }
-                    for record in _trusted_records
-                ],
-                "version": 1,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
-        assert _store_bytes == _expected_store
-        assert parse_trust_store(_store_bytes) == _trusted_records
-        assert serialize_trust_store(tuple(reversed(_trusted_records))) == _store_bytes
-
-        assert lookup_trusted_key(_signing_public, _trusted_records) == _trusted_b
-        assert lookup_trusted_key(_unrelated_public, _trusted_records) is None
-        assert fingerprint_rsa_public_key(parse_rsa_public_key_der(_trusted_b.public_key_der)) == hashlib.sha256(_trusted_b.public_key_der).digest()
-
-        _added = add_trusted_key((), _signing_public, "signer")
-        assert _added == (TrustedKeyRecord(_trusted_b.public_key_der, "signer"),)
-        try:
-            add_trusted_key(_added, _signing_public, "replacement")
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("duplicate trusted key was replaced")
-        _added_source = _added
-        _added_result = add_trusted_key(_added_source, _unrelated_public, "other")
-        assert _added_source == _added
-        assert remove_trusted_key(_added_result, _unrelated_public) == _added
-        try:
-            remove_trusted_key(_added, _unrelated_public)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("missing trusted key was not reported")
-
-        assert normalize_trusted_key_records((TrustedKeyRecord(_v1_der, ""), TrustedKeyRecord(_trusted_b.public_key_der, "")))
-        for _bad_records in (None, "records", [None], ["record"], 123):
-            try:
-                normalize_trusted_key_records(_bad_records)
-            except (TypeError, ValueError):
-                pass
-            else:
-                raise AssertionError("invalid trust record iterable was accepted")
-
-        try:
-            normalize_trusted_key_records((_trusted_a, TrustedKeyRecord(_v1_der, "other")))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("duplicate trusted key was accepted")
-        try:
-            normalize_trusted_key_records((_trusted_a, TrustedKeyRecord(_trusted_b.public_key_der, "zeta")))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("duplicate nonempty label was accepted")
-
-        for _bad_label in (123, bytearray(b"label"), "bad\nlabel", "x" * 129):
-            try:
-                TrustedKeyRecord(_v1_der, _bad_label)
-            except (TypeError, ValueError):
-                pass
-            else:
-                raise AssertionError("invalid trusted-key label was accepted")
-        try:
-            TrustedKeyRecord(_v1_der + b"x", "label")
-        except (TypeError, ValueError):
-            pass
-        else:
-            raise AssertionError("noncanonical trusted-key DER was accepted")
-
-        for _invalid_key in (_signing_private, _invalid_ec_public, _rsa_1024_public_key, _rsa_exponent_3_public_key):
-            try:
-                lookup_trusted_key(_invalid_key, ())
-            except (TypeError, ValueError):
-                pass
-            else:
-                raise AssertionError("unsupported lookup key was accepted")
-
-        try:
-            normalize_trusted_key_records(tuple(TrustedKeyRecord(_v1_der, "") for _ in range(MAX_TRUSTED_KEY_RECORDS + 1)))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("trust record limit was not enforced")
-
-        _store_document = json.loads(_store_bytes.decode("utf-8"))
-        # Builds canonical trust-store test bytes.
-        def _store_document_bytes(document, sort_keys=True, separators=(",", ":")):
-            return json.dumps(document, sort_keys=sort_keys, separators=separators, ensure_ascii=False, allow_nan=False).encode("utf-8")
-
-        _duplicate_store = b'{"keys":[],"keys":[],"version":1}'
-        for _bad_store in (
-            b"",
-            b"[]",
-            b"{\xff",
-            b'{"keys":[],"version":1,"extra":0}',
-            b'{"keys":[]}',
-            b'{"keys":[],"version":true}',
-            _duplicate_store,
-            _store_bytes.replace(b'"version":1', b'"version": 1', 1),
-        ):
-            try:
-                parse_trust_store(_bad_store)
-            except (TypeError, ValueError):
-                pass
-            else:
-                raise AssertionError("malformed or noncanonical trust store was accepted")
-
-        _noncanonical_order = dict(reversed(list(_store_document.items())))
-        try:
-            parse_trust_store(_store_document_bytes(_noncanonical_order, sort_keys=False))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("noncanonical trust-store key order was accepted")
-
-        for _field, _value in (("public_key_der", "AP8"), ("public_key_der", "!!!!")):
-            _bad = dict(_store_document)
-            _bad["keys"] = [dict(_store_document["keys"][0], **{_field: _value})]
-            try:
-                parse_trust_store(_store_document_bytes(_bad))
-            except (TypeError, ValueError):
-                pass
-            else:
-                raise AssertionError("malformed trust-store Base64 was accepted")
-
-        _bad_der_document = dict(_store_document)
-        _bad_der_document["keys"] = [dict(_store_document["keys"][0], public_key_der=base64.b64encode(_v1_der + b"x").decode("ascii"))]
-        try:
-            parse_trust_store(_store_document_bytes(_bad_der_document))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("noncanonical trust-store DER was accepted")
-
-        _bad_key_fields = dict(_store_document)
-        _bad_key_fields["keys"] = [dict(_store_document["keys"][0], extra=1)]
-        try:
-            parse_trust_store(_store_document_bytes(_bad_key_fields))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("extra trusted-key field was accepted")
-
-        for _invalid_key in (_invalid_ec_public, _rsa_1024_public_key, _rsa_exponent_3_public_key):
-            _invalid_der = _invalid_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-            try:
-                parse_trust_store(_store_document_bytes({"keys": [{"label": "bad", "public_key_der": base64.b64encode(_invalid_der).decode("ascii")}], "version": 1}))
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("unsupported trusted key was accepted")
-
-        _original_store_limit = MAX_TRUST_STORE_LENGTH
-        try:
-            stego_v1.MAX_TRUST_STORE_LENGTH = len(_store_bytes) - 1
-            try:
-                serialize_trust_store(_trusted_records)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("trust-store serialized size limit was not enforced")
-        finally:
-            stego_v1.MAX_TRUST_STORE_LENGTH = _original_store_limit
-
-    def test_focused_checks_for_encrypted_private_key_path_persistence(self):
-        # Focused checks for encrypted private-key path persistence.
-
-        with TemporaryDirectory() as _key_directory:
-            _key_path = Path(_key_directory) / "signing-key.pem"
-            assert save_new_encrypted_rsa_private_key_to_path(_signing_private, _private_password, _key_path) is None
-            _saved_pem = _key_path.read_bytes()
-            assert _saved_pem.startswith(_ENCRYPTED_PRIVATE_KEY_BEGIN)
-            assert parse_encrypted_rsa_private_key(_saved_pem, _private_password).public_key().public_numbers() == _signing_public.public_numbers()
-            _loaded_private = load_encrypted_rsa_private_key_from_path(_key_path, _private_password)
-            assert _loaded_private.public_key().public_numbers() == _signing_public.public_numbers()
-            try:
-                load_encrypted_rsa_private_key_from_path(_key_path, b"wrong password")
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("wrong path-load password was accepted")
-            if os.name == "posix":
-                assert S_IMODE(_key_path.stat().st_mode) == (S_IRUSR | S_IWUSR)
-
-            _before_existing = _key_path.read_bytes()
-            try:
-                save_new_encrypted_rsa_private_key_to_path(_signing_private, b"another password", _key_path)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("existing private-key target was overwritten")
-            assert _key_path.read_bytes() == _before_existing
-
-            _missing_source = Path(_key_directory) / "missing.pem"
-            _directory_source = Path(_key_directory) / "source-directory"
-            _directory_source.mkdir()
-            for _bad_source in (_missing_source, _directory_source):
-                try:
-                    load_encrypted_rsa_private_key_from_path(_bad_source, _private_password)
-                except ValueError:
-                    pass
-                else:
-                    raise AssertionError("invalid private-key source was accepted")
-
-            _missing_parent = Path(_key_directory) / "missing" / "new.pem"
-            try:
-                save_new_encrypted_rsa_private_key_to_path(_signing_private, _private_password, _missing_parent)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("missing private-key parent was accepted")
-
-            _directory_target = Path(_key_directory) / "target-directory"
-            _directory_target.mkdir()
-            try:
-                save_new_encrypted_rsa_private_key_to_path(_signing_private, _private_password, _directory_target)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("directory private-key target was accepted")
-
-            _write_failure_path = Path(_key_directory) / "write-failure.pem"
-            _original_fdopen = os.fdopen
-            # Simulates a private-key file-open failure.
-            def _unexpected_fdopen(*_args, **_kwargs):
-                raise OSError("simulated close/write failure")
-            os.fdopen = _unexpected_fdopen
-            try:
-                try:
-                    save_new_encrypted_rsa_private_key_to_path(_signing_private, _private_password, _write_failure_path)
-                except ValueError:
-                    pass
-                else:
-                    raise AssertionError("simulated write failure was accepted")
-            finally:
-                os.fdopen = _original_fdopen
-            assert not _write_failure_path.exists()
-
-            _oversized_path = Path(_key_directory) / "oversized.pem"
-            _oversized_path.write_bytes(b"x" * (MAX_ENCRYPTED_PRIVATE_KEY_PEM_LENGTH + 1))
-            _original_parser = parse_encrypted_rsa_private_key
-            # Detects parsing of an oversized private-key file.
-            def _unexpected_parse(*_args, **_kwargs):
-                raise AssertionError("oversized PEM reached the parser")
-            stego_v1.parse_encrypted_rsa_private_key = _unexpected_parse
-            try:
-                try:
-                    load_encrypted_rsa_private_key_from_path(_oversized_path, _private_password)
-                except ValueError:
-                    pass
-                else:
-                    raise AssertionError("oversized private-key PEM was accepted")
-            finally:
-                stego_v1.parse_encrypted_rsa_private_key = _original_parser
-
-        for _bad_path in (None, 123, ["key.pem"]):
-            try:
-                load_encrypted_rsa_private_key_from_path(_bad_path, _private_password)
-            except TypeError:
-                pass
-            else:
-                raise AssertionError("invalid private-key source path was accepted")
-            try:
-                save_new_encrypted_rsa_private_key_to_path(_signing_private, _private_password, _bad_path)
-            except TypeError:
-                pass
-            else:
-                raise AssertionError("invalid private-key target path was accepted")
-        for _bad_password in (b"", bytearray(b"password"), "password"):
-            try:
-                load_encrypted_rsa_private_key_from_path("missing.pem", _bad_password)
-            except (TypeError, ValueError):
-                pass
-            else:
-                raise AssertionError("invalid path-load password was accepted")
-        try:
-            save_new_encrypted_rsa_private_key_to_path(_signing_public, _private_password, "unused.pem")
-        except (TypeError, ValueError):
-            pass
-        else:
-            raise AssertionError("invalid private key was accepted for persistence")
-
-    def test_focused_checks_for_bounded_trust_store_loading_and_atomic_saving(self):
-        # Focused checks for bounded trust-store loading and atomic saving.
-        with TemporaryDirectory() as _trust_directory:
-            _trust_directory = Path(_trust_directory)
-            _empty_store_path = _trust_directory / "empty.json"
-            assert save_trust_store_to_path((), _empty_store_path) is None
-            assert _empty_store_path.read_bytes() == b"{\"keys\":[],\"version\":1}"
-            assert load_trust_store_from_path(_empty_store_path) == ()
-
-            _store_path = _trust_directory / "trusted.json"
-            _source_records = tuple(_trusted_records)
-            save_trust_store_to_path(_source_records, _store_path)
-            _saved_store_bytes = _store_path.read_bytes()
-            assert _saved_store_bytes == serialize_trust_store(_source_records)
-            assert load_trust_store_from_path(_store_path) == _source_records
-            assert _source_records == tuple(_trusted_records)
-            if os.name == "posix":
-                assert S_IMODE(_store_path.stat().st_mode) == (S_IRUSR | S_IWUSR)
-
-            _replacement_records = (_trusted_b,)
-            save_trust_store_to_path(_replacement_records, _store_path)
-            assert load_trust_store_from_path(_store_path) == _replacement_records
-
-            _missing_source = _trust_directory / "missing.json"
-            _directory_source = _trust_directory / "source-directory"
-            _directory_source.mkdir()
-            for _bad_source in (_missing_source, _directory_source):
-                try:
-                    load_trust_store_from_path(_bad_source)
-                except ValueError:
-                    pass
-                else:
-                    raise AssertionError("invalid trust-store source was accepted")
-
-            _missing_parent = _trust_directory / "missing" / "store.json"
-            try:
-                save_trust_store_to_path(_source_records, _missing_parent)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("missing trust-store parent was accepted")
-
-            _directory_target = _trust_directory / "directory-target"
-            _directory_target.mkdir()
-            try:
-                save_trust_store_to_path(_source_records, _directory_target)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("directory trust-store target was accepted")
-
-            _malformed_path = _trust_directory / "malformed.json"
-            _malformed_path.write_bytes(b"not json")
-            try:
-                load_trust_store_from_path(_malformed_path)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("malformed trust store was accepted")
-
-            _oversized_path = _trust_directory / "oversized.json"
-            _oversized_path.write_bytes(b"x" * (MAX_TRUST_STORE_LENGTH + 1))
-            _original_parser = parse_trust_store
-            # Detects parsing of an oversized trust store.
-            def _unexpected_trust_parser(*_args, **_kwargs):
-                raise AssertionError("oversized trust store reached parser")
-            stego_v1.parse_trust_store = _unexpected_trust_parser
-            try:
-                try:
-                    load_trust_store_from_path(_oversized_path)
-                except ValueError:
-                    pass
-                else:
-                    raise AssertionError("oversized trust store was accepted")
-            finally:
-                stego_v1.parse_trust_store = _original_parser
-
-            _existing_before_failure = _store_path.read_bytes()
-            _original_fdopen = os.fdopen
-            # Simulates a trust-store write failure.
-            def _unexpected_trust_fdopen(*_args, **_kwargs):
-                raise OSError("simulated trust-store write failure")
-            os.fdopen = _unexpected_trust_fdopen
-            try:
-                try:
-                    save_trust_store_to_path(_source_records, _store_path)
-                except ValueError:
-                    pass
-                else:
-                    raise AssertionError("simulated trust-store write failure was accepted")
-            finally:
-                os.fdopen = _original_fdopen
-            assert _store_path.read_bytes() == _existing_before_failure
-            assert not list(_trust_directory.glob(".trust-store-*.tmp"))
-
-            _original_replace = os.replace
-            # Simulates a trust-store replacement failure.
-            def _unexpected_trust_replace(*_args, **_kwargs):
-                raise OSError("simulated trust-store replace failure")
-            os.replace = _unexpected_trust_replace
-            try:
-                try:
-                    save_trust_store_to_path(_source_records, _store_path)
-                except ValueError:
-                    pass
-                else:
-                    raise AssertionError("simulated trust-store replace failure was accepted")
-            finally:
-                os.replace = _original_replace
-            assert _store_path.read_bytes() == _existing_before_failure
-            assert not list(_trust_directory.glob(".trust-store-*.tmp"))
-
-        for _bad_path in (None, 123, ["store.json"]):
-            try:
-                load_trust_store_from_path(_bad_path)
-            except TypeError:
-                pass
-            else:
-                raise AssertionError("invalid trust-store source path was accepted")
-            try:
-                save_trust_store_to_path((), _bad_path)
-            except TypeError:
-                pass
-            else:
-                raise AssertionError("invalid trust-store target path was accepted")
-        for _bad_records in (None, [None], "records"):
-            try:
-                save_trust_store_to_path(_bad_records, "store.json")
-            except (TypeError, ValueError):
-                pass
-            else:
-                raise AssertionError("invalid trust records were accepted")
 
     def test_focused_checks_for_media_neutral_v1_carrier_encoding_orchestration(self):
         # Focused checks for media-neutral v1 carrier encoding orchestration.
@@ -2258,7 +1716,6 @@ class TestStegoV1(unittest.TestCase):
                 _provisional = _captured_provisional[0]
                 assert _encoded_payload.media_type == _provisional.media_type
                 assert _encoded_payload.media_context == _provisional.media_context
-                assert _encoded_payload.public_key_der == _provisional.public_key_der
                 assert _encoded_payload.media_id == _provisional.media_id
                 assert _encoded_payload.timestamp == _provisional.timestamp
                 assert _encoded_payload.nonce == _provisional.nonce
@@ -2381,7 +1838,7 @@ class TestStegoV1(unittest.TestCase):
                 )
                 _source_copy = _encoded.copy()
                 _returned_payload, _returned_key = verify_resolved_v1_candidate(
-                    _encoded, _media_type, _media_context, _resolved
+                    _encoded, _media_type, _media_context, _signing_public, _resolved
                 )
                 assert _returned_payload == _payload
                 assert _returned_key.public_numbers() == _signing_public.public_numbers()
@@ -2396,7 +1853,7 @@ class TestStegoV1(unittest.TestCase):
         ):
             try:
                 verify_resolved_v1_candidate(
-                    _valid_encoded, _wrong_media_type, _wrong_context, _valid_resolved
+                    _valid_encoded, _wrong_media_type, _wrong_context, _signing_public, _valid_resolved
                 )
             except ValueError:
                 pass
@@ -2409,7 +1866,7 @@ class TestStegoV1(unittest.TestCase):
         _region1_corrupt[_region1_index] ^= np.uint8(1)
         try:
             verify_resolved_v1_candidate(
-                _region1_corrupt, IMAGE_MEDIA_CODE, b"opaque image context", _valid_resolved
+                _region1_corrupt, IMAGE_MEDIA_CODE, b"opaque image context", _signing_public, _valid_resolved
             )
         except ValueError as _error:
             assert "Region 1" in str(_error) and "hash" in str(_error)
@@ -2422,7 +1879,7 @@ class TestStegoV1(unittest.TestCase):
         _region2_corrupt[_region2_index] ^= np.uint8(0x80 if _valid_layout.lsb_count < 8 else 1)
         try:
             verify_resolved_v1_candidate(
-                _region2_corrupt, IMAGE_MEDIA_CODE, b"opaque image context", _valid_resolved
+                _region2_corrupt, IMAGE_MEDIA_CODE, b"opaque image context", _signing_public, _valid_resolved
             )
         except ValueError as _error:
             assert "signature" in str(_error).lower() or "candidate" in str(_error).lower()
@@ -2437,6 +1894,7 @@ class TestStegoV1(unittest.TestCase):
                 _region3_upper_corrupt,
                 IMAGE_MEDIA_CODE,
                 b"opaque image context",
+                _signing_public,
                 _verify_outputs[(IMAGE_MEDIA_CODE, 3)][3],
             )
         except ValueError as _error:
@@ -2449,7 +1907,7 @@ class TestStegoV1(unittest.TestCase):
         _signature_corrupt[_valid_layout.region3_range[0]] ^= np.uint8(1)
         try:
             verify_resolved_v1_candidate(
-                _signature_corrupt, IMAGE_MEDIA_CODE, b"opaque image context", _valid_resolved
+                _signature_corrupt, IMAGE_MEDIA_CODE, b"opaque image context", _signing_public, _valid_resolved
             )
         except ValueError as _error:
             assert "signature" in str(_error).lower()
@@ -2464,6 +1922,7 @@ class TestStegoV1(unittest.TestCase):
                 _padding_corrupt,
                 IMAGE_MEDIA_CODE,
                 b"opaque image context",
+                _signing_public,
                 _verify_outputs[(IMAGE_MEDIA_CODE, 3)][3],
             )
         except ValueError as _error:
@@ -2488,6 +1947,7 @@ class TestStegoV1(unittest.TestCase):
                     _valid_encoded,
                     IMAGE_MEDIA_CODE,
                     b"opaque image context",
+                    _signing_public,
                     _bad_resolved,
                 )
             except (TypeError, ValueError):
@@ -2510,6 +1970,7 @@ class TestStegoV1(unittest.TestCase):
                 _stale_encoded,
                 IMAGE_MEDIA_CODE,
                 b"opaque image context",
+                _signing_public,
                 _valid_resolved,
             )
         except ValueError:
@@ -2524,15 +1985,93 @@ class TestStegoV1(unittest.TestCase):
         ):
             try:
                 verify_resolved_v1_candidate(
-                    _bad_carrier, IMAGE_MEDIA_CODE, b"opaque image context", _valid_resolved
+                    _bad_carrier, IMAGE_MEDIA_CODE, b"opaque image context", _signing_public, _valid_resolved
                 )
             except (TypeError, ValueError):
                 pass
             else:
                 raise AssertionError("invalid verification carrier was accepted")
 
-    def test_focused_checks_for_bounded_candidate_scanning_verification_and_trust_verdicts(self):
-        # Focused checks for bounded candidate scanning, verification, and trust verdicts.
+    def test_rsa_pem_helpers(self):
+        with TemporaryDirectory() as _pem_directory:
+            _pem_directory = Path(_pem_directory)
+            _private_plain_path = _pem_directory / "private-plain.pem"
+            _private_encrypted_path = _pem_directory / "private-encrypted.pem"
+            _public_path = _pem_directory / "public.pem"
+            _password = b"assignment password"
+
+            save_rsa_private_key_pem(_signing_private, _private_plain_path)
+            _plain_loaded = load_rsa_private_key_pem(_private_plain_path)
+            assert _plain_loaded.public_key().public_numbers() == _signing_public.public_numbers()
+
+            save_rsa_private_key_pem(_signing_private, _private_encrypted_path, _password)
+            _encrypted_loaded = load_rsa_private_key_pem(_private_encrypted_path, _password)
+            assert _encrypted_loaded.public_key().public_numbers() == _signing_public.public_numbers()
+
+            save_rsa_public_key_pem(_signing_public, _public_path)
+            _public_loaded = load_rsa_public_key_pem(_public_path)
+            assert _public_loaded.public_numbers() == _signing_public.public_numbers()
+
+            _ec_public_path = _pem_directory / "ec-public.pem"
+            _ec_public_path.write_bytes(
+                _non_rsa_public_key.public_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+            )
+            try:
+                load_rsa_public_key_pem(_ec_public_path)
+            except (TypeError, ValueError):
+                pass
+            else:
+                raise AssertionError("non-RSA public PEM was accepted")
+
+            _small_public_path = _pem_directory / "small-public.pem"
+            _small_public_path.write_bytes(
+                _rsa_1024_public_key.public_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+            )
+            try:
+                load_rsa_public_key_pem(_small_public_path)
+            except (TypeError, ValueError):
+                pass
+            else:
+                raise AssertionError("wrong-size public PEM was accepted")
+
+            _ec_private_path = _pem_directory / "ec-private.pem"
+            _ec_private_path.write_bytes(
+                _invalid_ec_private.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+            try:
+                load_rsa_private_key_pem(_ec_private_path)
+            except (TypeError, ValueError):
+                pass
+            else:
+                raise AssertionError("non-RSA private PEM was accepted")
+
+            _small_private_path = _pem_directory / "small-private.pem"
+            _small_private_path.write_bytes(
+                _invalid_1024_private.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+            try:
+                load_rsa_private_key_pem(_small_private_path)
+            except (TypeError, ValueError):
+                pass
+            else:
+                raise AssertionError("wrong-size private PEM was accepted")
+
+    def test_focused_checks_for_bounded_candidate_scanning_verification_and_verdicts(self):
+        # Focused checks for bounded candidate scanning, verification, and verdicts.
         _decode_carrier = np.arange(10000, dtype=np.uint8)
         _decode_carrier_source = _decode_carrier.copy()
         _decode_contexts = (
@@ -2555,37 +2094,27 @@ class TestStegoV1(unittest.TestCase):
                 _candidate = StartMagicCandidate(13, _lsb_count)
                 _resolved = resolve_region2_candidate(_encoded, _candidate)
                 _decode_outputs[(_media_type, _lsb_count)] = (_encoded, _layout, _payload, _resolved)
-                _unknown_result = decode_v1_carrier(_encoded, _media_type, _media_context)
-                assert isinstance(_unknown_result, V1VerificationResult)
-                assert _unknown_result.valid
-                assert _unknown_result.verdict == "Signature Valid — Key Not Trusted"
-                assert _unknown_result.payload == _payload
-                assert _unknown_result.key_fingerprint == display_rsa_public_key_fingerprint(_signing_public)
-                assert _unknown_result.trusted_label is None
-                assert _unknown_result.candidate == _candidate
-                assert "unknown" in _unknown_result.detail.lower()
-                _trusted_result = decode_v1_carrier(
-                    _encoded,
-                    _media_type,
-                    _media_context,
-                    (TrustedKeyRecord(serialize_rsa_public_key(_signing_public), "local signer"),),
+                _result = decode_v1_carrier(
+                    _encoded, _media_type, _media_context, _signing_public
                 )
-                assert _trusted_result.valid
-                assert _trusted_result.verdict == "Authentic"
-                assert _trusted_result.detail == "Signed by trusted key"
-                assert _trusted_result.payload == _payload
-                assert _trusted_result.trusted_label == "local signer"
-                assert _trusted_result.key_fingerprint == _unknown_result.key_fingerprint
+                assert isinstance(_result, V1VerificationResult)
+                assert _result.valid
+                assert _result.verdict == "Authentic"
+                assert _result.payload == _payload
+                assert _result.key_fingerprint == display_rsa_public_key_fingerprint(_signing_public)
+                assert _result.candidate == _candidate
+                assert _result.detail == "Cryptographic checks passed under the supplied public key."
                 assert np.array_equal(_decode_carrier, _decode_carrier_source)
         # No marker and wrong adapter identity do not produce authenticated output.
         _no_marker = np.zeros(10000, dtype=np.uint8)
-        _missing_result = decode_v1_carrier(_no_marker, IMAGE_MEDIA_CODE, b"ctx")
+        _missing_result = decode_v1_carrier(_no_marker, IMAGE_MEDIA_CODE, b"ctx", _signing_public)
         assert not _missing_result.valid and _missing_result.verdict == "Payload Missing"
         assert _missing_result.payload is None and _missing_result.key_fingerprint is None
         _wrong_identity = decode_v1_carrier(
             _decode_outputs[(IMAGE_MEDIA_CODE, 3)][0],
             AUDIO_MEDIA_CODE,
             b"wrong context",
+            _signing_public,
         )
         assert not _wrong_identity.valid
         assert _wrong_identity.payload is None and _wrong_identity.candidate is None
@@ -2594,23 +2123,23 @@ class TestStegoV1(unittest.TestCase):
         _image_encoded, _image_layout, _image_payload, _image_resolved = _decode_outputs[(IMAGE_MEDIA_CODE, 3)]
         _region1_tampered = _image_encoded.copy()
         _region1_tampered[_image_layout.region1_ranges[0][0]] ^= np.uint8(1)
-        _region1_result = decode_v1_carrier(_region1_tampered, IMAGE_MEDIA_CODE, b"decode image context")
+        _region1_result = decode_v1_carrier(_region1_tampered, IMAGE_MEDIA_CODE, b"decode image context", _signing_public)
         assert not _region1_result.valid and _region1_result.verdict == "Tampered"
         assert "Region 1" in _region1_result.detail
         _region3_tampered = _image_encoded.copy()
         _region3_tampered[_image_layout.region3_range[0]] ^= np.uint8(0x80)
-        _region3_result = decode_v1_carrier(_region3_tampered, IMAGE_MEDIA_CODE, b"decode image context")
+        _region3_result = decode_v1_carrier(_region3_tampered, IMAGE_MEDIA_CODE, b"decode image context", _signing_public)
         assert not _region3_result.valid and _region3_result.verdict == "Tampered"
         assert "Region 3" in _region3_result.detail
 
         _signature_tampered = _image_encoded.copy()
         _signature_tampered[_image_layout.region3_range[0]] ^= np.uint8(1)
-        _signature_result = decode_v1_carrier(_signature_tampered, IMAGE_MEDIA_CODE, b"decode image context")
+        _signature_result = decode_v1_carrier(_signature_tampered, IMAGE_MEDIA_CODE, b"decode image context", _signing_public)
         assert not _signature_result.valid and _signature_result.verdict == "Signature Invalid"
         assert "signature" in _signature_result.detail.lower()
         _padding_tampered = _image_encoded.copy()
         _padding_tampered[_image_layout.region3_range[1] - 1] ^= np.uint8(1)
-        _padding_result = decode_v1_carrier(_padding_tampered, IMAGE_MEDIA_CODE, b"decode image context")
+        _padding_result = decode_v1_carrier(_padding_tampered, IMAGE_MEDIA_CODE, b"decode image context", _signing_public)
         assert not _padding_result.valid and _padding_result.verdict == "Tampered"
         assert "padding" in _padding_result.detail.lower()
 
@@ -2621,7 +2150,7 @@ class TestStegoV1(unittest.TestCase):
             return (StartMagicCandidate(0, 1), _image_resolved.candidate)
         stego_v1.scan_start_magic = _fake_then_valid_scanner
         try:
-            _fake_result = decode_v1_carrier(_image_encoded, IMAGE_MEDIA_CODE, b"decode image context")
+            _fake_result = decode_v1_carrier(_image_encoded, IMAGE_MEDIA_CODE, b"decode image context", _signing_public)
         finally:
             stego_v1.scan_start_magic = _original_scanner
         assert _fake_result.valid and _fake_result.payload == _image_payload
@@ -2632,7 +2161,7 @@ class TestStegoV1(unittest.TestCase):
             return (_image_resolved.candidate, _image_resolved.candidate)
         stego_v1.scan_start_magic = _duplicate_valid_scanner
         try:
-            _ambiguous_result = decode_v1_carrier(_image_encoded, IMAGE_MEDIA_CODE, b"decode image context")
+            _ambiguous_result = decode_v1_carrier(_image_encoded, IMAGE_MEDIA_CODE, b"decode image context", _signing_public)
         finally:
             stego_v1.scan_start_magic = _original_scanner
         assert not _ambiguous_result.valid and _ambiguous_result.verdict == "Cannot Verify"
@@ -2645,26 +2174,17 @@ class TestStegoV1(unittest.TestCase):
             raise ValueError("candidate resource limit")
         stego_v1.scan_start_magic = _failing_scanner
         try:
-            _scanner_result = decode_v1_carrier(_image_encoded, IMAGE_MEDIA_CODE, b"decode image context")
+            _scanner_result = decode_v1_carrier(_image_encoded, IMAGE_MEDIA_CODE, b"decode image context", _signing_public)
         finally:
             stego_v1.scan_start_magic = _original_scanner
         assert not _scanner_result.valid and _scanner_result.verdict == "Cannot Verify"
         assert _scanner_result.payload is None and "scanner" in _scanner_result.detail.lower()
 
-        # Malformed trust records are rejected before candidate processing.
-        for _bad_trust_records in (None, [None], "records"):
-            try:
-                decode_v1_carrier(_image_encoded, IMAGE_MEDIA_CODE, b"decode image context", _bad_trust_records)
-            except (TypeError, ValueError):
-                pass
-            else:
-                raise AssertionError("malformed trust records were accepted")
-
         for _bad_input in (
-            ([0, 1], IMAGE_MEDIA_CODE, b"ctx"),
-            (np.array([0, 1], dtype=np.int16), IMAGE_MEDIA_CODE, b"ctx"),
-            (_image_encoded, 0, b"ctx"),
-            (_image_encoded, IMAGE_MEDIA_CODE, bytearray(b"ctx")),
+            ([0, 1], IMAGE_MEDIA_CODE, b"ctx", _signing_public),
+            (np.array([0, 1], dtype=np.int16), IMAGE_MEDIA_CODE, b"ctx", _signing_public),
+            (_image_encoded, 0, b"ctx", _signing_public),
+            (_image_encoded, IMAGE_MEDIA_CODE, bytearray(b"ctx"), _signing_public),
         ):
             try:
                 decode_v1_carrier(*_bad_input)
@@ -2678,9 +2198,6 @@ class TestStegoV1(unittest.TestCase):
 
         _wrapper_message = "wrapper round trip"
         _wrapper_metadata = {"kind": "end-to-end", "scope": "adapter"}
-        _wrapper_trusted = (
-            TrustedKeyRecord(serialize_rsa_public_key(_signing_public), "wrapper signer"),
-        )
         with TemporaryDirectory() as _wrapper_directory_name:
             _wrapper_directory = Path(_wrapper_directory_name)
             _png_input = _wrapper_directory / "input.png"
@@ -2709,15 +2226,11 @@ class TestStegoV1(unittest.TestCase):
                     _wrapper_message,
                     _wrapper_metadata,
                 )
-                _png_unknown = verify_png_v1(_png_output)
-                assert _png_unknown.valid
-                assert _png_unknown.verdict == "Signature Valid — Key Not Trusted"
-                assert _png_unknown.payload.message == _wrapper_message
-                assert _png_unknown.payload.metadata == tuple(sorted(_wrapper_metadata.items()))
-                _png_trusted_result = verify_png_v1(_png_output, _wrapper_trusted)
-                assert _png_trusted_result.valid
-                assert _png_trusted_result.verdict == "Authentic"
-                assert _png_trusted_result.trusted_label == "wrapper signer"
+                _png_result = verify_png_v1(_png_output, _signing_public)
+                assert _png_result.valid
+                assert _png_result.verdict == "Authentic"
+                assert _png_result.payload.message == _wrapper_message
+                assert _png_result.payload.metadata == tuple(sorted(_wrapper_metadata.items()))
                 _png_saved_array = load_png_from_path(_png_output)
                 _png_source_carrier = rgb_array_to_carrier(_png_source_array)
                 _png_saved_carrier = rgb_array_to_carrier(_png_saved_array)
@@ -2741,15 +2254,11 @@ class TestStegoV1(unittest.TestCase):
                     _wrapper_message,
                     _wrapper_metadata,
                 )
-                _wav_unknown = verify_wav_v1(_wav_output)
-                assert _wav_unknown.valid
-                assert _wav_unknown.verdict == "Signature Valid — Key Not Trusted"
-                assert _wav_unknown.payload.message == _wrapper_message
-                assert _wav_unknown.payload.metadata == tuple(sorted(_wrapper_metadata.items()))
-                _wav_trusted_result = verify_wav_v1(_wav_output, _wrapper_trusted)
-                assert _wav_trusted_result.valid
-                assert _wav_trusted_result.verdict == "Authentic"
-                assert _wav_trusted_result.trusted_label == "wrapper signer"
+                _wav_result = verify_wav_v1(_wav_output, _signing_public)
+                assert _wav_result.valid
+                assert _wav_result.verdict == "Authentic"
+                assert _wav_result.payload.message == _wrapper_message
+                assert _wav_result.payload.metadata == tuple(sorted(_wrapper_metadata.items()))
                 _wav_saved = load_pcm_wav_from_path(_wav_output)
                 _wav_source_carrier = wav_frame_bytes_to_carrier(_wav_source_bytes)
                 _wav_saved_carrier = wav_frame_bytes_to_carrier(_wav_saved.frame_bytes)
@@ -2763,6 +2272,9 @@ class TestStegoV1(unittest.TestCase):
                 )
                 assert _wav_input.read_bytes() == _wav_source_file_bytes
 
+            _unrelated_result = verify_png_v1(_png_output, _unrelated_public)
+            assert not _unrelated_result.valid and _unrelated_result.verdict == "Signature Invalid"
+
             # Region 1 remains outside the output payload and is detected after saving.
             _png_tampered_array = load_png_from_path(_png_output)
             _png_tampered_carrier = rgb_array_to_carrier(_png_tampered_array)
@@ -2770,7 +2282,7 @@ class TestStegoV1(unittest.TestCase):
             _png_tampered_array = carrier_to_rgb_array(_png_tampered_carrier, _png_tampered_array.shape)
             _png_tampered_path = _wrapper_directory / "tampered.png"
             save_rgb_png_to_path(_png_tampered_array, _png_tampered_path)
-            _png_tampered_result = verify_png_v1(_png_tampered_path)
+            _png_tampered_result = verify_png_v1(_png_tampered_path, _signing_public)
             assert not _png_tampered_result.valid and _png_tampered_result.verdict == "Tampered"
             assert "Region 1" in _png_tampered_result.detail
 
@@ -2779,7 +2291,7 @@ class TestStegoV1(unittest.TestCase):
             _wav_tampered_carrier[0] ^= np.uint8(1)
             _wav_tampered_path = _wrapper_directory / "tampered.wav"
             save_pcm_wav_to_path(wav_data_with_carrier(_wav_tampered, _wav_tampered_carrier), _wav_tampered_path)
-            _wav_tampered_result = verify_wav_v1(_wav_tampered_path)
+            _wav_tampered_result = verify_wav_v1(_wav_tampered_path, _signing_public)
             assert not _wav_tampered_result.valid and _wav_tampered_result.verdict == "Tampered"
             assert "Region 1" in _wav_tampered_result.detail
 
@@ -2819,19 +2331,19 @@ class TestStegoV1(unittest.TestCase):
             _invalid_file.write_bytes(b"not a media file")
             for _verify_wrapper in (verify_png_v1, verify_wav_v1):
                 try:
-                    _verify_wrapper(_invalid_file)
+                    _verify_wrapper(_invalid_file, _signing_public)
                 except ValueError:
                     pass
                 else:
                     raise AssertionError("invalid adapter input was accepted")
             try:
-                verify_png_v1(_wav_input)
+                verify_png_v1(_wav_input, _signing_public)
             except ValueError:
                 pass
             else:
                 raise AssertionError("WAV input was accepted by PNG wrapper")
             try:
-                verify_wav_v1(_png_input)
+                verify_wav_v1(_png_input, _signing_public)
             except ValueError:
                 pass
             else:

@@ -1,5 +1,7 @@
 # Hashing, Integrity, and Key Trust Design
 
+**Status — superseded in part:** The trust and TOFU workflow, embedded public key, and encrypted-key persistence sections no longer describe the implementation. A full rewrite is pending.
+
 Revision: 11 September 2026
 
 ## Purpose and scope

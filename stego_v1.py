@@ -5,7 +5,6 @@ import os
 import re
 import secrets
 import struct
-import tempfile
 import unicodedata
 import wave
 from collections.abc import Mapping
@@ -13,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from os import PathLike, fspath
 from PIL import Image
-from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 import numpy as np
@@ -556,7 +555,7 @@ MAX_MAGIC_CANDIDATES = 64
 
 
 @dataclass(frozen=True)
-# Represents one untrusted magic-scan candidate.
+# Represents one magic-scan candidate.
 class StartMagicCandidate:
     start_unit: int
     lsb_count: int
@@ -647,7 +646,7 @@ def scan_start_magic(
 
 RSA_PUBLIC_EXPONENT = 65537
 RSA_PUBLIC_KEY_SIZE = 2048
-MAX_PUBLIC_KEY_DER_LENGTH = 512
+MAX_PUBLIC_KEY_ENCODING_LENGTH = 512
 FINGERPRINT_DISPLAY_PREFIX = "SHA256:"
 
 
@@ -671,16 +670,16 @@ def serialize_rsa_public_key(public_key):
     )
     if not isinstance(encoded, bytes):
         raise TypeError("canonical public-key encoding must be bytes")
-    if len(encoded) > MAX_PUBLIC_KEY_DER_LENGTH:
+    if len(encoded) > MAX_PUBLIC_KEY_ENCODING_LENGTH:
         raise ValueError("canonical public-key encoding exceeds the limit")
     return bytes(encoded)
 
 
 # Parses canonical RSA public-key DER.
-def parse_rsa_public_key_der(encoded):
+def parse_rsa_public_key(encoded):
     if not isinstance(encoded, bytes):
         raise TypeError("encoded public key must be bytes")
-    if len(encoded) == 0 or len(encoded) > MAX_PUBLIC_KEY_DER_LENGTH:
+    if len(encoded) == 0 or len(encoded) > MAX_PUBLIC_KEY_ENCODING_LENGTH:
         raise ValueError("encoded public key has an invalid length")
     try:
         public_key = serialization.load_der_public_key(encoded)
@@ -933,7 +932,6 @@ def encode_png_media_context(image_shape, carrier_unit_count):
 V1_PAYLOAD_FIELDS = frozenset({
     "media_type",
     "media_context",
-    "public_key_der",
     "unembedded_carrier_hash",
     "reserved_upper_bits_hash",
     "media_id",
@@ -1056,7 +1054,6 @@ def _normalize_v1_metadata(metadata):
 class V1PayloadRecord:
     media_type: int
     media_context: bytes
-    public_key_der: bytes
     unembedded_carrier_hash: bytes
     reserved_upper_bits_hash: bytes
     media_id: str
@@ -1075,11 +1072,6 @@ class V1PayloadRecord:
             self, "media_context",
             _copy_v1_bytes(self.media_context, "media_context", maximum_length=MAX_MEDIA_CONTEXT_LENGTH),
         )
-        public_key_der = _copy_v1_bytes(
-            self.public_key_der, "public_key_der", maximum_length=MAX_PUBLIC_KEY_DER_LENGTH
-        )
-        parse_rsa_public_key_der(public_key_der)
-        object.__setattr__(self, "public_key_der", public_key_der)
         object.__setattr__(
             self, "unembedded_carrier_hash",
             _copy_v1_bytes(self.unembedded_carrier_hash, "unembedded_carrier_hash", exact_length=SHA256_DIGEST_SIZE),
@@ -1122,7 +1114,6 @@ def serialize_v1_payload(record):
     document = {
         "media_type": record.media_type,
         "media_context": base64.b64encode(bytes(record.media_context)).decode("ascii"),
-        "public_key_der": base64.b64encode(bytes(record.public_key_der)).decode("ascii"),
         "unembedded_carrier_hash": bytes(record.unembedded_carrier_hash).hex(),
         "reserved_upper_bits_hash": bytes(record.reserved_upper_bits_hash).hex(),
         "media_id": record.media_id,
@@ -1165,7 +1156,6 @@ def parse_v1_payload(payload_bytes):
         record = V1PayloadRecord(
             media_type=document["media_type"],
             media_context=_validate_v1_base64(document["media_context"], "media_context", MAX_MEDIA_CONTEXT_LENGTH),
-            public_key_der=_validate_v1_base64(document["public_key_der"], "public_key_der", MAX_PUBLIC_KEY_DER_LENGTH),
             unembedded_carrier_hash=_validate_v1_hex(document["unembedded_carrier_hash"], "unembedded_carrier_hash", 32),
             reserved_upper_bits_hash=_validate_v1_hex(document["reserved_upper_bits_hash"], "reserved_upper_bits_hash", 32),
             media_id=document["media_id"],
@@ -1191,21 +1181,18 @@ V1_MEDIA_ID_RANDOM_SIZE = 16
 def create_v1_payload_record(
     media_type,
     media_context,
-    public_key,
     unembedded_carrier_hash,
     reserved_upper_bits_hash,
     message,
     metadata,
 ):
     media_type = _validate_media_type(media_type)
-    public_key_der = serialize_rsa_public_key(public_key)
     media_id = f"{V1_MEDIA_ID_PREFIXES[media_type]}-{secrets.token_hex(V1_MEDIA_ID_RANDOM_SIZE)}"
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nonce = secrets.token_bytes(V1_NONCE_SIZE)
     return V1PayloadRecord(
         media_type=media_type,
         media_context=media_context,
-        public_key_der=public_key_der,
         unembedded_carrier_hash=unembedded_carrier_hash,
         reserved_upper_bits_hash=reserved_upper_bits_hash,
         media_id=media_id,
@@ -1570,338 +1557,52 @@ def save_pcm_wav_to_path(wav_data, output_path):
         raise ValueError("could not save uncompressed PCM WAV") from error
 
 
-MAX_PRIVATE_KEY_PASSWORD_LENGTH = 1024
-MAX_ENCRYPTED_PRIVATE_KEY_PEM_LENGTH = 16 * 1024
-_ENCRYPTED_PRIVATE_KEY_BEGIN = b"-----BEGIN ENCRYPTED PRIVATE KEY-----\n"
-_ENCRYPTED_PRIVATE_KEY_END = b"-----END ENCRYPTED PRIVATE KEY-----\n"
-
-
-# Validates a bounded private-key password.
-def _validate_private_key_password(password):
-    if not isinstance(password, bytes):
-        raise TypeError("password must be bytes")
-    if len(password) == 0:
-        raise ValueError("password must not be empty")
-    if len(password) > MAX_PRIVATE_KEY_PASSWORD_LENGTH:
-        raise ValueError("password exceeds the version-1 limit")
-    return password
-
-
-# Serializes an encrypted RSA private key.
-def serialize_encrypted_rsa_private_key(private_key, password):
+# Saves an assignment-demo RSA private key as PEM; this is not production key management.
+def save_rsa_private_key_pem(private_key, path, password=None):
+    """Save an assignment demo key as PKCS8 PEM, not production key management."""
     private_key = validate_rsa_private_key(private_key)
-    password = _validate_private_key_password(password)
-    try:
-        pem_bytes = private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.BestAvailableEncryption(password),
-        )
-    except (TypeError, ValueError, UnsupportedAlgorithm) as error:
-        raise ValueError("could not serialize encrypted RSA private key") from error
-    return pem_bytes
-
-
-# Parses an encrypted RSA private key.
-def parse_encrypted_rsa_private_key(pem_bytes, password):
-    pem_bytes = _require_v1_bytes(pem_bytes, "pem_bytes")
-    if len(pem_bytes) == 0 or len(pem_bytes) > MAX_ENCRYPTED_PRIVATE_KEY_PEM_LENGTH:
-        raise ValueError("encrypted private-key PEM has an invalid length")
-    password = _validate_private_key_password(password)
-    if (
-        not pem_bytes.startswith(_ENCRYPTED_PRIVATE_KEY_BEGIN)
-        or not pem_bytes.endswith(_ENCRYPTED_PRIVATE_KEY_END)
-        or pem_bytes.count(_ENCRYPTED_PRIVATE_KEY_BEGIN) != 1
-        or pem_bytes.count(_ENCRYPTED_PRIVATE_KEY_END) != 1
-    ):
-        raise ValueError("PEM is not a complete encrypted PKCS8 private key")
-    try:
-        private_key = serialization.load_pem_private_key(
-            pem_bytes,
-            password=password,
-        )
-        private_key = validate_rsa_private_key(private_key)
-    except (TypeError, ValueError, UnsupportedAlgorithm) as error:
-        raise ValueError("invalid encrypted v1 RSA private key or password") from error
-    return private_key
-
-MAX_TRUSTED_KEY_RECORDS = 64
-MAX_TRUST_STORE_LENGTH = 128 * 1024
-TRUST_STORE_VERSION = 1
-TRUST_STORE_FIELDS = frozenset(("keys", "version"))
-TRUSTED_KEY_FIELDS = frozenset(("label", "public_key_der"))
-
-
-@dataclass(frozen=True)
-# Represents one immutable trusted public-key record.
-class TrustedKeyRecord:
-    public_key_der: bytes
-    label: str
-
-    # Validates and normalizes a trusted-key record.
-    def __post_init__(self):
-        public_key_der = _copy_v1_bytes(
-            self.public_key_der,
-            "public_key_der",
-            maximum_length=MAX_PUBLIC_KEY_DER_LENGTH,
-        )
-        parse_rsa_public_key_der(public_key_der)
-        object.__setattr__(self, "public_key_der", public_key_der)
-        object.__setattr__(
-            self,
-            "label",
-            _validate_v1_text(self.label, "label", 128, reject_controls=True),
-        )
-
-
-# Validates and canonically sorts trust records.
-def normalize_trusted_key_records(records):
-    try:
-        records = tuple(records)
-    except TypeError as error:
-        raise TypeError("records must be an iterable of TrustedKeyRecord values") from error
-    if len(records) > MAX_TRUSTED_KEY_RECORDS:
-        raise ValueError("trust store exceeds the record limit")
-    normalized = []
-    seen_der = set()
-    seen_labels = set()
-    for record in records:
-        if not isinstance(record, TrustedKeyRecord):
-            raise TypeError("records must contain TrustedKeyRecord values")
-        if record.public_key_der in seen_der:
-            raise ValueError("trust store contains a duplicate public key")
-        if record.label != "" and record.label in seen_labels:
-            raise ValueError("trust store contains a duplicate nonempty label")
-        seen_der.add(record.public_key_der)
-        if record.label != "":
-            seen_labels.add(record.label)
-        normalized.append(record)
-    return tuple(sorted(normalized, key=lambda record: record.public_key_der))
-
-
-# Serializes the canonical trust store.
-def serialize_trust_store(records):
-    records = normalize_trusted_key_records(records)
-    document = {
-        "keys": [
-            {
-                "label": record.label,
-                "public_key_der": base64.b64encode(record.public_key_der).decode("ascii"),
-            }
-            for record in records
-        ],
-        "version": TRUST_STORE_VERSION,
-    }
-    serialized = json.dumps(
-        document,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
-    if len(serialized) > MAX_TRUST_STORE_LENGTH:
-        raise ValueError("serialized trust store exceeds the version-1 limit")
-    return serialized
-
-
-# Parses and validates the canonical trust store.
-def parse_trust_store(store_bytes):
-    store_bytes = _copy_v1_bytes(
-        store_bytes,
-        "store_bytes",
-        maximum_length=MAX_TRUST_STORE_LENGTH,
+    encryption_algorithm = (
+        serialization.NoEncryption()
+        if password is None
+        else serialization.BestAvailableEncryption(password)
     )
-    if len(store_bytes) == 0:
-        raise ValueError("trust store must not be empty")
-    try:
-        document = json.loads(
-            store_bytes.decode("utf-8"),
-            object_pairs_hook=_reject_duplicate_json_keys,
-            parse_constant=_reject_json_constant,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
-        raise ValueError("trust store is not valid UTF-8 JSON") from error
-    if not isinstance(document, dict) or set(document) != TRUST_STORE_FIELDS:
-        raise ValueError("trust store fields do not match the version-1 schema")
-    if isinstance(document["version"], bool) or document["version"] != TRUST_STORE_VERSION:
-        raise ValueError("unsupported trust store version")
-    if not isinstance(document["keys"], list):
-        raise ValueError("trust store keys must be a JSON array")
-    records = []
-    for key_document in document["keys"]:
-        if not isinstance(key_document, dict) or set(key_document) != TRUSTED_KEY_FIELDS:
-            raise ValueError("trusted key fields do not match the version-1 schema")
-        try:
-            public_key_der = _validate_v1_base64(
-                key_document["public_key_der"],
-                "public_key_der",
-                MAX_PUBLIC_KEY_DER_LENGTH,
-            )
-            records.append(TrustedKeyRecord(public_key_der, key_document["label"]))
-        except (TypeError, ValueError) as error:
-            raise ValueError("trust store contains an invalid trusted key") from error
-    records = normalize_trusted_key_records(records)
-    if serialize_trust_store(records) != store_bytes:
-        raise ValueError("trust store is not canonical JSON")
-    return records
+    pem_bytes = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=encryption_algorithm,
+    )
+    with open(path, "wb") as key_file:
+        key_file.write(pem_bytes)
 
 
-# Looks up a public key in trust records.
-def lookup_trusted_key(public_key, records):
+# Loads an assignment-demo RSA private key from PEM; this is not production key management.
+def load_rsa_private_key_pem(path, password=None):
+    """Load an assignment demo key from PKCS8 PEM, not production key management."""
+    with open(path, "rb") as key_file:
+        pem_bytes = key_file.read()
+    private_key = serialization.load_pem_private_key(pem_bytes, password=password)
+    return validate_rsa_private_key(private_key)
+
+
+# Saves an assignment-demo RSA public key as PEM; this is not production key management.
+def save_rsa_public_key_pem(public_key, path):
+    """Save an assignment demo key as SubjectPublicKeyInfo PEM, not production key management."""
     public_key = validate_rsa_public_key(public_key)
-    public_key_der = serialize_rsa_public_key(public_key)
-    for record in normalize_trusted_key_records(records):
-        if record.public_key_der == public_key_der:
-            return record
-    return None
+    pem_bytes = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    with open(path, "wb") as key_file:
+        key_file.write(pem_bytes)
 
 
-# Returns trust records with a new public key.
-def add_trusted_key(records, public_key, label):
-    records = normalize_trusted_key_records(records)
-    public_key = validate_rsa_public_key(public_key)
-    record = TrustedKeyRecord(serialize_rsa_public_key(public_key), label)
-    if any(existing.public_key_der == record.public_key_der for existing in records):
-        raise ValueError("public key is already trusted")
-    if record.label != "" and any(existing.label == record.label for existing in records):
-        raise ValueError("nonempty trusted-key label is already in use")
-    return normalize_trusted_key_records(records + (record,))
-
-
-# Returns trust records without a public key.
-def remove_trusted_key(records, public_key):
-    records = normalize_trusted_key_records(records)
-    public_key = validate_rsa_public_key(public_key)
-    public_key_der = serialize_rsa_public_key(public_key)
-    if not any(record.public_key_der == public_key_der for record in records):
-        raise ValueError("public key is not trusted")
-    return tuple(record for record in records if record.public_key_der != public_key_der)
-
-
-
-# Exclusively saves an encrypted private key.
-def save_new_encrypted_rsa_private_key_to_path(private_key, password, path):
-    pem_bytes = serialize_encrypted_rsa_private_key(private_key, password)
-
-    if not isinstance(path, (str, bytes, PathLike)):
-        raise TypeError("path must be a filesystem path")
-    path = fspath(path)
-    file_descriptor = None
-    created = False
-    try:
-        file_descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        created = True
-        with os.fdopen(file_descriptor, "wb") as key_file:
-            file_descriptor = None
-            written = key_file.write(pem_bytes)
-            if written != len(pem_bytes):
-                raise OSError("private-key PEM write was incomplete")
-            key_file.flush()
-            if hasattr(os, "fsync"):
-                os.fsync(key_file.fileno())
-        if os.name == "posix":
-            os.chmod(path, 0o600)
-    except FileExistsError as error:
-        raise ValueError("private-key output path already exists") from error
-    except (OSError, ValueError) as error:
-        if file_descriptor is not None:
-            try:
-                os.close(file_descriptor)
-            except OSError:
-                pass
-            file_descriptor = None
-        if created:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-        raise ValueError("could not save encrypted RSA private key") from error
-    finally:
-        if file_descriptor is not None:
-            try:
-                os.close(file_descriptor)
-            except OSError:
-                pass
-
-
-# Loads a bounded encrypted private key.
-def load_encrypted_rsa_private_key_from_path(path, password):
-
-    if not isinstance(path, (str, bytes, PathLike)):
-        raise TypeError("path must be a filesystem path")
-    password = _validate_private_key_password(password)
-    try:
-        with open(fspath(path), "rb") as key_file:
-            pem_bytes = key_file.read(MAX_ENCRYPTED_PRIVATE_KEY_PEM_LENGTH + 1)
-    except OSError as error:
-        raise ValueError("could not read encrypted RSA private key") from error
-    if len(pem_bytes) > MAX_ENCRYPTED_PRIVATE_KEY_PEM_LENGTH:
-        raise ValueError("encrypted private-key PEM exceeds the version-1 limit")
-    return parse_encrypted_rsa_private_key(pem_bytes, password)
-
-
-
-# Loads a bounded trust store from a path.
-def load_trust_store_from_path(path):
-
-    if not isinstance(path, (str, bytes, PathLike)):
-        raise TypeError("path must be a filesystem path")
-    try:
-        with open(fspath(path), "rb") as store_file:
-            store_bytes = store_file.read(MAX_TRUST_STORE_LENGTH + 1)
-    except OSError as error:
-        raise ValueError("could not read trust store") from error
-    if len(store_bytes) > MAX_TRUST_STORE_LENGTH:
-        raise ValueError("trust store exceeds the version-1 limit")
-    return parse_trust_store(store_bytes)
-
-
-# Atomically saves a trust store to a path.
-def save_trust_store_to_path(records, path):
-    store_bytes = serialize_trust_store(records)
-
-    if not isinstance(path, (str, bytes, PathLike)):
-        raise TypeError("path must be a filesystem path")
-    path = os.fsdecode(fspath(path))
-    parent = os.path.dirname(os.path.abspath(path))
-    temporary_path = None
-    file_descriptor = None
-    try:
-        file_descriptor, temporary_path = tempfile.mkstemp(
-            prefix=".trust-store-", suffix=".tmp", dir=parent
-        )
-        if os.name == "posix":
-            os.chmod(temporary_path, 0o600)
-        with os.fdopen(file_descriptor, "wb") as store_file:
-            file_descriptor = None
-            written = store_file.write(store_bytes)
-            if written != len(store_bytes):
-                raise OSError("trust-store write was incomplete")
-            store_file.flush()
-            if hasattr(os, "fsync"):
-                os.fsync(store_file.fileno())
-        os.replace(temporary_path, path)
-        temporary_path = None
-    except (OSError, ValueError) as error:
-        if file_descriptor is not None:
-            try:
-                os.close(file_descriptor)
-            except OSError:
-                pass
-            file_descriptor = None
-        if temporary_path is not None:
-            try:
-                os.unlink(temporary_path)
-            except OSError:
-                pass
-            temporary_path = None
-        raise ValueError("could not save trust store") from error
-    finally:
-        if file_descriptor is not None:
-            try:
-                os.close(file_descriptor)
-            except OSError:
-                pass
+# Loads an assignment-demo RSA public key from PEM; this is not production key management.
+def load_rsa_public_key_pem(path):
+    """Load an assignment demo key from SubjectPublicKeyInfo PEM, not production key management."""
+    with open(path, "rb") as key_file:
+        pem_bytes = key_file.read()
+    public_key = serialization.load_pem_public_key(pem_bytes)
+    return validate_rsa_public_key(public_key)
 
 # Encodes a v1 payload and signature into carriers.
 def encode_v1_carrier(
@@ -1922,13 +1623,10 @@ def encode_v1_carrier(
     private_key = validate_rsa_private_key(private_key)
     start_unit = _validate_non_negative_integer(start_unit, "start_unit")
     lsb_count = _validate_lsb_count(lsb_count)
-    public_key = private_key.public_key()
-
     zero_hash = bytes(SHA256_DIGEST_SIZE)
     provisional_payload = create_v1_payload_record(
         media_type,
         media_context,
-        public_key,
         zero_hash,
         zero_hash,
         message,
@@ -1953,7 +1651,6 @@ def encode_v1_carrier(
     final_payload = V1PayloadRecord(
         media_type=provisional_payload.media_type,
         media_context=provisional_payload.media_context,
-        public_key_der=provisional_payload.public_key_der,
         unembedded_carrier_hash=unembedded_hash,
         reserved_upper_bits_hash=reserved_upper_bits_hash,
         media_id=provisional_payload.media_id,
@@ -1984,11 +1681,13 @@ def verify_resolved_v1_candidate(
     carrier_units,
     media_type,
     media_context,
+    public_key,
     resolved_candidate,
 ):
     carrier_units = _validate_carrier_units(carrier_units)
     media_type = _validate_media_type(media_type)
     media_context = _validate_media_context(media_context)
+    public_key = validate_rsa_public_key(public_key)
     if not isinstance(resolved_candidate, ResolvedRegion2Candidate):
         raise TypeError("resolved_candidate must be a ResolvedRegion2Candidate")
 
@@ -2008,7 +1707,6 @@ def verify_resolved_v1_candidate(
     if payload.media_context != media_context:
         raise ValueError("payload media context does not match expected media context")
 
-    public_key = parse_rsa_public_key_der(payload.public_key_der)
     signature = extract_region3_signature(carrier_units, resolved_candidate.layout)
     region2_values = select_region2_units(carrier_units, resolved_candidate.layout)
     signing_input = encode_region2_signing_input(
@@ -2037,17 +1735,16 @@ class V1VerificationResult:
     detail: str
     payload: V1PayloadRecord | None
     key_fingerprint: str | None
-    trusted_label: str | None
     candidate: StartMagicCandidate | None
 
     # Validates authenticated result field combinations.
     def __post_init__(self):
         if self.valid:
-            if self.verdict not in ("Authentic", "Signature Valid — Key Not Trusted"):
+            if self.verdict != "Authentic":
                 raise ValueError("valid result has an unsupported verdict")
             if self.payload is None or self.key_fingerprint is None or self.candidate is None:
                 raise ValueError("valid result is missing authenticated fields")
-        elif any(value is not None for value in (self.payload, self.key_fingerprint, self.trusted_label, self.candidate)):
+        elif any(value is not None for value in (self.payload, self.key_fingerprint, self.candidate)):
             raise ValueError("invalid result must not expose authenticated fields")
 
 
@@ -2056,24 +1753,23 @@ def decode_v1_carrier(
     carrier_units,
     media_type,
     media_context,
-    trusted_records=(),
+    public_key,
 ):
     carrier_units = _validate_carrier_units(carrier_units)
     media_type = _validate_media_type(media_type)
     media_context = _validate_media_context(media_context)
-    trusted_records = normalize_trusted_key_records(trusted_records)
+    public_key = validate_rsa_public_key(public_key)
 
     try:
         candidates = scan_start_magic(carrier_units)
     except (TypeError, ValueError) as error:
         detail = "Scanner failure: " + " ".join(str(error).split())[:160]
-        return V1VerificationResult(False, "Cannot Verify", detail, None, None, None, None)
+        return V1VerificationResult(False, "Cannot Verify", detail, None, None, None)
     if not candidates:
         return V1VerificationResult(
             False,
             "Payload Missing",
             "No start-magic candidate was found.",
-            None,
             None,
             None,
             None,
@@ -2084,10 +1780,10 @@ def decode_v1_carrier(
     for candidate in candidates:
         try:
             resolved_candidate = resolve_region2_candidate(carrier_units, candidate)
-            payload, public_key = verify_resolved_v1_candidate(
-                carrier_units, media_type, media_context, resolved_candidate
+            payload, verified_public_key = verify_resolved_v1_candidate(
+                carrier_units, media_type, media_context, public_key, resolved_candidate
             )
-            valid_results.append((payload, public_key, candidate))
+            valid_results.append((payload, verified_public_key, candidate))
         except (TypeError, ValueError) as error:
             reason = " ".join(str(error).split())[:120]
             if not reason:
@@ -2108,29 +1804,16 @@ def decode_v1_carrier(
             None,
             None,
             None,
-            None,
         )
     if len(valid_results) == 1:
-        payload, public_key, candidate = valid_results[0]
+        payload, verified_public_key, candidate = valid_results[0]
         key_fingerprint = display_rsa_public_key_fingerprint(public_key)
-        trusted_record = lookup_trusted_key(public_key, trusted_records)
-        if trusted_record is not None:
-            return V1VerificationResult(
-                True,
-                "Authentic",
-                "Signed by trusted key",
-                payload,
-                key_fingerprint,
-                trusted_record.label,
-                candidate,
-            )
         return V1VerificationResult(
             True,
-            "Signature Valid — Key Not Trusted",
-            "Cryptographic checks passed under an unknown included key.",
+            "Authentic",
+            "Cryptographic checks passed under the supplied public key.",
             payload,
             key_fingerprint,
-            None,
             candidate,
         )
 
@@ -2146,7 +1829,7 @@ def decode_v1_carrier(
     detail = "; ".join(failure_errors[:8])
     if not detail:
         detail = "No candidate passed verification."
-    return V1VerificationResult(False, verdict, detail, None, None, None, None)
+    return V1VerificationResult(False, verdict, detail, None, None, None)
 
 # Checks whether two paths resolve to the same file.
 def _paths_resolve_same(first_path, second_path):
@@ -2191,12 +1874,12 @@ def encode_png_v1(
 
 
 # Loads and verifies a v1 PNG through fixed adapters.
-def verify_png_v1(input_path, trusted_records=()):
+def verify_png_v1(input_path, public_key):
     image_array = load_png_from_path(input_path)
     carrier_units = rgb_array_to_carrier(image_array)
     media_context = encode_png_media_context(image_array.shape, carrier_units.size)
     return decode_v1_carrier(
-        carrier_units, IMAGE_MEDIA_CODE, media_context, trusted_records
+        carrier_units, IMAGE_MEDIA_CODE, media_context, public_key
     )
 
 
@@ -2232,10 +1915,10 @@ def encode_wav_v1(
 
 
 # Loads and verifies a v1 WAV through fixed adapters.
-def verify_wav_v1(input_path, trusted_records=()):
+def verify_wav_v1(input_path, public_key):
     wav_data = load_pcm_wav_from_path(input_path)
     carrier_units = wav_frame_bytes_to_carrier(wav_data.frame_bytes)
     media_context = encode_wav_media_context(wav_data, carrier_units.size)
     return decode_v1_carrier(
-        carrier_units, AUDIO_MEDIA_CODE, media_context, trusted_records
+        carrier_units, AUDIO_MEDIA_CODE, media_context, public_key
     )

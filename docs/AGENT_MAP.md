@@ -18,7 +18,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](INF2005-ACW1-spec_v5-f2f.md) |
 | Initial hashing and integrity design | [HASHING-INTEGRITY-DESIGN.md](HASHING-INTEGRITY-DESIGN.md) |
-| Current hashing, integrity, and key-trust design | [Hashing_and_Integrity_Design_Revised.md](Hashing_and_Integrity_Design_Revised.md) |
+| Hashing, integrity, and partly superseded key-trust design | [Hashing_and_Integrity_Design_Revised.md](Hashing_and_Integrity_Design_Revised.md) |
 | Obsolete FR1 and FR5 algorithm checklist | [TODO.md](TODO.md) |
 
 ## Implementation locations
