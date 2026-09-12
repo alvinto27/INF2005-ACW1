@@ -34,6 +34,10 @@ media_hash = hashlib.sha256(preimage).digest()
 b"INF2005-ACW1\x00MEDIA-HASH\x00"
 ```
 
+## Module dependencies
+
+Imports flow from `constants` to `bits`, then `layout`, `packet`, and `core`. The `keys` and `media` modules depend only on `constants` and `bits`; `core` is the only module where protocol, keys, and media meet.
+
 ## Packet format and signing input
 
 The packet header is exactly 23 bytes with this format:

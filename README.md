@@ -1,7 +1,7 @@
 # INF2005-ACW1
 A GUI-based LSB Replacement steganography program (window-based or web-based) that protects and verifies both image and audio cover objects using steganography, hashing and digital signatures
 
-`stego_v1.py` provides the version-1 steganography implementation for strict
+The `stego` package provides the version-1 steganography implementation for strict
 RGB PNG and uncompressed PCM WAV carriers. It stores arbitrary user bytes in a
 single LSB embedding footprint and authenticates them with RSA-PSS.
 

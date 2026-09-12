@@ -1,3 +1,4 @@
+import hashlib
 import struct
 import unittest
 import wave
@@ -9,8 +10,7 @@ from PIL import Image
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
-import stego_v1
-from stego_v1 import *
+from stego import *
 
 
 PRIVATE_KEY, PUBLIC_KEY = generate_v1_rsa_keypair()
@@ -77,7 +77,7 @@ class TestMaskedStegoV1(unittest.TestCase):
             + struct.pack(">BBQQQ", IMAGE_MEDIA_CODE, 3, 4, 1, 2)
             + expected_masked.tobytes()
         )
-        self.assertEqual(calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 3, 1, 2), stego_v1.hashlib.sha256(preimage).digest())
+        self.assertEqual(calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 3, 1, 2), hashlib.sha256(preimage).digest())
         self.assertTrue(np.array_equal(source, np.array([0xFF, 0xA5, 0x5A, 0x00], dtype=np.uint8)))
 
     def test_signing_input_has_exact_approved_bytes(self):
