@@ -1,0 +1,2 @@
+# Optional dependency for running the demonstration notebook.
+ipykernel==7.3.0

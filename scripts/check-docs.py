@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check local Markdown links and GitHub-style heading anchors.
 
-Scope: Markdown files at the repository root and recursively below docs/. The
+Scope: Markdown files at the repository root and recursively below docs/ and AGENT_docs/. The
 checker deliberately excludes dependency, build, vendor, and Git directories;
 this repository has no other documented component locations. It checks links
 and anchors mechanically only. It does not validate prose, commands, or live
@@ -16,15 +16,18 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
+DOCUMENTATION_DIRECTORIES = ["docs", "AGENT_docs"]
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 HEADING = re.compile(r"^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$")
 
 
 def markdown_files() -> list[Path]:
     files = list(ROOT.glob("*.md"))
-    docs = ROOT / "docs"
-    if docs.is_dir():
-        files.extend(docs.rglob("*.md"))
+    for directory_name in DOCUMENTATION_DIRECTORIES:
+        directory = ROOT / directory_name
+        if not directory.is_dir():
+            raise FileNotFoundError(f"required documentation directory is missing: {directory}")
+        files.extend(directory.rglob("*.md"))
     return sorted(path for path in files if path.is_file())
 
 
