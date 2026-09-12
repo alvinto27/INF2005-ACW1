@@ -1,4 +1,4 @@
-# Implementation status
+# Flask application implementation status
 
 This repository has one web entry point: `run.py` creates the Flask application
 from `stego_web`. The web package delegates payload creation, signing, packet
@@ -17,7 +17,7 @@ PCM/WAV LSB operations to `stego_web/services/steganography.py`.
 | FR6 audio LSB embedding | Implemented | PCM sample-byte engine supports 1-8 LSBs. |
 | FR7 variable start location | Implemented | PBKDF2-HMAC-derived non-zero location; the shared secret is required for extraction. Document the security rationale in the demo report. |
 | FR8 extraction and decoding | Implemented | Framing header identifies packet length; PNG and WAV extraction are registered engines. |
-| FR9 hash verification | Implemented with original-cover requirement | Verify the signed original-file hash, then compare expected re-embedded media with received pixels/PCM data. See [limitations](DECODING_VERIFICATION.md). |
+| FR9 hash verification | Implemented with original-cover requirement | Verify the signed original-file hash, then compare expected re-embedded media with received pixels/PCM data. See [limitations](DECODING-VERIFICATION.md). |
 | FR10 verdict generation | Implemented | Authentic, Tampered, Signature Invalid, Payload Missing, Wrong Start Location, and Cannot Verify. |
 | FR11 positive/negative cases | Automated coverage present | Current-encoder PNG/WAV round trips at all LSB depths, media/payload/signature tampering, malformed data, missing payloads, wrong keys/secrets, and upload limits are tested. Captured demo evidence is still needed. |
 | FR12 evidence/reproducibility | Partially implemented | README, setup commands, tests, and API are present; add sample original/stego/tampered files, screenshots/logs, and key instructions for submission. |
