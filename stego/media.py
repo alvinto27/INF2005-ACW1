@@ -164,10 +164,6 @@ def wav_frame_bytes_to_carrier(frame_bytes):
     return np.frombuffer(_require_bytes(frame_bytes, "frame_bytes"), dtype=np.uint8).copy()
 
 
-def carrier_to_wav_frame_bytes(carrier_units):
-    return _validate_carrier_units(carrier_units).tobytes()
-
-
 def encode_wav_media_context(wav_data, carrier_unit_count=None):
     if not isinstance(wav_data, WavPcmData):
         raise TypeError("wav_data must be a WavPcmData")

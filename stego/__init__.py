@@ -23,9 +23,7 @@ from .core import (
     encode_carrier,
     encode_png,
     encode_wav,
-    resolve_candidate,
     verify_png,
-    verify_resolved_candidate,
     verify_wav,
 )
 from .keys import (
@@ -107,7 +105,6 @@ __all__ = [
     "parse_payload",
     "preserved_bit_count",
     "read_lsb_bits",
-    "resolve_candidate",
     "rgb_array_to_carrier",
     "save_pcm_wav_to_path",
     "save_rgb_png_to_path",
@@ -117,7 +114,6 @@ __all__ = [
     "serialize_packet_header",
     "serialize_payload",
     "verify_png",
-    "verify_resolved_candidate",
     "verify_wav",
     "wav_data_with_carrier",
     "wav_frame_bytes_to_carrier",

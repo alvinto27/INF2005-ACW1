@@ -1,9 +1,7 @@
 """Packet header, payload records, and start-magic discovery."""
 
-import secrets
 import struct
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 import numpy as np
 
@@ -14,7 +12,6 @@ from .bits import (
     _validate_media_code,
     _validate_positive_integer,
     _validate_uint64,
-    bit_sequence_to_bytes,
     bytes_to_bit_sequence,
     validate_payload_bytes,
     validate_payload_length,
@@ -22,7 +19,6 @@ from .bits import (
 from .constants import (
     MAX_MAGIC_CANDIDATES,
     MAX_MEDIA_ID_BYTES,
-    MEDIA_PREFIXES,
     PACKET_HEADER_FORMAT,
     PACKET_HEADER_SIZE,
     PROTOCOL_VERSION,
@@ -153,13 +149,6 @@ def parse_payload(payload_bytes):
     return PayloadRecord(media_id, timestamp, nonce, media_hash, user_payload, metadata)
 
 
-def create_payload_record(media_code, media_hash, user_payload, metadata):
-    media_code = _validate_media_code(media_code)
-    media_id = f"{MEDIA_PREFIXES[media_code]}-{secrets.token_hex(16)}"
-    timestamp = int(datetime.now(timezone.utc).timestamp())
-    return PayloadRecord(media_id, timestamp, secrets.token_bytes(NONCE_SIZE), media_hash, user_payload, metadata)
-
-
 @dataclass(frozen=True)
 class StartMagicCandidate:
     start_unit: int
@@ -190,16 +179,6 @@ def _find_magic_start_mask(carrier_units, lsb_count):
     for offset in range(masks.size):
         matches &= (carrier_units[offset:offset + candidate_count] & masks[offset]) == values[offset]
     return matches, int(np.count_nonzero(matches))
-
-
-def scan_start_magic_for_lsb(carrier_units, lsb_count, max_candidates=MAX_MAGIC_CANDIDATES):
-    carrier_units = _validate_carrier_units(carrier_units)
-    lsb_count = _validate_lsb_count(lsb_count)
-    max_candidates = _validate_positive_integer(max_candidates, "max_candidates")
-    matches, count = _find_magic_start_mask(carrier_units, lsb_count)
-    if count > max_candidates:
-        raise ValueError("magic candidate limit exceeded")
-    return tuple(StartMagicCandidate(int(start), lsb_count) for start in np.flatnonzero(matches))
 
 
 def scan_start_magic(carrier_units, max_candidates=MAX_MAGIC_CANDIDATES):

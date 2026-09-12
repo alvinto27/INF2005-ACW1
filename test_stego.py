@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 from PIL import Image
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from stego import *
 

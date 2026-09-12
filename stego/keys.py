@@ -51,20 +51,6 @@ def serialize_rsa_public_key(public_key):
     return encoded
 
 
-def parse_rsa_public_key(encoded):
-    encoded = _require_bytes(encoded, "encoded public key")
-    if not encoded or len(encoded) > MAX_PUBLIC_KEY_ENCODING_LENGTH:
-        raise ValueError("encoded public key has an invalid length")
-    try:
-        public_key = serialization.load_der_public_key(encoded)
-    except (TypeError, ValueError) as error:
-        raise ValueError("encoded public key is not valid DER") from error
-    validate_rsa_public_key(public_key)
-    if serialize_rsa_public_key(public_key) != encoded:
-        raise ValueError("encoded public key is not canonical DER")
-    return public_key
-
-
 def fingerprint_rsa_public_key(public_key):
     return hashlib.sha256(serialize_rsa_public_key(public_key)).digest()
 
