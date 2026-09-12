@@ -1,17 +1,17 @@
 ---
 name: inf2005-acw1
-description: Python module for signing and verifying steganography payload metadata.
+description: Masked-media LSB steganography for PNG and WAV carriers.
 ---
 
 # INF2005-ACW1
 
-This repository provides a byte-only signed payload protocol for a steganography application. Read the [Agent Navigation Map](docs/AGENT_MAP.md) and [documentation index](docs/README.md) before changing files.
+This repository provides a signed LSB steganography protocol for strict RGB PNG and uncompressed PCM WAV carriers. Read the [Agent Navigation Map](docs/AGENT_MAP.md) and [documentation index](docs/README.md) before changing files.
 
 ## Read first
 
 1. [Agent Navigation Map](docs/AGENT_MAP.md) — repository structure and map chain.
 2. [Documentation index](docs/README.md) — durable records and current repository documentation.
-3. [README](README.md) — setup, protocol behavior, and public API example.
+3. [README](README.md) — setup and the masked-media integrity invariant.
 
 ## Commands
 
@@ -25,16 +25,16 @@ bash scripts/install-hooks.sh
 ## State
 
 - This is a standalone Python module repository with no package build configuration or CI workflow.
-- `payload_protocol.py` requires Python 3.10+ and uses `cryptography`.
-- `test_payload_protocol.py` is the unit-test entry point.
+- `stego_v1.py` requires Python 3.10+ and uses `cryptography`, NumPy, and Pillow.
+- `test_stego_v1.py` is the unit-test entry point.
 - This independent repository is nested in the `School-Repos` checkout, but the parent does not track it as a submodule or gitlink.
 - Work is initialized on the local `yx` branch. Do not merge it into `main` unless the repository owner requests it.
 
 ## Conventions
 
-- Keep the payload protocol byte-only; do not add file I/O or steganography dependencies to it without an explicit requirement.
+- Keep the shared protocol media-neutral and use the fixed PNG and WAV adapters for file I/O.
 - Preserve the documented packet format and verification verdicts when changing protocol behavior.
-- Keep dependencies in `requirements.txt` and tests in `test_payload_protocol.py` unless the repository adopts a different layout.
+- Keep dependencies in `requirements.txt` and tests in `test_stego_v1.py` unless the repository adopts a different layout.
 - Store each durable record—such as an architecture note, plan, runbook, status record, release note, or ADR—in its own aptly named file under `docs/`, and list it in `docs/README.md`.
 - `git commit --no-verify` intentionally bypasses the documentation hook when necessary.
 

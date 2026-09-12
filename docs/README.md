@@ -8,7 +8,7 @@ For repository structure and implementation entry points, see [Agent Navigation 
 
 ## Repository entry points
 
-- [README](../README.md) — setup, API example, packet format, and verification behavior.
+- [README](../README.md) — setup and the masked-media integrity invariant.
 - [stego_v1.py](../stego_v1.py) — signed v1 steganography implementation.
 - [test_stego_v1.py](../test_stego_v1.py) — masked-media v1 implementation tests.
 - [AGENTS](../AGENTS.md) — agent working instructions.
