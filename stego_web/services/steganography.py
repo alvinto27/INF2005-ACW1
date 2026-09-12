@@ -50,6 +50,26 @@ class SteganographyEngine(ABC):
     def extract(self, stego: bytes, lsb_bits: int, secret: str) -> ExtractedPacket:
         """Recover a framed packet from the selected location."""
 
+    def _extract_values(self, values: np.ndarray, lsb_bits: int, secret: str) -> ExtractedPacket:
+        """Reverse STG1 framing with bounded reads for either carrier ordering."""
+        if values.size * lsb_bits // 8 < FRAME_HEADER.size:
+            raise WrongStartLocationError("Carrier is too small to contain a frame")
+        start = self.location_strategy.derive(secret, self.media_type, values.size, lsb_bits)
+        header = self.lsb_encoder.read(values, FRAME_HEADER.size, start, lsb_bits)
+        magic, embedded_bits, length = FRAME_HEADER.unpack(header)
+        if magic[:3] == b"STG" and magic != FRAME_MAGIC:
+            raise InvalidMediaError("Unsupported embedded frame version")
+        if magic != FRAME_MAGIC or embedded_bits != lsb_bits:
+            raise WrongStartLocationError("No frame at the derived location; check secret and LSB count")
+        if not 1 <= length <= MAX_PACKET_BYTES:
+            raise InvalidMediaError("Invalid embedded packet length")
+        frame = self.lsb_encoder.read(values, FRAME_HEADER.size + length, start, lsb_bits)
+        return ExtractedPacket(frame[FRAME_HEADER.size:], start)
+
+    @abstractmethod
+    def verification_bytes(self, media: bytes) -> bytes:
+        """Return decoded carrier data and structural properties for integrity comparison."""
+
 
 class LSBEncoder:
     """Media-independent bit packing for unsigned eight-bit carrier units."""
@@ -143,23 +163,13 @@ class ImageLsbSteganography(SteganographyEngine):
 
     def extract(self, stego: bytes, lsb_bits: int, secret: str) -> ExtractedPacket:
         array = self._load_png(stego)
-        start = self.location_strategy.derive(secret, self.media_type, array.size, lsb_bits)
-        header = self.lsb_encoder.read(array, FRAME_HEADER.size, start, lsb_bits)
-        magic, embedded_lsb_bits, packet_length = FRAME_HEADER.unpack(header)
+        return self._extract_values(array, lsb_bits, secret)
 
-        if magic != FRAME_MAGIC or embedded_lsb_bits != lsb_bits:
-            raise WrongStartLocationError(
-                "No valid frame was found; check the start secret and LSB selection."
-            )
-        if packet_length < 1 or packet_length > MAX_PACKET_BYTES:
-            raise InvalidMediaError("The embedded packet length is invalid")
-
-        total_length = FRAME_HEADER.size + packet_length
-        if math.ceil(total_length * 8 / lsb_bits) > array.size:
-            raise InvalidMediaError("The embedded packet exceeds the carrier capacity")
-
-        frame = self.lsb_encoder.read(array, total_length, start, lsb_bits)
-        return ExtractedPacket(frame[FRAME_HEADER.size:], start)
+    def verification_bytes(self, media: bytes) -> bytes:
+        self._load_png(media)
+        with Image.open(io.BytesIO(media)) as image:
+            # Include alpha for integrity, although embedding uses RGB only.
+            return struct.pack(">II", *image.size) + image.convert("RGBA").tobytes()
 
     @staticmethod
     def _load_png(raw: bytes) -> np.ndarray:
@@ -167,11 +177,15 @@ class ImageLsbSteganography(SteganographyEngine):
             with Image.open(io.BytesIO(raw)) as image:
                 if image.format != "PNG":
                     raise InvalidMediaError("Image engine accepts PNG files only")
+                image.verify()
+            with Image.open(io.BytesIO(raw)) as image:
+                if image.width * image.height > 16_000_000:
+                    raise InvalidMediaError("PNG exceeds the 16-million-pixel processing limit")
                 image.load()
                 return np.array(image.convert("RGB"), dtype=np.uint8, copy=True)
         except InvalidMediaError:
             raise
-        except (OSError, UnidentifiedImageError, ValueError) as error:
+        except (OSError, UnidentifiedImageError, ValueError, SyntaxError, Image.DecompressionBombError) as error:
             raise InvalidMediaError("Unreadable or corrupted PNG image") from error
 
 class AudioLsbSteganography(SteganographyEngine):
@@ -211,28 +225,26 @@ class AudioLsbSteganography(SteganographyEngine):
     def extract(self, stego: bytes, lsb_bits: int, secret: str) -> ExtractedPacket:
         _, frames = self._load_pcm(stego)
         values = np.frombuffer(frames, dtype=np.uint8)
-        start = self.location_strategy.derive(secret, self.media_type, len(frames), lsb_bits)
-        header = self.lsb_encoder.read(values, FRAME_HEADER.size, start, lsb_bits)
-        magic, embedded_lsb_bits, packet_length = FRAME_HEADER.unpack(header)
-        if magic != FRAME_MAGIC or embedded_lsb_bits != lsb_bits:
-            raise WrongStartLocationError(
-                "No valid frame was found; check the start secret and LSB selection."
-            )
-        if packet_length < 1 or packet_length > MAX_PACKET_BYTES:
-            raise InvalidMediaError("The embedded packet length is invalid")
-        total_length = FRAME_HEADER.size + packet_length
-        if math.ceil(total_length * 8 / lsb_bits) > values.size:
-            raise InvalidMediaError("The embedded packet exceeds the carrier capacity")
-        frame = self.lsb_encoder.read(values, total_length, start, lsb_bits)
-        return ExtractedPacket(frame[FRAME_HEADER.size:], start)
+        return self._extract_values(values, lsb_bits, secret)
+
+    def verification_bytes(self, media: bytes) -> bytes:
+        params, frames = self._load_pcm(media)
+        return struct.pack(">IIII", params.nchannels, params.sampwidth,
+                           params.framerate, params.nframes) + frames
 
     @staticmethod
     def _load_pcm(raw: bytes) -> tuple[wave._wave_params, bytes]:
         try:
+            if len(raw) < 12 or int.from_bytes(raw[4:8], "little") + 8 > len(raw):
+                raise InvalidMediaError("Truncated WAV container")
             with wave.open(io.BytesIO(raw), "rb") as wav:
                 if wav.getcomptype() != "NONE" or wav.getsampwidth() < 1:
                     raise InvalidMediaError("Audio engine accepts uncompressed PCM WAV files only")
-                return wav.getparams(), wav.readframes(wav.getnframes())
+                params = wav.getparams()
+                frames = wav.readframes(params.nframes)
+                if not frames or len(frames) != params.nframes * params.nchannels * params.sampwidth:
+                    raise InvalidMediaError("Empty or truncated PCM data")
+                return params, frames
         except InvalidMediaError:
             raise
         except (OSError, EOFError, wave.Error) as error:

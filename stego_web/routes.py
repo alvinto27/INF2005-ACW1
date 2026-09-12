@@ -7,12 +7,9 @@ import json
 
 from flask import Blueprint, jsonify, render_template, request
 
-from payload_protocol import detect_media_type
-
 from .exceptions import (
     CapacityError,
     InvalidMediaError,
-    WrongStartLocationError,
 )
 from .models import Verdict
 from .services import (
@@ -25,6 +22,7 @@ from .services import (
     PayloadBuilder,
     SteganographyRegistry,
 )
+from .services.verification_pipeline import VerificationPipeline
 
 web = Blueprint("web", __name__)
 
@@ -37,6 +35,7 @@ stego_registry = SteganographyRegistry(
     ]
 )
 cover_handler = CoverMediaHandler(stego_registry)
+verification_pipeline = VerificationPipeline(cover_handler, crypto_manager)
 encoding_pipeline = EncodingPipeline(
     cover_handler,
     crypto_manager,
@@ -137,21 +136,16 @@ def decode():
         stego = _required_upload("stego")
         public_key = _required_upload("public_key")
         original_cover = _optional_upload("original_cover")
-        lsb_bits = _lsb_bits()
-        secret = _required_form_value("start_secret")
-        media_type = detect_media_type(stego)
-        extracted = stego_registry.for_media(media_type).extract(stego, lsb_bits, secret)
-        result = crypto_manager.verify_signed_packet(
-            extracted.packet, public_key, original_cover
+        lsb_bits = None if request.form.get("lsb_bits", "auto") == "auto" else _lsb_bits()
+        result = verification_pipeline.verify(
+            stego, public_key, request.form.get("start_secret", ""), lsb_bits,
+            original_cover, request.form.get("media_type", "auto"),
         )
-    except WrongStartLocationError as error:
-        return _error(str(error), 422, Verdict.WRONG_START_LOCATION)
     except (InvalidMediaError, TypeError, ValueError) as error:
-        return _error(str(error), 400, Verdict.PAYLOAD_MISSING)
+        return _error(str(error), 400, Verdict.CANNOT_VERIFY)
 
-    response = result.as_dict()
-    response.update(ok=result.verdict == Verdict.AUTHENTIC, media_type=media_type)
-    return jsonify(response)
+    result["filename"] = request.files["stego"].filename
+    return jsonify(result), (422 if result["verdict"] == Verdict.PAYLOAD_MISSING else 200)
 
 
 def _required_upload(name: str) -> bytes:

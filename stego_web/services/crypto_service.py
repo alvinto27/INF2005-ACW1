@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import re
+import struct
 from dataclasses import dataclass
+from datetime import datetime
 
 from payload_protocol import (
     build_verification_packet,
@@ -14,6 +18,7 @@ from payload_protocol import (
     load_private_key_pem,
     load_public_key_pem,
     sign_payload,
+    unpack_verification_packet,
     verify_verification_packet,
 )
 
@@ -98,10 +103,31 @@ class CryptoManager:
                 f"The public key could not be loaded: {error}",
             )
 
+        details = {"signature_size": (public_key.key_size + 7) // 8}
+        try:
+            payload_bytes, _ = unpack_verification_packet(packet, public_key)
+            details["payload_size"] = len(payload_bytes)
+            if len(packet) != 4 + len(payload_bytes) + details["signature_size"]:
+                raise ValueError("Unexpected trailing bytes in the framed packet")
+        except (ValueError, struct.error):
+            return VerificationResult(
+                Verdict.CANNOT_VERIFY, "Invalid payload/signature lengths.", details=details
+            )
         valid, message, payload = verify_verification_packet(packet, public_key)
         if not valid:
-            verdict = Verdict.SIGNATURE_INVALID if message == "Signature Invalid" else Verdict.PAYLOAD_MISSING
-            return VerificationResult(verdict, message)
+            invalid_signature = message == "Signature Invalid"
+            verdict = Verdict.SIGNATURE_INVALID if invalid_signature else Verdict.CANNOT_VERIFY
+            return VerificationResult(verdict, message, signature_valid=not invalid_signature,
+                                      details=details)
+
+        try:
+            self.validate_payload(payload)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            return VerificationResult(
+                Verdict.CANNOT_VERIFY, "Signed payload has invalid or missing required fields.",
+                signature_valid=True, details=details,
+            )
+        details["stored_hash"] = payload["media_hash"]
 
         if original_cover is None:
             return VerificationResult(
@@ -109,9 +135,11 @@ class CryptoManager:
                 "The signature is valid, but the original cover is required for media-hash verification.",
                 payload,
                 signature_valid=True,
+                details=details,
             )
 
         actual_hash = self.hash_cover(original_cover)
+        details["computed_hash"] = actual_hash
         expected_hash = payload.get("media_hash") if payload else None
         if not isinstance(expected_hash, str) or not hmac.compare_digest(actual_hash, expected_hash):
             return VerificationResult(
@@ -120,6 +148,7 @@ class CryptoManager:
                 payload,
                 signature_valid=True,
                 media_hash_valid=False,
+                details=details,
             )
 
         return VerificationResult(
@@ -128,7 +157,34 @@ class CryptoManager:
             payload,
             signature_valid=True,
             media_hash_valid=True,
+            details=details,
         )
+
+    @staticmethod
+    def validate_payload(payload: dict) -> None:
+        """Validate the existing encoder schema after authenticating its exact bytes."""
+        if not isinstance(payload, dict):
+            raise ValueError("Payload must be an object")
+        media_type = payload.get("media_type")
+        if media_type not in ("image", "audio"):
+            raise ValueError("Unsupported media type")
+        prefix = "IMG" if media_type == "image" else "AUD"
+        for name, pattern in (("media_id", prefix + r"-[0-9a-f]{8}"),
+                              ("media_hash", r"[0-9a-f]{64}"), ("nonce", r"[0-9a-f]{32}")):
+            value = payload.get(name)
+            if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
+                raise ValueError(f"Invalid {name}")
+        timestamp = payload.get("timestamp")
+        if not isinstance(timestamp, str):
+            raise ValueError("Invalid timestamp")
+        datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError("Invalid metadata")
+        for name in ("team_id", "sender"):
+            if not isinstance(metadata.get(name), str) or not metadata[name].strip():
+                raise ValueError(f"Invalid {name}")
+        json.dumps(payload, allow_nan=False)
 
 
 class CryptographyService(CryptoManager):

@@ -26,6 +26,9 @@ Use this map before editing an unfamiliar part of the repository.
 | FR1 and FR5 Python functions | [FR1_FR5.py](../FR1_FR5.py) |
 | Flask web scaffold | [stego_web/](../stego_web/) and [run.py](../run.py) |
 | Seven-step encoding controller | [encoding_pipeline.py](../stego_web/services/encoding_pipeline.py) |
+| Shared verification controller | [verification_pipeline.py](../stego_web/services/verification_pipeline.py) |
+| Browser UI and motion layer | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), [motion.js](../stego_web/static/motion.js), and [style.css](../stego_web/static/style.css) |
+| Decoder format and integrity limitations | [DECODING_VERIFICATION.md](DECODING_VERIFICATION.md) |
 | Cover validation and payload building | [cover_media.py](../stego_web/services/cover_media.py) and [payload_builder.py](../stego_web/services/payload_builder.py) |
 | Cryptography and LSB engines | [crypto_service.py](../stego_web/services/crypto_service.py) and [steganography.py](../stego_web/services/steganography.py) |
 | Protocol tests | [test_payload_protocol.py](../test_payload_protocol.py) |

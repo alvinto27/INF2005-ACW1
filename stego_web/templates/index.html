@@ -7,19 +7,42 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
   <header class="site-header">
-    <p class="eyebrow">INF2005 / LOCAL SECURITY TOOL</p>
-    <h1>StegoVerify</h1>
-    <p class="lede">Build a signed stego object through a seven-step pipeline.</p>
+    <div class="brand-row">
+      <a class="brand-mark" href="#encode-title" aria-label="StegoVerify home">SV</a>
+      <nav class="workflow-nav" aria-label="Workflows">
+        <a class="is-current" href="#encode-title">Encode</a>
+        <a id="open-verify" href="#verify-panel">Verify / Decode</a>
+      </nav>
+    </div>
+    <div class="hero-copy">
+      <p class="eyebrow">INF2005 / LOCAL SECURITY TOOL</p>
+      <h1>Hide the proof.<br><span>Keep the trust.</span></h1>
+      <p class="lede">Create, sign, and verify protected PNG or WAV media through a guided cryptographic workflow.</p>
+      <div class="trust-strip" aria-label="Supported capabilities">
+        <span>PNG + PCM/WAV</span><span>RSA-PSS signed</span><span>1-8 LSB</span><span>Local processing</span>
+      </div>
+    </div>
   </header>
   <main>
     <section class="wizard-shell" aria-labelledby="encode-title">
-      <div class="wizard-heading"><div><p class="eyebrow">ENCODING PHASE</p><h2 id="encode-title">Create protected media</h2></div><span id="step-count" class="step-count">Step 1 of 7</span></div>
-      <div class="progress" aria-hidden="true"><span id="progress-bar"></span></div>
+      <div class="wizard-heading"><div><p class="eyebrow">ENCODING PHASE</p><h2 id="encode-title">Create protected media</h2></div><span id="step-count" class="step-count" aria-live="polite">Step 1 of 7</span></div>
+      <div class="progress" role="progressbar" aria-label="Encoding progress" aria-valuemin="1" aria-valuemax="7" aria-valuenow="1"><span id="progress-bar"></span></div>
+      <ol class="step-track" aria-label="Encoding steps">
+        <li class="is-active" data-step-marker="0"><span>1</span><small>Input</small></li>
+        <li data-step-marker="1"><span>2</span><small>Hash</small></li>
+        <li data-step-marker="2"><span>3</span><small>Payload</small></li>
+        <li data-step-marker="3"><span>4</span><small>Sign</small></li>
+        <li data-step-marker="4"><span>5</span><small>Locate</small></li>
+        <li data-step-marker="5"><span>6</span><small>Embed</small></li>
+        <li data-step-marker="6"><span>7</span><small>Export</small></li>
+      </ol>
       <form id="encode-form" enctype="multipart/form-data" novalidate>
         <section class="wizard-card is-active" data-step="0" aria-labelledby="step-1-title">
           <span class="step-kicker">01 / INPUT VALIDATION</span><h3 id="step-1-title">Choose your cover and data</h3><p class="hint">Use a lossless PNG image or uncompressed WAV/PCM audio file.</p>
-          <label class="drop-zone" for="cover-input"><span class="drop-icon">+</span><strong id="cover-name">Choose a PNG or WAV file</strong><small>The backend fully validates the file before hashing.</small><input id="cover-input" name="cover" type="file" accept=".png,.wav,image/png,audio/wav" required></label>
+          <label id="cover-drop" class="drop-zone" for="cover-input" tabindex="0"><span class="drop-icon" aria-hidden="true">+</span><strong id="cover-name">Drop a PNG or WAV here</strong><small>or click to browse; the backend validates it before hashing</small><span id="cover-meta" class="file-meta">Maximum size is controlled by the local server.</span><input id="cover-input" name="cover" type="file" accept=".png,.wav,image/png,audio/wav" required></label>
           <div class="field-grid"><label>Team ID<input name="team_id" value="P1-4" required></label><label>Sender<input name="sender" placeholder="Your name" required></label></div>
           <label>Secret message<textarea name="secret_message" rows="3" placeholder="Optional message for your team"></textarea></label>
           <label>Metadata<textarea name="metadata" rows="3" placeholder='Optional JSON, e.g. {"project":"INF2005"}'></textarea></label>
@@ -51,7 +74,8 @@
         </section>
         <section class="wizard-card" data-step="5" aria-labelledby="step-6-title" hidden>
           <span class="step-kicker">06 / LSB EMBEDDING</span><h3 id="step-6-title">Choose LSB depth and encode</h3><p class="hint">Higher values increase capacity but make media changes more noticeable.</p>
-          <label class="range-label">Least Significant Bits <output id="encode-lsb-output">1</output><input id="encode-lsb" type="range" name="lsb_bits" min="1" max="8" value="1"><span class="range-scale"><span>Subtle</span><span>Maximum capacity</span></span></label>
+          <label class="range-label"><span class="range-heading">Least Significant Bits <output id="encode-lsb-output">1</output></span><input id="encode-lsb" type="range" name="lsb_bits" min="1" max="8" value="1"><span class="range-scale"><span>Subtle</span><span>Maximum capacity</span></span></label>
+          <div class="lsb-insight"><span class="insight-dot" aria-hidden="true"></span><div><strong id="lsb-impact">Lowest visual impact</strong><small id="lsb-guidance">Best first choice when the cover has enough capacity.</small></div></div>
           <div id="encode-result" class="result" aria-live="polite"></div><div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="submit" class="primary">Encode and export <span>-&gt;</span></button></div>
         </section>
         <section class="wizard-card success-card" data-step="6" aria-labelledby="success-title" hidden>
@@ -61,10 +85,30 @@
         </section>
       </form>
     </section>
-    <details class="decode-panel"><summary>Already have a stego file? Decode and verify</summary>
-      <form id="decode-form" enctype="multipart/form-data"><div class="field-grid"><label>Stego PNG/WAV<input name="stego" type="file" accept=".png,.wav,image/png,audio/wav" required></label><label>Public key (.pem)<input name="public_key" type="file" accept=".pem,text/plain" required></label></div><label>Original cover <small>(required for an Authentic verdict)</small><input name="original_cover" type="file" accept=".png,.wav,image/png,audio/wav"></label><div class="field-grid"><label>Start secret<input name="start_secret" type="password" minlength="8" required></label><label>LSBs<input name="lsb_bits" type="number" min="1" max="8" value="1" required></label></div><button type="submit" class="primary">Extract and verify</button></form>
-      <div id="decode-result" class="result" aria-live="polite"></div>
+    <details id="verify-panel" class="decode-panel"><summary><span class="summary-icon" aria-hidden="true">V</span><span><small>RECEIVED A STEGO FILE?</small>Decode and verify media</span><span class="summary-arrow" aria-hidden="true">+</span></summary>
+      <div class="decode-intro"><p class="hint">Extract the signed payload and check the received image or audio. Use the sender's trusted public key and the same start secret.</p><div class="mini-flow" aria-label="Verification sequence"><span>Extract</span><i></i><span>Verify signature</span><i></i><span>Check integrity</span></div></div>
+      <form id="decode-form" enctype="multipart/form-data">
+        <div class="field-grid">
+          <label>Media type<select name="media_type" id="decode-media-type"><option value="auto">Detect automatically</option><option value="image">Image (PNG)</option><option value="audio">Audio (PCM/WAV)</option></select></label>
+          <label>LSBs<select name="lsb_bits"><option value="auto">Recover automatically (1-8)</option>{% for bits in range(1, 9) %}<option value="{{ bits }}">{{ bits }}</option>{% endfor %}</select></label>
+        </div>
+        <div class="field-grid">
+          <label>Received stego file<input id="decode-file" name="stego" type="file" accept=".png,.wav,image/png,audio/wav" required></label>
+          <label>Public key (.pem)<input name="public_key" type="file" accept=".pem,text/plain" required></label>
+        </div>
+        <label>Start-location secret<input name="start_secret" type="password" minlength="8" required autocomplete="off"></label>
+        <p class="hint">The start position is derived automatically. No pixel or sample offset needs to be entered.</p>
+        <label>Original cover (needed for full integrity verification)<input name="original_cover" type="file" accept=".png,.wav,image/png,audio/wav" aria-describedby="original-help"></label>
+        <p class="hint" id="original-help">The current format signs the original file's hash. Without that exact original, only the signature can be checked and the result is Cannot Verify. With it, the received pixels or PCM data are also compared against the expected embedded media.</p>
+        <button type="submit" class="primary">Verify received media</button>
+      </form>
+      <div id="decode-progress" class="result" role="status" aria-live="polite"></div>
+      <section id="decode-result" class="result" aria-label="Verification result" tabindex="-1" hidden></section>
     </details>
   </main>
-  <footer>Runs on localhost / Uploaded media is processed in memory.</footer><script src="{{ url_for('static', filename='app.js') }}" defer></script>
+  <footer><span>StegoVerify</span><span>Runs on localhost / Uploaded media is processed in memory.</span></footer>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.15/dist/gsap.min.js" defer></script>
+  <script src="{{ url_for('static', filename='motion.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='verify.js') }}" defer></script>
 </body></html>

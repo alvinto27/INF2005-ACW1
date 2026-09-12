@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 
@@ -35,11 +35,13 @@ class VerificationResult:
     verdict: Verdict
     message: str
     payload: dict | None = None
-    signature_valid: bool = False
+    signature_valid: bool | None = None
     media_hash_valid: bool | None = None
+    details: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
+            **self.details,
             "verdict": self.verdict.value,
             "message": self.message,
             "payload": self.payload,

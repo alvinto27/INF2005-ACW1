@@ -44,6 +44,25 @@ optional `/keys/generate` setup endpoint can create initial localhost demo keys;
 The wizard calls `/location/derive` to display the same PBKDF2-HMAC-SHA256
 location that the encoding pipeline will use.
 
+The interface uses GSAP 3.15 from jsDelivr for progressive card, progress, and
+result animations. If the CDN is unavailable or the browser requests reduced
+motion, the complete encode and decode workflows continue without animation.
+
+## Verify / Decode
+
+Open **Verify / Decode** from the page navigation. Upload the received PNG/WAV,
+the sender's trusted public PEM key, and enter the encoding start secret.
+Media type and LSB count default to automatic recovery; a known LSB value can
+also be selected. Upload the exact original cover for full integrity checks.
+Click **Verify received media** to see the verdict, signature/integrity checks,
+extracted metadata, hashes, and collapsible technical details.
+
+The signed hash authenticates the original file bytes. To check the received
+file too, verification re-embeds the extracted signed packet into the verified
+original and compares expected and received pixels/PCM data. Without an original,
+a valid signature returns **Cannot Verify**, not a media-authenticity claim.
+No private key is needed. See [decoding details](docs/DECODING_VERIFICATION.md).
+
 ## Tests and documentation
 
 ```sh

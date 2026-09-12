@@ -13,6 +13,8 @@ For repository structure and implementation entry points, see [Agent Navigation 
 
 ## Records
 
+- [Decoding and Verification](DECODING_VERIFICATION.md) - decoder architecture, integrity checks, result fields, testing, and limitations.
+
 - [Implementation Status](IMPLEMENTATION_STATUS.md) - current FR1-FR13 coverage, integration flow, and remaining submission work.
 
 - [Agent Navigation Map](AGENT_MAP.md) — repository paths and Git boundaries.
