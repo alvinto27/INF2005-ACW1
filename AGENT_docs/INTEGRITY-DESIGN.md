@@ -198,6 +198,23 @@ The old single file was deleted only after the new package passed the whole test
 | One `VerificationError` carrying a verdict | Three exception classes existed only to route three strings | Three separate exception types |
 | Byte-only payload API | Confidentiality becomes a caller-side concern with no library change | Built-in encryption |
 | Notebook helpers stay in the notebook | The library does not grow to serve a demonstration | Adding display code to `stego/` |
+| Fixed 32-byte PSS salt | Matches the SHA-256 digest and is predictable for other libraries; this reason was recorded after the rewrite, not when the value changed | `PSS.MAX_LENGTH` in `main`, which gives a 222-byte salt |
+
+## Why the PSS salt length changed
+
+PSS adds random bytes, called the salt, to the padding before it signs. The same input therefore gets a different signature each time. Both sides must use the same salt length because the verifier rebuilds the PSS padding with that setting.
+
+`origin/main` uses `padding.PSS(..., salt_length=padding.PSS.MAX_LENGTH)` in `_get_pss_padding()`. With an RSA-2048 key and SHA-256, that maximum is 222 bytes. This branch uses a fixed 32-byte salt, the same length as the SHA-256 digest, through `RSA_PSS_SALT_LENGTH` in `constants.py`.
+
+RFC 8017 gives the hash length as the typical PSS salt length, and 32 bytes is a common default. That makes the value predictable and lets other libraries verify these signatures without being told an unusual setting. The named constant also keeps the value in one place instead of relying on what a library computes as `MAX_LENGTH` from the key size.
+
+The security difference between a 32-byte salt and a 222-byte salt is not meaningful here. A longer salt does not make forgery meaningfully harder. The fixed value was chosen for predictability and interoperability, not for strength.
+
+A verifier expecting `PSS.MAX_LENGTH` rejects a signature made with a 32-byte salt. Nothing in this repository stores old signatures, so the practical cost is zero. The two branches are not signature-compatible.
+
+The salt length changed during the rewrite. It was not chosen at the time with a recorded reason. This explanation was written afterwards, when the difference was noticed while preparing to merge.
+
+`origin/main/README.md` incorrectly says that the module uses RSA PKCS#1 v1.5 and SHA-256, even though its code uses RSA-PSS. It is an example of documentation drifting away from code.
 
 ## Arguments worth remembering
 
