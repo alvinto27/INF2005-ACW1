@@ -10,7 +10,6 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from .bits import _require_bytes
 from .constants import (
     FINGERPRINT_DISPLAY_PREFIX,
-    MAX_PUBLIC_KEY_ENCODING_LENGTH,
     RSA_KEY_SIZE,
     RSA_PSS_SALT_LENGTH,
     RSA_PUBLIC_EXPONENT,
@@ -46,8 +45,6 @@ def generate_rsa_keypair():
 def serialize_rsa_public_key(public_key):
     public_key = validate_rsa_public_key(public_key)
     encoded = public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-    if len(encoded) > MAX_PUBLIC_KEY_ENCODING_LENGTH:
-        raise ValueError("canonical public-key encoding exceeds the limit")
     return encoded
 
 

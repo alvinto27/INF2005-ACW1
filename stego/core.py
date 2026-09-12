@@ -13,7 +13,7 @@ from .bits import (
     _validate_carrier_units,
     _validate_lsb_count,
     _validate_media_code,
-    _validate_uint64,
+    _validate_non_negative_integer,
     bit_sequence_to_bytes,
     bytes_to_bit_sequence,
     read_lsb_bits,
@@ -84,7 +84,7 @@ def encode_carrier(carrier_units, media_code, media_context, private_key, start_
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
     private_key = validate_rsa_private_key(private_key)
-    start_unit = _validate_uint64(start_unit, "start_unit")
+    start_unit = _validate_non_negative_integer(start_unit, "start_unit")
     lsb_count = _validate_lsb_count(lsb_count)
     user_payload = _require_bytes(user_payload, "user_payload")
     metadata = _require_bytes(metadata, "metadata")
@@ -107,16 +107,10 @@ def encode_carrier(carrier_units, media_code, media_context, private_key, start_
     return _embed_packet(carrier_units, layout, packet), layout, payload
 
 
-class WrongStartLocationError(ValueError):
-    pass
-
-
-class SignatureVerificationError(ValueError):
-    pass
-
-
-class MediaHashMismatchError(ValueError):
-    pass
+class VerificationError(ValueError):
+    def __init__(self, verdict, message):
+        super().__init__(message)
+        self.verdict = verdict
 
 
 @dataclass(frozen=True)
@@ -133,7 +127,7 @@ def resolve_candidate(carrier_units, candidate, expected_media_code):
     expected_media_code = _validate_media_code(expected_media_code)
     header_units = ceil_unit_count(PACKET_HEADER_SIZE * 8, candidate.lsb_count)
     if candidate.start_unit + header_units > carrier_units.size:
-        raise WrongStartLocationError("candidate header is out of range")
+        raise VerificationError("Wrong Start Location", "candidate header is out of range")
     header_bits = read_lsb_bits(carrier_units[candidate.start_unit:candidate.start_unit + header_units], PACKET_HEADER_SIZE * 8, candidate.lsb_count)
     header = parse_packet_header(bit_sequence_to_bytes(header_bits))
     if header.lsb_count != candidate.lsb_count:
@@ -144,7 +138,7 @@ def resolve_candidate(carrier_units, candidate, expected_media_code):
         layout = build_embedding_layout(carrier_units.size, candidate.start_unit, candidate.lsb_count, header.payload_length)
     except ValueError as error:
         if "does not fit" in str(error):
-            raise WrongStartLocationError("declared embedding footprint is out of range") from error
+            raise VerificationError("Wrong Start Location", "declared embedding footprint is out of range") from error
         raise
     return ResolvedCandidate(candidate, header, layout)
 
@@ -162,20 +156,17 @@ def verify_resolved_candidate(carrier_units, media_code, media_context, public_k
     if np.any(all_bits[packet_bits_length:] != 0):
         raise ValueError("alignment padding must be zero")
     packet = bit_sequence_to_bytes(all_bits[:packet_bits_length])
-    header = parse_packet_header(packet[:PACKET_HEADER_SIZE])
-    if header != resolved.header:
-        raise ValueError("packet header changed after candidate resolution")
     payload_start = PACKET_HEADER_SIZE
-    payload_end = payload_start + header.payload_length
+    payload_end = payload_start + resolved.header.payload_length
     payload_bytes = packet[payload_start:payload_end]
     payload = parse_payload(payload_bytes)
     signature = packet[payload_end:]
     signing_input = encode_signing_input(media_code, media_context, layout, payload_bytes)
     if not verify_signature(signing_input, signature, public_key):
-        raise SignatureVerificationError("RSA-PSS signature verification failed")
+        raise VerificationError("Signature Invalid", "RSA-PSS signature verification failed")
     calculated_hash = calculate_masked_media_hash(carrier_units, media_code, layout.lsb_count, layout.start_unit, layout.footprint)
     if calculated_hash != payload.media_hash:
-        raise MediaHashMismatchError("masked media hash mismatch")
+        raise VerificationError("Tampered", "masked media hash mismatch")
     return payload
 
 
@@ -215,12 +206,8 @@ def decode_carrier(carrier_units, media_code, media_context, public_key):
             resolved = resolve_candidate(carrier_units, candidate, media_code)
             payload = verify_resolved_candidate(carrier_units, media_code, media_context, public_key, resolved)
             valid.append((payload, resolved.layout))
-        except WrongStartLocationError as error:
-            failures.append(("Wrong Start Location", candidate, str(error)))
-        except SignatureVerificationError as error:
-            failures.append(("Signature Invalid", candidate, str(error)))
-        except MediaHashMismatchError as error:
-            failures.append(("Tampered", candidate, str(error)))
+        except VerificationError as error:
+            failures.append((error.verdict, candidate, str(error)))
         except ValueError as error:
             failures.append(("Cannot Verify", candidate, str(error)))
     if len(valid) > 1:

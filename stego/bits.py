@@ -6,7 +6,7 @@ from .constants import MAX_PAYLOAD_LENGTH, SUPPORTED_LSB_COUNTS, SUPPORTED_MEDIA
 
 
 def _validate_non_negative_integer(value, name):
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+    if not isinstance(value, (int, np.integer)):
         raise TypeError(f"{name} must be an integer")
     value = int(value)
     if value < 0:
@@ -21,15 +21,8 @@ def _validate_positive_integer(value, name):
     return value
 
 
-def _validate_uint64(value, name):
-    value = _validate_non_negative_integer(value, name)
-    if value > 0xFFFFFFFFFFFFFFFF:
-        raise ValueError(f"{name} must fit in unsigned 64 bits")
-    return value
-
-
 def _validate_lsb_count(lsb_count):
-    if isinstance(lsb_count, (bool, np.bool_)) or not isinstance(lsb_count, (int, np.integer)):
+    if not isinstance(lsb_count, (int, np.integer)):
         raise TypeError("lsb_count must be an integer")
     lsb_count = int(lsb_count)
     if lsb_count not in SUPPORTED_LSB_COUNTS:
@@ -38,7 +31,7 @@ def _validate_lsb_count(lsb_count):
 
 
 def _validate_media_code(media_code):
-    if isinstance(media_code, (bool, np.bool_)) or not isinstance(media_code, (int, np.integer)):
+    if not isinstance(media_code, (int, np.integer)):
         raise TypeError("media_code must be an integer")
     media_code = int(media_code)
     if media_code not in SUPPORTED_MEDIA_CODES:
@@ -118,9 +111,7 @@ def read_lsb_bits(carrier_units, bit_length, lsb_count):
 def validate_payload_length(payload_length):
     payload_length = _validate_non_negative_integer(payload_length, "payload_length")
     if payload_length > MAX_PAYLOAD_LENGTH:
-        raise ValueError("payload exceeds the version-1 payload limit")
-    if payload_length > 0xFFFFFFFF:
-        raise ValueError("payload length does not fit the header")
+        raise ValueError("payload exceeds the 16 MiB payload limit")
     return payload_length
 
 

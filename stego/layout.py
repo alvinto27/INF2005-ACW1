@@ -12,7 +12,6 @@ from .bits import (
     _validate_lsb_count,
     _validate_media_code,
     _validate_non_negative_integer,
-    _validate_uint64,
     validate_payload_bytes,
     validate_payload_length,
 )
@@ -44,8 +43,8 @@ class EmbeddingLayout:
 
 
 def build_embedding_layout(total_units, start_unit, lsb_count, payload_length):
-    total_units = _validate_uint64(total_units, "total_units")
-    start_unit = _validate_uint64(start_unit, "start_unit")
+    total_units = _validate_non_negative_integer(total_units, "total_units")
+    start_unit = _validate_non_negative_integer(start_unit, "start_unit")
     lsb_count = _validate_lsb_count(lsb_count)
     payload_length = validate_payload_length(payload_length)
     packet_bits = (PACKET_HEADER_SIZE + payload_length + RSA_SIGNATURE_SIZE) * 8
@@ -57,8 +56,8 @@ def build_embedding_layout(total_units, start_unit, lsb_count, payload_length):
 
 
 def preserved_bit_count(total_units, footprint, lsb_count):
-    total_units = _validate_uint64(total_units, "total_units")
-    footprint = _validate_uint64(footprint, "footprint")
+    total_units = _validate_non_negative_integer(total_units, "total_units")
+    footprint = _validate_non_negative_integer(footprint, "footprint")
     lsb_count = _validate_lsb_count(lsb_count)
     if footprint > total_units:
         raise ValueError("footprint exceeds total_units")
@@ -70,9 +69,9 @@ def calculate_masked_media_hash(carrier_units, media_code, lsb_count, start_unit
     carrier_units = _validate_carrier_units(carrier_units)
     media_code = _validate_media_code(media_code)
     lsb_count = _validate_lsb_count(lsb_count)
-    total_units = _validate_uint64(carrier_units.size, "total_units")
-    start_unit = _validate_uint64(start_unit, "start_unit")
-    footprint = _validate_uint64(footprint, "footprint")
+    total_units = _validate_non_negative_integer(carrier_units.size, "total_units")
+    start_unit = _validate_non_negative_integer(start_unit, "start_unit")
+    footprint = _validate_non_negative_integer(footprint, "footprint")
     if start_unit + footprint > total_units:
         raise ValueError("masked media footprint is out of range")
     masked = carrier_units.copy()

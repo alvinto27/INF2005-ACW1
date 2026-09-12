@@ -11,7 +11,7 @@ from .bits import (
     _validate_lsb_count,
     _validate_media_code,
     _validate_positive_integer,
-    _validate_uint64,
+    _validate_non_negative_integer,
     bytes_to_bit_sequence,
     validate_payload_bytes,
     validate_payload_length,
@@ -76,7 +76,7 @@ class PayloadRecord:
         media_id_bytes = self.media_id.encode("utf-8")
         if not media_id_bytes or len(media_id_bytes) > MAX_MEDIA_ID_BYTES:
             raise ValueError("media_id UTF-8 length must be between 1 and 255 bytes")
-        timestamp = _validate_uint64(self.timestamp, "timestamp")
+        timestamp = _validate_non_negative_integer(self.timestamp, "timestamp")
         nonce = _require_bytes(self.nonce, "nonce")
         media_hash = _require_bytes(self.media_hash, "media_hash")
         user_payload = _require_bytes(self.user_payload, "user_payload")
@@ -85,17 +85,11 @@ class PayloadRecord:
             raise ValueError("nonce must contain exactly 16 bytes")
         if len(media_hash) != SHA256_DIGEST_SIZE:
             raise ValueError("media_hash must contain exactly 32 bytes")
-        if len(user_payload) > 0xFFFFFFFF or len(metadata) > 0xFFFFFFFF:
-            raise ValueError("payload field length exceeds unsigned 32-bit range")
         try:
             metadata.decode("utf-8")
         except UnicodeDecodeError as error:
             raise ValueError("metadata must contain valid UTF-8 bytes") from error
         object.__setattr__(self, "timestamp", timestamp)
-        object.__setattr__(self, "nonce", bytes(nonce))
-        object.__setattr__(self, "media_hash", bytes(media_hash))
-        object.__setattr__(self, "user_payload", bytes(user_payload))
-        object.__setattr__(self, "metadata", bytes(metadata))
 
 
 def serialize_payload(record):
