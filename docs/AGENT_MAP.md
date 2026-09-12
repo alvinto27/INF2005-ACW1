@@ -17,16 +17,14 @@ Use this map before editing an unfamiliar part of the repository.
 | Repository instructions | [AGENTS.md](../AGENTS.md) |
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](INF2005-ACW1-spec_v5-f2f.md) |
-| Initial hashing and integrity design | [HASHING-INTEGRITY-DESIGN.md](HASHING-INTEGRITY-DESIGN.md) |
-| Hashing, integrity, and partly superseded key-trust design | [Hashing_and_Integrity_Design_Revised.md](Hashing_and_Integrity_Design_Revised.md) |
-| Obsolete FR1 and FR5 algorithm checklist | [TODO.md](TODO.md) |
+| Current masked-media integrity design | [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md) |
 
 ## Implementation locations
 
 | Area | Start here |
 | --- | --- |
 | Signed v1 steganography protocol | [stego_v1.py](../stego_v1.py) |
-| FR1–FR12 prototype notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
+| FR1–FR12 demonstration notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media v1 protocol tests | [test_stego_v1.py](../test_stego_v1.py) |
 | Python dependencies | [requirements.txt](../requirements.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |

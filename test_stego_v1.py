@@ -145,6 +145,20 @@ class TestMaskedStegoV1(unittest.TestCase):
         self.assertEqual(decode_v1_carrier(encoded, IMAGE_MEDIA_CODE, context, OTHER_PUBLIC_KEY).verdict, "Signature Invalid")
         self.assertEqual(decode_v1_carrier(source, IMAGE_MEDIA_CODE, context, PUBLIC_KEY).verdict, "Payload Missing")
 
+    def test_deeper_candidate_failure_has_priority(self):
+        source = carrier(30000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=31, k=3)
+        tampered = encoded.copy()
+        tampered[layout.start_unit + layout.footprint] ^= np.uint8(1)
+        shallow_start = tampered.size - ceil_unit_count(len(START_MAGIC) * 8, 1)
+        tampered[shallow_start:] = write_lsb_bits(
+            tampered[shallow_start:], bytes_to_bit_sequence(START_MAGIC), 1
+        )
+        candidates = scan_start_magic(tampered)
+        self.assertIn(StartMagicCandidate(layout.start_unit, layout.lsb_count), candidates)
+        self.assertIn(StartMagicCandidate(shallow_start, 1), candidates)
+        self.assertEqual(decode_v1_carrier(tampered, IMAGE_MEDIA_CODE, context, PUBLIC_KEY).verdict, "Tampered")
+
     def test_edited_header_k_is_cannot_verify(self):
         (encoded, layout, _), context = encode_image_carrier(start=17, k=3)
         edited_header = serialize_packet_header(4, IMAGE_MEDIA_CODE, layout.payload_length)
@@ -247,6 +261,24 @@ class TestMaskedStegoV1(unittest.TestCase):
             wav_result = verify_wav_v1(wav_output, PUBLIC_KEY)
             self.assertEqual(wav_result.verdict, "Authentic")
             self.assertEqual(wav_result.payload.metadata, b"kind=audio")
+
+    def test_wav_tampering_outside_footprint_is_tampered(self):
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            wav_input = directory / "input.wav"
+            wav_output = directory / "output.wav"
+            wav_tampered = directory / "tampered.wav"
+            with wave.open(str(wav_input), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(1)
+                wav_file.setframerate(8000)
+                wav_file.writeframes(bytes(range(256)) * 80)
+            layout, _ = encode_wav_v1(wav_input, wav_output, PRIVATE_KEY, 73, 5, b"WAV bytes", b"kind=audio")
+            wav_data = load_pcm_wav_from_path(wav_output)
+            changed = wav_frame_bytes_to_carrier(wav_data.frame_bytes)
+            changed[layout.start_unit + layout.footprint] ^= np.uint8(1)
+            save_pcm_wav_to_path(wav_data_with_carrier(wav_data, changed), wav_tampered)
+            self.assertEqual(verify_wav_v1(wav_tampered, PUBLIC_KEY).verdict, "Tampered")
 
     def test_unsupported_image_formats_are_rejected(self):
         with TemporaryDirectory() as directory_name:

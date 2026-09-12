@@ -908,7 +908,8 @@ def decode_v1_carrier(carrier_units, media_code, media_context, public_key):
             preserved_bits,
             ratio,
         )
-    priority = ("Wrong Start Location", "Signature Invalid", "Tampered", "Cannot Verify")
+    # Prefer the failure from the candidate that reached the deepest verification stage.
+    priority = ("Tampered", "Signature Invalid", "Wrong Start Location", "Cannot Verify")
     verdict = next(item for item in priority if any(failure[0] == item for failure in failures))
     details = "; ".join(f"candidate {candidate.start_unit}/{candidate.lsb_count}: {detail}" for kind, candidate, detail in failures if kind == verdict)
     return _failure_result(verdict, details[:1000])
