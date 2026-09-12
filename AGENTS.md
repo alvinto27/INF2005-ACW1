@@ -17,6 +17,8 @@ This repository provides a signed LSB steganography protocol for strict RGB PNG 
 
 ```sh
 python -m pip install -r requirements.txt
+# Optional: install only when you need to run the demonstration notebook.
+python -m pip install -r requirements-notebook.txt
 python -m unittest -v
 python3 scripts/check-docs.py
 bash scripts/install-hooks.sh
@@ -34,8 +36,9 @@ bash scripts/install-hooks.sh
 
 - Keep the shared protocol media-neutral and use the fixed PNG and WAV adapters for file I/O.
 - Preserve the documented packet format and verification verdicts when changing protocol behavior.
-- Keep dependencies in `requirements.txt` and tests in `test_stego.py` unless the repository adopts a different layout.
+- Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in `test_stego.py` unless the repository adopts a different layout.
 - Store each durable record—such as an architecture note, plan, runbook, status record, release note, or ADR—in its own aptly named file under `docs/`, and list it in `docs/README.md`.
+- Committed notebooks carry no execution state; clear outputs and execution counts before committing.
 - `git commit --no-verify` intentionally bypasses the documentation hook when necessary.
 
 ## Map freshness

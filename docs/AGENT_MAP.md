@@ -33,7 +33,8 @@ Use this map before editing an unfamiliar part of the repository.
 | End-to-end encode and verification | [stego/core.py](../stego/core.py) |
 | FR1–FR12 demonstration notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol tests | [test_stego.py](../test_stego.py) |
-| Python dependencies | [requirements.txt](../requirements.txt) |
+| Runtime and test dependencies | [requirements.txt](../requirements.txt) |
+| Optional demonstration-notebook dependency | [requirements-notebook.txt](../requirements-notebook.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |
 | Git-hook installer | [scripts/install-hooks.sh](../scripts/install-hooks.sh) |
 

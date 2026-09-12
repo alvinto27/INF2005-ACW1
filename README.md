@@ -18,7 +18,15 @@ Requires Python 3.10+.
 - [Documentation index](docs/README.md)
 - [Agent navigation map](docs/AGENT_MAP.md)
 
+Install the library and test dependencies, then run the tests:
+
 ```sh
 python -m pip install -r requirements.txt
 python -m unittest -v
+```
+
+The notebook dependency is optional and is needed only to run the demonstration:
+
+```sh
+python -m pip install -r requirements-notebook.txt
 ```
