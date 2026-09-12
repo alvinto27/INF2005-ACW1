@@ -14,9 +14,11 @@ Use this map before editing an unfamiliar part of the repository.
 | Content | Location |
 | --- | --- |
 | Documentation index | [AGENT_docs/README.md](README.md) |
+| Supplied specification directory | `docs/` |
+| Project-maintained records | `AGENT_docs/` |
 | Repository instructions | [AGENTS.md](../AGENTS.md) |
 | Public setup and protocol usage | [README.md](../README.md) |
-| Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](INF2005-ACW1-spec_v5-f2f.md) |
+| Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
 | Current masked-media integrity design and design history | [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md) |
 | Outstanding assignment work | [OUTSTANDING-WORK.md](OUTSTANDING-WORK.md) |
 
@@ -44,4 +46,4 @@ Use this map before editing an unfamiliar part of the repository.
 | Boundary | Rule |
 | --- | --- |
 | This repository | Independent Git repository on branch `yx`; commit and push its work from this directory. |
-| Parent `School-Repos` checkout | It does not track this directory as a submodule or gitlink. Do not treat changes here as parent-repository changes unless its owner explicitly adds this repository. |
+| Parent `School-Repos` checkout | It tracks this directory as a submodule or gitlink. Do not treat changes here as parent-repository changes unless its owner explicitly requests them. |
