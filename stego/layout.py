@@ -1,4 +1,4 @@
-"""Embedding layout, masked media hash, and signing input."""
+"""Build embedding layouts, masked media hashes, and signing input for signed packets."""
 
 import hashlib
 import struct
@@ -27,6 +27,7 @@ from .constants import (
 
 
 def ceil_unit_count(bit_length, lsb_count):
+    """How many carrier units it takes to hold this many bits, at lsb_count bits per unit."""
     bit_length = _validate_non_negative_integer(bit_length, "bit_length")
     lsb_count = _validate_lsb_count(lsb_count)
     return (bit_length + lsb_count - 1) // lsb_count
@@ -34,6 +35,7 @@ def ceil_unit_count(bit_length, lsb_count):
 
 @dataclass(frozen=True)
 class EmbeddingLayout:
+    """Keep the carrier-unit footprint and packet geometry used for embedding."""
     total_units: int
     start_unit: int
     footprint: int
@@ -43,6 +45,7 @@ class EmbeddingLayout:
 
 
 def build_embedding_layout(total_units, start_unit, lsb_count, payload_length):
+    """Calculate and check how many carrier units a packet needs."""
     total_units = _validate_non_negative_integer(total_units, "total_units")
     start_unit = _validate_non_negative_integer(start_unit, "start_unit")
     lsb_count = _validate_lsb_count(lsb_count)
@@ -56,6 +59,7 @@ def build_embedding_layout(total_units, start_unit, lsb_count, payload_length):
 
 
 def preserved_bit_count(total_units, footprint, lsb_count):
+    """Count the carrier bits left unchanged after embedding a packet footprint."""
     total_units = _validate_non_negative_integer(total_units, "total_units")
     footprint = _validate_non_negative_integer(footprint, "footprint")
     lsb_count = _validate_lsb_count(lsb_count)
@@ -65,7 +69,8 @@ def preserved_bit_count(total_units, footprint, lsb_count):
 
 
 def calculate_masked_media_hash(carrier_units, media_code, lsb_count, start_unit, footprint):
-    """Hash all intentionally preserved carrier bits without expanding them to bits."""
+    """Hash the carrier with the packet's low bits cleared, so the sender and receiver get the
+    same answer even though the packet overwrote those bits."""
     carrier_units = _validate_carrier_units(carrier_units)
     media_code = _validate_media_code(media_code)
     lsb_count = _validate_lsb_count(lsb_count)
@@ -86,6 +91,7 @@ def calculate_masked_media_hash(carrier_units, media_code, lsb_count, start_unit
 
 
 def encode_signing_input(media_code, media_context, layout, payload_bytes):
+    """Build signed bytes covering the packet geometry and payload, so moving the packet makes verification fail."""
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
     if not isinstance(layout, EmbeddingLayout):

@@ -1,4 +1,4 @@
-"""Protocol constants and domain separators."""
+"""Define protocol constants and domain separators."""
 
 import struct
 

@@ -1,4 +1,4 @@
-"""End-to-end carrier encoding, verification, and file wrappers."""
+"""Encode and verify carriers, and provide file wrappers."""
 
 import os
 import secrets
@@ -68,6 +68,7 @@ from .packet import (
 
 
 def _embed_packet(carrier_units, layout, packet):
+    """Put a packet into the layout's carrier units and return a new carrier array."""
     packet = _require_bytes(packet, "packet")
     packet_bits = bytes_to_bit_sequence(packet)
     bits = np.zeros(layout.footprint * layout.lsb_count, dtype=np.uint8)
@@ -80,6 +81,7 @@ def _embed_packet(carrier_units, layout, packet):
 
 
 def encode_carrier(carrier_units, media_code, media_context, private_key, start_unit, lsb_count, user_payload, metadata):
+    """Create, sign, and embed a packet, then return the new units, layout, and payload."""
     carrier_units = _validate_carrier_units(carrier_units).copy()
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
@@ -108,19 +110,23 @@ def encode_carrier(carrier_units, media_code, media_context, private_key, start_
 
 
 class VerificationError(ValueError):
+    """A verification failure that carries the verdict to report back."""
     def __init__(self, verdict, message):
+        """Set the verdict and message for a verification failure."""
         super().__init__(message)
         self.verdict = verdict
 
 
 @dataclass(frozen=True)
 class ResolvedCandidate:
+    """Keep a discovered candidate with its header and embedding layout."""
     candidate: StartMagicCandidate
     header: PacketHeader
     layout: EmbeddingLayout
 
 
 def resolve_candidate(carrier_units, candidate, expected_media_code):
+    """Check the start unit and LSB count the receiver found instead of trusting supplied geometry."""
     carrier_units = _validate_carrier_units(carrier_units)
     if not isinstance(candidate, StartMagicCandidate):
         raise TypeError("candidate must be a StartMagicCandidate")
@@ -144,6 +150,7 @@ def resolve_candidate(carrier_units, candidate, expected_media_code):
 
 
 def verify_resolved_candidate(carrier_units, media_code, media_context, public_key, resolved):
+    """Check a packet's signature and masked media hash, then return its payload."""
     carrier_units = _validate_carrier_units(carrier_units)
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
@@ -172,6 +179,7 @@ def verify_resolved_candidate(carrier_units, media_code, media_context, public_k
 
 @dataclass(frozen=True)
 class VerificationResult:
+    """Keep a carrier's verification verdict and the details that support it."""
     valid: bool
     verdict: str
     detail: str
@@ -184,10 +192,12 @@ class VerificationResult:
 
 
 def _failure_result(verdict, detail):
+    """Make a failed verification result without a payload."""
     return VerificationResult(False, verdict, detail, None, None, None, None, None, None)
 
 
 def decode_carrier(carrier_units, media_code, media_context, public_key):
+    """Discover and check a packet in carrier units, then return its verification result."""
     carrier_units = _validate_carrier_units(carrier_units)
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
@@ -236,6 +246,7 @@ def decode_carrier(carrier_units, media_code, media_context, public_key):
 
 
 def _paths_resolve_same(first_path, second_path):
+    """Check whether two filesystem paths point to the same place."""
     for path in (first_path, second_path):
         if not isinstance(path, (str, bytes, PathLike)):
             raise TypeError("path must be a filesystem path")
@@ -243,6 +254,7 @@ def _paths_resolve_same(first_path, second_path):
 
 
 def encode_png(input_path, output_path, private_key, start_unit, lsb_count, user_payload, metadata):
+    """Encode a signed packet into an RGB PNG file and save it."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
     image = load_png_from_path(input_path)
@@ -254,6 +266,7 @@ def encode_png(input_path, output_path, private_key, start_unit, lsb_count, user
 
 
 def verify_png(input_path, public_key):
+    """Load an RGB PNG file and check its signed packet."""
     try:
         image = load_png_from_path(input_path)
         carrier = rgb_array_to_carrier(image)
@@ -264,6 +277,7 @@ def verify_png(input_path, public_key):
 
 
 def encode_wav(input_path, output_path, private_key, start_unit, lsb_count, user_payload, metadata):
+    """Encode a signed packet into an uncompressed PCM WAV file and save it."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
     wav_data = load_pcm_wav_from_path(input_path)
@@ -275,6 +289,7 @@ def encode_wav(input_path, output_path, private_key, start_unit, lsb_count, user
 
 
 def verify_wav(input_path, public_key):
+    """Load an uncompressed PCM WAV file and check its signed packet."""
     try:
         wav_data = load_pcm_wav_from_path(input_path)
         carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes)

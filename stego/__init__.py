@@ -1,4 +1,4 @@
-"""Public API for the masked-media steganography package."""
+"""Expose the masked-media steganography package's public API."""
 
 from .bits import (
     bit_sequence_to_bytes,

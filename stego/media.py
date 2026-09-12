@@ -1,4 +1,4 @@
-"""Strict RGB PNG and uncompressed PCM WAV adapters."""
+"""Read and write strict RGB PNG and uncompressed PCM WAV carriers."""
 
 import struct
 import wave
@@ -24,10 +24,11 @@ from .constants import (
 
 
 class UnSupportedFileType(Exception):
-    """Marks an unsupported file type."""
+    """An error raised for a file type this package does not support."""
 
 
 def _validate_rgb_array(image_array):
+    """Check that image_array is a non-empty RGB NumPy array of uint8 values."""
     if not isinstance(image_array, np.ndarray):
         raise TypeError("image_array must be a numpy array")
     if image_array.dtype != np.uint8:
@@ -40,6 +41,7 @@ def _validate_rgb_array(image_array):
 
 
 def _validate_rgb_png_header(image_path):
+    """Check that a PNG file has the 8-bit RGB format this package supports."""
     with open(image_path, "rb") as image_file:
         header = image_file.read(33)
     if len(header) != 33 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
@@ -55,6 +57,7 @@ def _validate_rgb_png_header(image_path):
 
 
 def load_png_from_path(image_path):
+    """Load and check a strict RGB PNG image from a file path."""
     if not isinstance(image_path, (str, bytes, PathLike)):
         raise TypeError("image_path must be a filesystem path")
     try:
@@ -75,10 +78,12 @@ def load_png_from_path(image_path):
 
 
 def rgb_array_to_carrier(image_array):
+    """Flatten an RGB image array into a copy of its carrier units."""
     return np.array(_validate_rgb_array(image_array), dtype=np.uint8, order="C", copy=True).reshape(-1).copy()
 
 
 def carrier_to_rgb_array(carrier_sequence, shape):
+    """Reshape carrier units into a copy with the given RGB image shape."""
     carrier_sequence = _validate_carrier_units(carrier_sequence)
     try:
         shape = tuple(shape)
@@ -92,6 +97,7 @@ def carrier_to_rgb_array(carrier_sequence, shape):
 
 
 def encode_png_media_context(image_shape, carrier_unit_count=None):
+    """Make the PNG context that ties its width and height to the signature."""
     try:
         height, width, channels = tuple(image_shape)
     except (TypeError, ValueError) as error:
@@ -104,6 +110,7 @@ def encode_png_media_context(image_shape, carrier_unit_count=None):
 
 
 def save_rgb_png_to_path(image_array, output_path):
+    """Save an RGB image array as a PNG file."""
     image_array = _validate_rgb_array(image_array)
     if not isinstance(output_path, (str, bytes, PathLike)):
         raise TypeError("output_path must be a filesystem path")
@@ -115,6 +122,7 @@ def save_rgb_png_to_path(image_array, output_path):
 
 @dataclass(frozen=True)
 class WavPcmData:
+    """Keep checked PCM WAV settings together with their frame bytes."""
     channels: int
     sample_width: int
     frame_rate: int
@@ -122,6 +130,7 @@ class WavPcmData:
     frame_bytes: bytes
 
     def __post_init__(self):
+        """Check and normalise all PCM WAV fields and frame bytes."""
         channels = _validate_positive_integer(self.channels, "channels")
         sample_width = _validate_positive_integer(self.sample_width, "sample_width")
         frame_rate = _validate_positive_integer(self.frame_rate, "frame_rate")
@@ -140,6 +149,7 @@ class WavPcmData:
 
 
 def load_pcm_wav_from_path(path):
+    """Load and check uncompressed PCM WAV data from a file path."""
     if not isinstance(path, (str, bytes, PathLike)):
         raise TypeError("path must be a filesystem path")
     try:
@@ -161,10 +171,12 @@ def load_pcm_wav_from_path(path):
 
 
 def wav_frame_bytes_to_carrier(frame_bytes):
+    """Copy PCM frame bytes into one uint8 carrier unit per byte."""
     return np.frombuffer(_require_bytes(frame_bytes, "frame_bytes"), dtype=np.uint8).copy()
 
 
 def encode_wav_media_context(wav_data, carrier_unit_count=None):
+    """Make the WAV context that ties its format and frame settings to the signature."""
     if not isinstance(wav_data, WavPcmData):
         raise TypeError("wav_data must be a WavPcmData")
     if wav_data.channels > 0xFFFF or wav_data.sample_width > 0xFF or wav_data.frame_rate > 0xFFFFFFFF or wav_data.frame_count > 0xFFFFFFFFFFFFFFFF:
@@ -175,6 +187,7 @@ def encode_wav_media_context(wav_data, carrier_unit_count=None):
 
 
 def wav_data_with_carrier(wav_data, carrier_units):
+    """Return WAV data with replacement carrier units and the same format settings."""
     if not isinstance(wav_data, WavPcmData):
         raise TypeError("wav_data must be a WavPcmData")
     carrier_units = _validate_carrier_units(carrier_units)
@@ -184,6 +197,7 @@ def wav_data_with_carrier(wav_data, carrier_units):
 
 
 def save_pcm_wav_to_path(wav_data, output_path):
+    """Save checked PCM WAV data to a file path."""
     if not isinstance(wav_data, WavPcmData):
         raise TypeError("wav_data must be a WavPcmData")
     if not isinstance(output_path, (str, bytes, PathLike)):
