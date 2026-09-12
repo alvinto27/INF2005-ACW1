@@ -27,7 +27,7 @@ class UnSupportedFileType(Exception):
     """An error raised for a file type this package does not support."""
 
 
-def _validate_rgb_array(image_array):
+def _validate_rgb_array(image_array: np.ndarray) -> np.ndarray:
     """Check that image_array is a non-empty RGB NumPy array of uint8 values."""
     if not isinstance(image_array, np.ndarray):
         raise TypeError("image_array must be a numpy array")
@@ -40,7 +40,7 @@ def _validate_rgb_array(image_array):
     return image_array
 
 
-def _validate_rgb_png_header(image_path):
+def _validate_rgb_png_header(image_path: str | bytes | PathLike[str]) -> None:
     """Check that a PNG file has the 8-bit RGB format this package supports."""
     with open(image_path, "rb") as image_file:
         header = image_file.read(33)
@@ -56,7 +56,7 @@ def _validate_rgb_png_header(image_path):
         raise ValueError("unsupported PNG encoding")
 
 
-def load_png_from_path(image_path):
+def load_png_from_path(image_path: str | bytes | PathLike[str]) -> np.ndarray:
     """Load and check a strict RGB PNG image from a file path."""
     if not isinstance(image_path, (str, bytes, PathLike)):
         raise TypeError("image_path must be a filesystem path")
@@ -77,12 +77,12 @@ def load_png_from_path(image_path):
         raise ValueError("unreadable or unsupported RGB PNG image") from error
 
 
-def rgb_array_to_carrier(image_array):
+def rgb_array_to_carrier(image_array: np.ndarray) -> np.ndarray:
     """Flatten an RGB image array into a copy of its carrier units."""
     return np.array(_validate_rgb_array(image_array), dtype=np.uint8, order="C", copy=True).reshape(-1).copy()
 
 
-def carrier_to_rgb_array(carrier_sequence, shape):
+def carrier_to_rgb_array(carrier_sequence: np.ndarray, shape: tuple[int, int, int]) -> np.ndarray:
     """Reshape carrier units into a copy with the given RGB image shape."""
     carrier_sequence = _validate_carrier_units(carrier_sequence)
     try:
@@ -96,7 +96,7 @@ def carrier_to_rgb_array(carrier_sequence, shape):
     return carrier_sequence.copy().reshape(shape)
 
 
-def encode_png_media_context(image_shape, carrier_unit_count=None):
+def encode_png_media_context(image_shape: tuple[int, int, int], carrier_unit_count: int | None = None) -> bytes:
     """Make the PNG context that ties its width and height to the signature."""
     try:
         height, width, channels = tuple(image_shape)
@@ -109,7 +109,7 @@ def encode_png_media_context(image_shape, carrier_unit_count=None):
     return struct.pack(PNG_MEDIA_CONTEXT_FORMAT, width, height)
 
 
-def save_rgb_png_to_path(image_array, output_path):
+def save_rgb_png_to_path(image_array: np.ndarray, output_path: str | bytes | PathLike[str]) -> None:
     """Save an RGB image array as a PNG file."""
     image_array = _validate_rgb_array(image_array)
     if not isinstance(output_path, (str, bytes, PathLike)):
@@ -129,7 +129,7 @@ class WavPcmData:
     frame_count: int
     frame_bytes: bytes
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Check and normalise all PCM WAV fields and frame bytes."""
         channels = _validate_positive_integer(self.channels, "channels")
         sample_width = _validate_positive_integer(self.sample_width, "sample_width")
@@ -148,7 +148,7 @@ class WavPcmData:
         object.__setattr__(self, "frame_bytes", bytes(frame_bytes))
 
 
-def load_pcm_wav_from_path(path):
+def load_pcm_wav_from_path(path: str | bytes | PathLike[str]) -> WavPcmData:
     """Load and check uncompressed PCM WAV data from a file path."""
     if not isinstance(path, (str, bytes, PathLike)):
         raise TypeError("path must be a filesystem path")
@@ -170,12 +170,12 @@ def load_pcm_wav_from_path(path):
         raise ValueError("invalid or unreadable uncompressed PCM WAV") from error
 
 
-def wav_frame_bytes_to_carrier(frame_bytes):
+def wav_frame_bytes_to_carrier(frame_bytes: bytes) -> np.ndarray:
     """Copy PCM frame bytes into one uint8 carrier unit per byte."""
     return np.frombuffer(_require_bytes(frame_bytes, "frame_bytes"), dtype=np.uint8).copy()
 
 
-def encode_wav_media_context(wav_data, carrier_unit_count=None):
+def encode_wav_media_context(wav_data: WavPcmData, carrier_unit_count: int | None = None) -> bytes:
     """Make the WAV context that ties its format and frame settings to the signature."""
     if not isinstance(wav_data, WavPcmData):
         raise TypeError("wav_data must be a WavPcmData")
@@ -186,7 +186,7 @@ def encode_wav_media_context(wav_data, carrier_unit_count=None):
     return struct.pack(WAV_MEDIA_CONTEXT_FORMAT, wav_data.channels, wav_data.sample_width, wav_data.frame_rate, wav_data.frame_count)
 
 
-def wav_data_with_carrier(wav_data, carrier_units):
+def wav_data_with_carrier(wav_data: WavPcmData, carrier_units: np.ndarray) -> WavPcmData:
     """Return WAV data with replacement carrier units and the same format settings."""
     if not isinstance(wav_data, WavPcmData):
         raise TypeError("wav_data must be a WavPcmData")
@@ -196,7 +196,7 @@ def wav_data_with_carrier(wav_data, carrier_units):
     return WavPcmData(wav_data.channels, wav_data.sample_width, wav_data.frame_rate, wav_data.frame_count, carrier_units.tobytes())
 
 
-def save_pcm_wav_to_path(wav_data, output_path):
+def save_pcm_wav_to_path(wav_data: WavPcmData, output_path: str | bytes | PathLike[str]) -> None:
     """Save checked PCM WAV data to a file path."""
     if not isinstance(wav_data, WavPcmData):
         raise TypeError("wav_data must be a WavPcmData")

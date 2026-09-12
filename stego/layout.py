@@ -26,7 +26,7 @@ from .constants import (
 )
 
 
-def ceil_unit_count(bit_length, lsb_count):
+def ceil_unit_count(bit_length: int, lsb_count: int) -> int:
     """How many carrier units it takes to hold this many bits, at lsb_count bits per unit."""
     bit_length = _validate_non_negative_integer(bit_length, "bit_length")
     lsb_count = _validate_lsb_count(lsb_count)
@@ -44,7 +44,7 @@ class EmbeddingLayout:
     pad_bits: int
 
 
-def build_embedding_layout(total_units, start_unit, lsb_count, payload_length):
+def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, payload_length: int) -> EmbeddingLayout:
     """Calculate and check how many carrier units a packet needs."""
     total_units = _validate_non_negative_integer(total_units, "total_units")
     start_unit = _validate_non_negative_integer(start_unit, "start_unit")
@@ -58,7 +58,7 @@ def build_embedding_layout(total_units, start_unit, lsb_count, payload_length):
     return EmbeddingLayout(total_units, start_unit, footprint, lsb_count, payload_length, pad_bits)
 
 
-def preserved_bit_count(total_units, footprint, lsb_count):
+def preserved_bit_count(total_units: int, footprint: int, lsb_count: int) -> int:
     """Count the carrier bits left unchanged after embedding a packet footprint."""
     total_units = _validate_non_negative_integer(total_units, "total_units")
     footprint = _validate_non_negative_integer(footprint, "footprint")
@@ -68,7 +68,7 @@ def preserved_bit_count(total_units, footprint, lsb_count):
     return 8 * (total_units - footprint) + (8 - lsb_count) * footprint
 
 
-def calculate_masked_media_hash(carrier_units, media_code, lsb_count, start_unit, footprint):
+def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_count: int, start_unit: int, footprint: int) -> bytes:
     """Hash the carrier with the packet's low bits cleared, so the sender and receiver get the
     same answer even though the packet overwrote those bits."""
     carrier_units = _validate_carrier_units(carrier_units)
@@ -90,7 +90,7 @@ def calculate_masked_media_hash(carrier_units, media_code, lsb_count, start_unit
     return hashlib.sha256(preimage).digest()
 
 
-def encode_signing_input(media_code, media_context, layout, payload_bytes):
+def encode_signing_input(media_code: int, media_context: bytes, layout: EmbeddingLayout, payload_bytes: bytes) -> bytes:
     """Build signed bytes covering the packet geometry and payload, so moving the packet makes verification fail."""
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")

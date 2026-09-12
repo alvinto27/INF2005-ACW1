@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from os import PathLike, fspath
 
+from cryptography.hazmat.primitives.asymmetric import rsa
 import numpy as np
 
 from .bits import (
@@ -67,7 +68,7 @@ from .packet import (
 )
 
 
-def _embed_packet(carrier_units, layout, packet):
+def _embed_packet(carrier_units: np.ndarray, layout: EmbeddingLayout, packet: bytes) -> np.ndarray:
     """Put a packet into the layout's carrier units and return a new carrier array."""
     packet = _require_bytes(packet, "packet")
     packet_bits = bytes_to_bit_sequence(packet)
@@ -80,7 +81,7 @@ def _embed_packet(carrier_units, layout, packet):
     return result
 
 
-def encode_carrier(carrier_units, media_code, media_context, private_key, start_unit, lsb_count, user_payload, metadata):
+def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: bytes, private_key: rsa.RSAPrivateKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[np.ndarray, EmbeddingLayout, PayloadRecord]:
     """Create, sign, and embed a packet, then return the new units, layout, and payload."""
     carrier_units = _validate_carrier_units(carrier_units).copy()
     media_code = _validate_media_code(media_code)
@@ -111,7 +112,7 @@ def encode_carrier(carrier_units, media_code, media_context, private_key, start_
 
 class VerificationError(ValueError):
     """A verification failure that carries the verdict to report back."""
-    def __init__(self, verdict, message):
+    def __init__(self, verdict: str, message: str) -> None:
         """Set the verdict and message for a verification failure."""
         super().__init__(message)
         self.verdict = verdict
@@ -125,7 +126,7 @@ class ResolvedCandidate:
     layout: EmbeddingLayout
 
 
-def resolve_candidate(carrier_units, candidate, expected_media_code):
+def resolve_candidate(carrier_units: np.ndarray, candidate: StartMagicCandidate, expected_media_code: int) -> ResolvedCandidate:
     """Check the start unit and LSB count the receiver found instead of trusting supplied geometry."""
     carrier_units = _validate_carrier_units(carrier_units)
     if not isinstance(candidate, StartMagicCandidate):
@@ -149,7 +150,7 @@ def resolve_candidate(carrier_units, candidate, expected_media_code):
     return ResolvedCandidate(candidate, header, layout)
 
 
-def verify_resolved_candidate(carrier_units, media_code, media_context, public_key, resolved):
+def verify_resolved_candidate(carrier_units: np.ndarray, media_code: int, media_context: bytes, public_key: rsa.RSAPublicKey, resolved: ResolvedCandidate) -> PayloadRecord:
     """Check a packet's signature and masked media hash, then return its payload."""
     carrier_units = _validate_carrier_units(carrier_units)
     media_code = _validate_media_code(media_code)
@@ -191,12 +192,12 @@ class VerificationResult:
     preserved_ratio: float | None
 
 
-def _failure_result(verdict, detail):
+def _failure_result(verdict: str, detail: str) -> VerificationResult:
     """Make a failed verification result without a payload."""
     return VerificationResult(False, verdict, detail, None, None, None, None, None, None)
 
 
-def decode_carrier(carrier_units, media_code, media_context, public_key):
+def decode_carrier(carrier_units: np.ndarray, media_code: int, media_context: bytes, public_key: rsa.RSAPublicKey) -> VerificationResult:
     """Discover and check a packet in carrier units, then return its verification result."""
     carrier_units = _validate_carrier_units(carrier_units)
     media_code = _validate_media_code(media_code)
@@ -245,7 +246,7 @@ def decode_carrier(carrier_units, media_code, media_context, public_key):
     return _failure_result(verdict, details[:1000])
 
 
-def _paths_resolve_same(first_path, second_path):
+def _paths_resolve_same(first_path: str | bytes | PathLike[str], second_path: str | bytes | PathLike[str]) -> bool:
     """Check whether two filesystem paths point to the same place."""
     for path in (first_path, second_path):
         if not isinstance(path, (str, bytes, PathLike)):
@@ -253,7 +254,7 @@ def _paths_resolve_same(first_path, second_path):
     return os.path.normcase(os.path.realpath(os.fsdecode(fspath(first_path)))) == os.path.normcase(os.path.realpath(os.fsdecode(fspath(second_path))))
 
 
-def encode_png(input_path, output_path, private_key, start_unit, lsb_count, user_payload, metadata):
+def encode_png(input_path: str | bytes | PathLike[str], output_path: str | bytes | PathLike[str], private_key: rsa.RSAPrivateKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[EmbeddingLayout, PayloadRecord]:
     """Encode a signed packet into an RGB PNG file and save it."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
@@ -265,7 +266,7 @@ def encode_png(input_path, output_path, private_key, start_unit, lsb_count, user
     return layout, payload
 
 
-def verify_png(input_path, public_key):
+def verify_png(input_path: str | bytes | PathLike[str], public_key: rsa.RSAPublicKey) -> VerificationResult:
     """Load an RGB PNG file and check its signed packet."""
     try:
         image = load_png_from_path(input_path)
@@ -276,7 +277,7 @@ def verify_png(input_path, public_key):
     return decode_carrier(carrier, IMAGE_MEDIA_CODE, context, public_key)
 
 
-def encode_wav(input_path, output_path, private_key, start_unit, lsb_count, user_payload, metadata):
+def encode_wav(input_path: str | bytes | PathLike[str], output_path: str | bytes | PathLike[str], private_key: rsa.RSAPrivateKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[EmbeddingLayout, PayloadRecord]:
     """Encode a signed packet into an uncompressed PCM WAV file and save it."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
@@ -288,7 +289,7 @@ def encode_wav(input_path, output_path, private_key, start_unit, lsb_count, user
     return layout, payload
 
 
-def verify_wav(input_path, public_key):
+def verify_wav(input_path: str | bytes | PathLike[str], public_key: rsa.RSAPublicKey) -> VerificationResult:
     """Load an uncompressed PCM WAV file and check its signed packet."""
     try:
         wav_data = load_pcm_wav_from_path(input_path)

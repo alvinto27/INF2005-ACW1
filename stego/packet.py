@@ -39,7 +39,7 @@ class PacketHeader:
     payload_length: int
 
 
-def serialize_packet_header(lsb_count, media_code, payload_length):
+def serialize_packet_header(lsb_count: int, media_code: int, payload_length: int) -> bytes:
     """Turn packet header fields into fixed-size header bytes."""
     return struct.pack(
         PACKET_HEADER_FORMAT,
@@ -51,7 +51,7 @@ def serialize_packet_header(lsb_count, media_code, payload_length):
     )
 
 
-def parse_packet_header(header_bytes):
+def parse_packet_header(header_bytes: bytes) -> PacketHeader:
     """Read and check a fixed-size packet header from bytes."""
     header_bytes = _require_bytes(header_bytes, "header_bytes")
     if len(header_bytes) != PACKET_HEADER_SIZE:
@@ -74,7 +74,7 @@ class PayloadRecord:
     user_payload: bytes
     metadata: bytes
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Check and normalise all payload record fields."""
         if not isinstance(self.media_id, str):
             raise TypeError("media_id must be text")
@@ -97,7 +97,7 @@ class PayloadRecord:
         object.__setattr__(self, "timestamp", timestamp)
 
 
-def serialize_payload(record):
+def serialize_payload(record: PayloadRecord) -> bytes:
     """Turn a payload record into checked packet payload bytes."""
     if not isinstance(record, PayloadRecord):
         raise TypeError("record must be a PayloadRecord")
@@ -116,7 +116,7 @@ def serialize_payload(record):
     return validate_payload_bytes(payload)
 
 
-def _take_payload_field(payload_bytes, offset, length, name):
+def _take_payload_field(payload_bytes: bytes, offset: int, length: int, name: str) -> tuple[bytes, int]:
     """Take one checked field from payload bytes and return where the next field starts."""
     end = offset + length
     if end > len(payload_bytes):
@@ -124,7 +124,7 @@ def _take_payload_field(payload_bytes, offset, length, name):
     return payload_bytes[offset:end], end
 
 
-def parse_payload(payload_bytes):
+def parse_payload(payload_bytes: bytes) -> PayloadRecord:
     """Read checked payload bytes into a payload record."""
     payload_bytes = validate_payload_bytes(payload_bytes)
     if not payload_bytes:
@@ -158,7 +158,7 @@ class StartMagicCandidate:
     lsb_count: int
 
 
-def _magic_unit_masks_and_values(lsb_count):
+def _magic_unit_masks_and_values(lsb_count: int) -> tuple[np.ndarray, np.ndarray]:
     """Build the masks and values used to match the start magic."""
     lsb_count = _validate_lsb_count(lsb_count)
     magic_bits = bytes_to_bit_sequence(START_MAGIC)
@@ -173,7 +173,7 @@ def _magic_unit_masks_and_values(lsb_count):
     return masks, values
 
 
-def _find_magic_start_mask(carrier_units, lsb_count):
+def _find_magic_start_mask(carrier_units: np.ndarray, lsb_count: int) -> tuple[np.ndarray, int]:
     """Find carrier-unit positions that match the start magic at one LSB count."""
     carrier_units = _validate_carrier_units(carrier_units)
     masks, values = _magic_unit_masks_and_values(lsb_count)
@@ -186,7 +186,7 @@ def _find_magic_start_mask(carrier_units, lsb_count):
     return matches, int(np.count_nonzero(matches))
 
 
-def scan_start_magic(carrier_units, max_candidates=MAX_MAGIC_CANDIDATES):
+def scan_start_magic(carrier_units: np.ndarray, max_candidates: int = MAX_MAGIC_CANDIDATES) -> tuple[StartMagicCandidate, ...]:
     """Discover packet start units and LSB counts by scanning the carrier instead of being told them."""
     carrier_units = _validate_carrier_units(carrier_units)
     max_candidates = _validate_positive_integer(max_candidates, "max_candidates")

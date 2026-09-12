@@ -37,6 +37,8 @@ bash scripts/install-hooks.sh
 - Keep the shared protocol media-neutral and use the fixed PNG and WAV adapters for file I/O.
 - Preserve the documented packet format and verification verdicts when changing protocol behavior.
 - Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in `test_stego.py` unless the repository adopts a different layout.
+- Annotate every function and method parameter and return type, including private helpers; use `-> None` when nothing is returned.
+- Use plain built-in types and `|` unions, write `X | None` instead of `Optional`, and write `str | bytes | PathLike[str]` inline at each site rather than defining an alias. Annotate carrier arrays as `np.ndarray` without dtype or shape; let docstrings carry that detail, and do not import from `typing` unless there is no other way.
 - Store each durable record—such as an architecture note, plan, runbook, status record, release note, or ADR—in its own aptly named file under `AGENT_docs/`, and list it in `AGENT_docs/README.md`. The `docs/` directory holds the supplied assignment specification and is not a place to add records.
 - `git commit --no-verify` intentionally bypasses the documentation hook when necessary.
 
