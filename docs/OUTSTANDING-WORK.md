@@ -6,11 +6,15 @@ This record lists assignment work that remains outside the finished library and 
 
 ### GUI
 
-The GUI remains with another team member. This repository does not build it. The GUI is worth roughly 19 of the 40 marks (brief [§5](INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) and [§11](INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks), criteria 2 and 3). It must:
+The GUI is mandatory under brief [§5](INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope). Another team member owns it; this repository does not build it. Criteria 2 and 3 total 19 marks (9 for image and 10 for audio) under brief [§11](INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks). Those criteria assess the working implementations and their demonstrations. This repository already provides the working encoders and decoders, payload insertion, start-location recovery, extraction, positive verification, and negative or tampered detection for both media. The GUI remains the demonstration surface owed by the team. It must:
 
 - play or execute the payload (brief [§5](INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope));
 - display the cover and stego objects side by side before and after encoding and decoding (brief [§5](INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope));
 - allow selection of 1 to 8 LSBs (brief [§5](INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)).
+
+### Individual technical explanation (criterion 6)
+
+This individual criterion is worth 5 marks. It remains outstanding for every member (brief [§11](INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks)). Each person must explain their own technical contribution and answer relevant demonstration questions with credible understanding. Each person owns this work individually; it is not a team-level item.
 
 ### Innovation explanation (FR13)
 
@@ -25,6 +29,14 @@ The required various-payload-sizes case includes a relevant custom payload that 
 ### Party A to party B transfer
 
 The demonstration must show a stego object sent from party A to party B, such as by email. Party B must download it to their folder and extract the hidden message with proof of integrity and signature verification (brief [§5](INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) and [§7](INF2005-ACW1-spec_v5-f2f.md#7-required-security-workflow)). The notebook deliberately does not simulate this transfer. It must happen live in the demonstration.
+
+### Limitations, ethics and AI-use reflection (criterion 7)
+
+This team criterion is worth 2 marks (brief [§11](INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks)). The team still needs an honest reflection on technical limits, responsible use, originality, and how AI was used and checked. The following material is available for that reflection:
+
+- Technical limitations are already written in [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md#limitations): overwritten cover bits cannot be recovered or authenticated; the start magic is public; padding validation is only a format check; and authenticity is relative to the public key supplied for verification.
+- One further limitation is not yet written down. PNG compression is lossless, so LSB embedding preserves the pixels exactly. However, embedded bits are random and compress poorly, so the stego file is slightly larger than the cover. For `samples/Banana.png`, the cover is 1,673,875 bytes; the stego files are 1,675,090 bytes at `k=1`, 1,675,035 bytes at `k=3`, and 1,674,414 bytes at `k=8`. An observer holding both files sees a size increase of 1,215, 1,160, or 539 bytes at identical dimensions. This is a real detectability signal and an honest limitation to report.
+- The cleanup and demonstration work in this repository was carried out by AI agents under human direction and human review. The team must write and sign its own reflection; this record does not write that reflection for it.
 
 ## 3. DECIDED BUT NOT YET USED
 
