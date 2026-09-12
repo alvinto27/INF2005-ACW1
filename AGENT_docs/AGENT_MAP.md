@@ -6,14 +6,14 @@ Use this map before editing an unfamiliar part of the repository.
 
 | Scope | Map or rule |
 | --- | --- |
-| Current repository | This file: `docs/AGENT_MAP.md` |
-| Parent workspace checkout | [School Repos map](../../../docs/AGENT_MAP.md); this repository is currently an untracked nested repository there. |
+| Current repository | This file: `AGENT_docs/AGENT_MAP.md` |
+| Parent workspace checkout | [School Repos map](../../../docs/AGENT_MAP.md); this repository is a tracked submodule there. |
 
 ## Documentation locations
 
 | Content | Location |
 | --- | --- |
-| Documentation index | [docs/README.md](README.md) |
+| Documentation index | [AGENT_docs/README.md](README.md) |
 | Repository instructions | [AGENTS.md](../AGENTS.md) |
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](INF2005-ACW1-spec_v5-f2f.md) |

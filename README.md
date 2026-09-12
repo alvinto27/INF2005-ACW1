@@ -15,8 +15,8 @@ Requires Python 3.10+.
 ## Documentation
 
 - [Agent instructions](AGENTS.md)
-- [Documentation index](docs/README.md)
-- [Agent navigation map](docs/AGENT_MAP.md)
+- [Documentation index](AGENT_docs/README.md)
+- [Agent navigation map](AGENT_docs/AGENT_MAP.md)
 
 Install the library and test dependencies, then run the tests:
 
