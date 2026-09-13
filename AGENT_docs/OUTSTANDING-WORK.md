@@ -22,9 +22,33 @@ This requirement is worth 4 marks (brief [§11](../docs/INF2005-ACW1-spec_v5-f2f
 
 ## 2. NOT BUILT, BELONGS HERE OR TO THE DEMO
 
-### Confidentiality payload
+### Payload content type
 
-The required various-payload-sizes case includes a relevant custom payload that the team decides can protect the hidden message's confidentiality and integrity (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)). Integrity and authenticity already exist. Confidentiality means encrypting the message before embedding it. This needs no library change: `user_payload` contains plain bytes, so the caller can pass ciphertext. The encrypted payload choice is **undecided**. The team must choose the custom message and encryption format to embed.
+`user_payload` accepts any bytes, so a receiver cannot tell a text note from a PNG or a WAV file without being told. The demonstration notebook assumes UTF-8 text and calls `.decode("utf-8")` on the recovered bytes. A binary payload raises an error there.
+
+Brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) requires the GUI to play or execute the payload. A player cannot select a handler for a payload it cannot identify. A declared content type is the missing part of that requirement.
+
+The design is decided, but it is **not built**. The content header goes inside the sealed blob, not in `metadata`, so it shows nothing to an observer who finds the packet. The layout is:
+
+```text
+version    u8, value 1
+mime_len   u8
+mime       UTF-8, lowercase ASCII
+name_len   u8
+name       UTF-8, can be empty
+body       the remaining bytes
+```
+
+These rules apply:
+
+- Use big-endian order and length prefixes, to agree with the packet format. There are no delimiters to escape.
+- Put the version byte first, so that a later change does not need a new packet format.
+- An empty `mime` means `application/octet-stream`. An unknown type is a permitted answer.
+- `name` must be a bare filename. Refuse `/`, `\`, and `..`. A receiver can save this file, and a signed name is not a safe name.
+- Keep the body length implicit. This removes one field that can disagree with the data.
+- A signed content type is a claim by the sender, not a fact about the bytes. Software that shows the payload must validate it first.
+
+This needs no library change. The caller builds and reads the header inside the encrypted plaintext.
 
 ### Party A to party B transfer
 
@@ -44,6 +68,7 @@ The brief names the exact test payload categories, but the notebook currently us
 
 - **Short message:** Use one Learning Outcome from brief [§3](../docs/INF2005-ACW1-spec_v5-f2f.md#3-learning-outcomes). The recorded choice is outcome 6, about designing and securing the start location. It is 138 bytes and is the outcome this implementation answers most directly.
 - **Large message:** Use the Project Overview paragraphs from brief [§2](../docs/INF2005-ACW1-spec_v5-f2f.md#2-project-overview). They are 673 bytes.
+- **Custom confidential payload:** The encryption mechanism is **built and demonstrated** in the Confidentiality payload section of the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb). A random AES-256-GCM key encrypts the message body, and RSA-OAEP with SHA-256 wraps that key with the receiver's public key. The sealed blob is a 256-byte wrapped key, a 12-byte nonce, and the ciphertext with its tag, which is a fixed 268-byte prefix. The receiver's private key is held in a password-protected PEM file and is loaded again in the receiver phase, so no secret value travels between the parties. Verification still needs only the stego file and the sender's public key, because the signature and the media hash are checked before any decryption. Only `user_payload` is encrypted: brief [FR3](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements) requires `media_id`, `timestamp`, `media_hash`, and `nonce` in the payload, and [FR9](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements) needs `media_hash` before decryption, so those fields and the team-defined `metadata` stay readable by design. The **message content is still undecided**. The notebook uses a placeholder string, and the team must choose the message it demonstrates.
 - **Capacity reference:** At `k=1`, the Banana cover holds 752,640 bytes and the 32,000-sample WAV holds 4,000 bytes. Therefore, the 673-byte large message fits both. The large message is large only relative to the short message; it is not a capacity test. The separate capacity case embeds the cover image inside itself (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)).
 
 ## 4. SUBMISSION PACKAGE, NOT ASSEMBLED
