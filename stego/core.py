@@ -282,7 +282,7 @@ def encode_wav(input_path: str | bytes | PathLike[str], output_path: str | bytes
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
     wav_data = load_pcm_wav_from_path(input_path)
-    carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes)
+    carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes, wav_data.sample_width)
     context = encode_wav_media_context(wav_data, carrier.size)
     encoded, layout, payload = encode_carrier(carrier, AUDIO_MEDIA_CODE, context, private_key, start_unit, lsb_count, user_payload, metadata)
     save_pcm_wav_to_path(wav_data_with_carrier(wav_data, encoded), output_path)
@@ -293,7 +293,7 @@ def verify_wav(input_path: str | bytes | PathLike[str], public_key: rsa.RSAPubli
     """Load an uncompressed PCM WAV file and check its signed packet."""
     try:
         wav_data = load_pcm_wav_from_path(input_path)
-        carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes)
+        carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes, wav_data.sample_width)
         context = encode_wav_media_context(wav_data, carrier.size)
     except (OSError, ValueError) as error:
         return _failure_result("Cannot Verify", str(error))

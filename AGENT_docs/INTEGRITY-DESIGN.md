@@ -101,6 +101,23 @@ signing_input = (
 
 The PNG media context is exactly `struct.pack(">II", width, height)`. The WAV media context is exactly `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 
+## Carrier units
+
+A carrier unit is the smallest thing the embedder writes into. Its meaning is per medium:
+
+| Medium | One carrier unit | Units available |
+| --- | --- | --- |
+| PNG | one 8-bit colour channel value | `width x height x 3` |
+| WAV | one PCM **sample** | `frame_count x channels` |
+
+For WAV, the unit is the sample, not the byte. Multi-byte PCM in WAV is always little-endian, so the lowest-address byte of a sample holds its low 8 bits. The carrier therefore takes every `sample_width`-th byte, starting at offset 0, and the writer puts the modified units back into those same positions. Every other byte of the file is copied through unchanged.
+
+This keeps the change to a sample within `(1 << k) - 1`, which is what "replace the low k bits" must mean. It also makes the selectable 1 to 8 LSBs of brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) refer to bits of the cover object, as [FR6](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements) requires.
+
+Capacity follows from the unit count, so multi-byte PCM holds `1 / sample_width` of what a byte count would suggest. That is the honest figure. The larger number came from counting bytes the encoder must not touch.
+
+At `sample_width == 1` the stride is 1, so 8-bit behaviour is unchanged. Files produced before this rule still verify, and files produced after it still verify under the earlier code.
+
 ## Payload discovery
 
 The decoder scans the carrier for the fixed 16-byte magic under each `k` value from 1 through 8. Each match supplies a candidate start unit and `k`. The decoder then reads the fixed header, checks its declarations, derives the footprint, extracts the packet, and applies the verification stages without moving or resizing the candidate.
@@ -228,6 +245,19 @@ except (TypeError, ValueError):
 ```
 
 That catch could not tell the difference between a validator doing its job and a test calling the function incorrectly. The tests were tightened to check for the specific failure before the split went any further. Of everything found during the rebuild, this mattered most.
+
+**The tests did not exercise the parameter space the API advertised.** `WavPcmData` accepted `sample_width` 1 to 4, but both WAV tests used `setsampwidth(1)`. At one byte per sample, a byte and a sample are the same thing, so a byte-wise carrier looked correct. It was not. For wider samples the embedder wrote into the low bit of *every* byte, including the most significant one. Measured maximum sample change at `k=1`:
+
+| Sample width | Measured | Correct |
+| --- | ---: | ---: |
+| 8-bit | 1 | 1 |
+| 16-bit | 257 | 1 |
+| 24-bit | 65,793 | 1 |
+| 32-bit | 16,843,009 | 1 |
+
+The error is the sum of every byte's place value, `1 + 256 + 65536 + 16777216`, not one bad byte. In noise terms the floor sat at -42 dBFS at `k=1` for every bit depth, so a 24-bit cover was damaged exactly as much as an 8-bit one and all the extra depth was thrown away. Sample-wise gives -90 dBFS at 16-bit and -138 dBFS at 24-bit.
+
+Nothing failed. A 16-bit stego file still verified as `Authentic` and the payload still round-tripped. The bug was invisible to every check the project had, because the checks only ever asked "did the bytes come back", never "how far did the cover move". The fix added one assertion per width: `max(abs(original - stego)) <= (1 << k) - 1`. Four widths accepted, one tested, is the shape of defect to look for elsewhere.
 
 **Most of the defensive code was guarding a door that no longer exists.** Validators refused a `True` where a number belonged. A length limit sat on a public key the program generates itself. Payload length was checked against two different ceilings. The packet header was parsed a second time and compared with the first parse of the same unchanged data. All of it made sense when the decoder read keys and JSON from strangers. It does not do that any more. No test can tell you whether removing a check is safe, so they were removed one at a time, in a list, and anything that raised a doubt was kept.
 

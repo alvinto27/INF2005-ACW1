@@ -40,6 +40,13 @@ def embedded_bit_flip(encoded, start, k, bit_offset):
     return result
 
 
+def decode_pcm_samples(frame_bytes: bytes, sample_width: int) -> list[int]:
+    return [
+        int.from_bytes(frame_bytes[offset:offset + sample_width], "little", signed=True)
+        for offset in range(0, len(frame_bytes), sample_width)
+    ]
+
+
 class TestMaskedStego(unittest.TestCase):
     def test_constants_header_and_minimal_media_contexts(self):
         self.assertEqual(MEDIA_HASH_DOMAIN, b"INF2005-ACW1\x00MEDIA-HASH\x00")
@@ -275,10 +282,111 @@ class TestMaskedStego(unittest.TestCase):
                 wav_file.writeframes(bytes(range(256)) * 80)
             layout, _ = encode_wav(wav_input, wav_output, PRIVATE_KEY, 73, 5, b"WAV bytes", b"kind=audio")
             wav_data = load_pcm_wav_from_path(wav_output)
-            changed = wav_frame_bytes_to_carrier(wav_data.frame_bytes)
+            changed = wav_frame_bytes_to_carrier(wav_data.frame_bytes, wav_data.sample_width)
             changed[layout.start_unit + layout.footprint] ^= np.uint8(1)
             save_pcm_wav_to_path(wav_data_with_carrier(wav_data, changed), wav_tampered)
             self.assertEqual(verify_wav(wav_tampered, PUBLIC_KEY).verdict, "Tampered")
+
+    def test_multibyte_wav_sample_stride_round_trips(self) -> None:
+        sample_count = 6000
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for sample_width in (2, 3, 4):
+                signed_limit = 1 << (sample_width * 8 - 1)
+                sample_values = [
+                    ((index * 7919) % (signed_limit * 2)) - signed_limit
+                    for index in range(sample_count)
+                ]
+                frame_bytes = b"".join(
+                    value.to_bytes(sample_width, "little", signed=True)
+                    for value in sample_values
+                )
+                wav_input = directory / f"width-{sample_width}-input.wav"
+                with wave.open(str(wav_input), "wb") as wav_file:
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(sample_width)
+                    wav_file.setframerate(8000)
+                    wav_file.writeframes(frame_bytes)
+                original = load_pcm_wav_from_path(wav_input)
+                for lsb_count in (1, 3, 8):
+                    with self.subTest(sample_width=sample_width, lsb_count=lsb_count):
+                        wav_output = directory / f"width-{sample_width}-k-{lsb_count}.wav"
+                        payload = f"width={sample_width};k={lsb_count}".encode("ascii")
+                        encode_wav(
+                            wav_input,
+                            wav_output,
+                            PRIVATE_KEY,
+                            0,
+                            lsb_count,
+                            payload,
+                            b"multi-byte",
+                        )
+                        result = verify_wav(wav_output, PUBLIC_KEY)
+                        self.assertEqual(result.verdict, "Authentic", result.detail)
+                        self.assertEqual(result.payload.user_payload, payload)
+                        stego_data = load_pcm_wav_from_path(wav_output)
+                        original_samples = decode_pcm_samples(original.frame_bytes, sample_width)
+                        stego_samples = decode_pcm_samples(stego_data.frame_bytes, sample_width)
+                        max_delta = max(
+                            abs(before - after)
+                            for before, after in zip(original_samples, stego_samples)
+                        )
+                        self.assertLessEqual(max_delta, (1 << lsb_count) - 1)
+                        self.assertTrue(
+                            all(
+                                before == after
+                                for index, (before, after) in enumerate(
+                                    zip(original.frame_bytes, stego_data.frame_bytes)
+                                )
+                                if index % sample_width != 0
+                            )
+                        )
+
+    def test_multibyte_wav_capacity_uses_sample_count(self) -> None:
+        sample_width = 2
+        sample_count = 2000
+        lsb_count = 3
+        wav_data = WavPcmData(1, sample_width, 8000, sample_count, bytes(sample_count * sample_width))
+        carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes, wav_data.sample_width)
+        context = encode_wav_media_context(wav_data, carrier.size)
+        fixed_payload_length = payload_length(b"", b"")
+        max_user_payload = carrier.size * lsb_count // 8 - PACKET_HEADER_SIZE - RSA_SIGNATURE_SIZE - fixed_payload_length
+        self.assertGreater(max_user_payload, 0)
+        encoded, layout, payload = encode_carrier(
+            carrier,
+            AUDIO_MEDIA_CODE,
+            context,
+            PRIVATE_KEY,
+            0,
+            lsb_count,
+            b"x" * max_user_payload,
+            b"",
+        )
+        self.assertEqual(layout.total_units, sample_count)
+        self.assertEqual(len(payload.user_payload), max_user_payload)
+        self.assertEqual(encoded.size, sample_count)
+        with self.assertRaisesRegex(ValueError, "embedding footprint does not fit after start_unit"):
+            encode_carrier(
+                carrier,
+                AUDIO_MEDIA_CODE,
+                context,
+                PRIVATE_KEY,
+                0,
+                lsb_count,
+                b"x" * (max_user_payload + 1),
+                b"",
+            )
+
+    def test_wav_carrier_stride_validation(self) -> None:
+        carrier = wav_frame_bytes_to_carrier(bytes(range(12)), 3)
+        self.assertTrue(carrier.flags["C_CONTIGUOUS"])
+        self.assertEqual(carrier.tolist(), [0, 3, 6, 9])
+        with self.assertRaises(ValueError):
+            wav_frame_bytes_to_carrier(b"12345", 2)
+        for sample_width in (0, 5):
+            with self.subTest(sample_width=sample_width):
+                with self.assertRaises(ValueError):
+                    wav_frame_bytes_to_carrier(b"1234", sample_width)
 
     def test_unsupported_image_formats_are_rejected(self):
         with TemporaryDirectory() as directory_name:

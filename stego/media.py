@@ -170,9 +170,15 @@ def load_pcm_wav_from_path(path: str | bytes | PathLike[str]) -> WavPcmData:
         raise ValueError("invalid or unreadable uncompressed PCM WAV") from error
 
 
-def wav_frame_bytes_to_carrier(frame_bytes: bytes) -> np.ndarray:
-    """Copy PCM frame bytes into one uint8 carrier unit per byte."""
-    return np.frombuffer(_require_bytes(frame_bytes, "frame_bytes"), dtype=np.uint8).copy()
+def wav_frame_bytes_to_carrier(frame_bytes: bytes, sample_width: int) -> np.ndarray:
+    """Copy one uint8 carrier unit per PCM sample from its least significant byte."""
+    frame_bytes = _require_bytes(frame_bytes, "frame_bytes")
+    sample_width = _validate_positive_integer(sample_width, "sample_width")
+    if sample_width not in range(1, 5):
+        raise ValueError("sample_width must be between 1 and 4 bytes")
+    if len(frame_bytes) % sample_width:
+        raise ValueError("frame_bytes length must be a multiple of sample_width")
+    return np.frombuffer(frame_bytes, dtype=np.uint8)[::sample_width].copy()
 
 
 def encode_wav_media_context(wav_data: WavPcmData, carrier_unit_count: int | None = None) -> bytes:
@@ -181,8 +187,9 @@ def encode_wav_media_context(wav_data: WavPcmData, carrier_unit_count: int | Non
         raise TypeError("wav_data must be a WavPcmData")
     if wav_data.channels > 0xFFFF or wav_data.sample_width > 0xFF or wav_data.frame_rate > 0xFFFFFFFF or wav_data.frame_count > 0xFFFFFFFFFFFFFFFF:
         raise ValueError("WAV values do not fit the media context")
-    if carrier_unit_count is not None and carrier_unit_count != len(wav_data.frame_bytes):
-        raise ValueError("carrier count does not match WAV frame bytes")
+    sample_count = len(wav_data.frame_bytes) // wav_data.sample_width
+    if carrier_unit_count is not None and carrier_unit_count != sample_count:
+        raise ValueError("carrier count does not match WAV sample count")
     return struct.pack(WAV_MEDIA_CONTEXT_FORMAT, wav_data.channels, wav_data.sample_width, wav_data.frame_rate, wav_data.frame_count)
 
 
@@ -191,9 +198,12 @@ def wav_data_with_carrier(wav_data: WavPcmData, carrier_units: np.ndarray) -> Wa
     if not isinstance(wav_data, WavPcmData):
         raise TypeError("wav_data must be a WavPcmData")
     carrier_units = _validate_carrier_units(carrier_units)
-    if carrier_units.size != len(wav_data.frame_bytes):
-        raise ValueError("carrier length does not match WAV frame bytes")
-    return WavPcmData(wav_data.channels, wav_data.sample_width, wav_data.frame_rate, wav_data.frame_count, carrier_units.tobytes())
+    sample_count = len(wav_data.frame_bytes) // wav_data.sample_width
+    if carrier_units.size != sample_count:
+        raise ValueError("carrier length does not match WAV sample count")
+    frame_bytes = bytearray(wav_data.frame_bytes)
+    frame_bytes[0::wav_data.sample_width] = carrier_units.tobytes()
+    return WavPcmData(wav_data.channels, wav_data.sample_width, wav_data.frame_rate, wav_data.frame_count, bytes(frame_bytes))
 
 
 def save_pcm_wav_to_path(wav_data: WavPcmData, output_path: str | bytes | PathLike[str]) -> None:

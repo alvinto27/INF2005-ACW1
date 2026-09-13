@@ -120,6 +120,8 @@ Usable payload space, after the packet header, the signature, the payload record
 
 The image carrier holds a small image or a short audio clip at `k=1`. The demonstration audio carrier holds text only. That limit comes from the short 8-bit mono tone the notebook generates, not from the design. Capacity grows in proportion to the sample count, so a longer cover removes the difference.
 
+For an audio cover, one carrier unit is one PCM sample, not one byte. See [Carrier units](INTEGRITY-DESIGN.md#carrier-units). Therefore a multi-byte cover holds `1 / sample_width` of what its file size suggests: a 16-bit cover holds half, a 24-bit cover a third, and a 32-bit cover a quarter. Longer audio buys capacity; deeper samples do not.
+
 ## 7. Limitations
 
 - The type declaration protects an honest receiver from a mistake. It does not protect anyone from a sender who signs a hostile file. Software that renders the payload must still validate the file itself.
