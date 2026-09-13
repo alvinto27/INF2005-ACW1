@@ -8,7 +8,7 @@ This record lists assignment work that remains outside the finished library and 
 
 The GUI is mandatory under brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope). Another team member owns it; this repository does not build it. Criteria 2 and 3 total 19 marks (9 for image and 10 for audio) under brief [§11](../docs/INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks). Those criteria assess the working implementations and their demonstrations. This repository already provides the working encoders and decoders, payload insertion, start-location recovery, extraction, positive verification, and negative or tampered detection for both media. The GUI remains the demonstration surface owed by the team. It must:
 
-- play or execute the payload (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope));
+- play or execute the payload (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)). The content header that makes this possible is designed and demonstrated; see [Payload Envelope Design](PAYLOAD-ENVELOPE-DESIGN.md). The GUI must read the declared type to select a handler, and must confirm the declared type against the bytes before it renders anything;
 - display the cover and stego objects side by side before and after encoding and decoding (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope));
 - allow selection of 1 to 8 LSBs (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)).
 
@@ -21,34 +21,6 @@ This individual criterion is worth 5 marks. It remains outstanding for every mem
 This requirement is worth 4 marks (brief [§11](../docs/INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks), criterion 5). The team still needs to explain what innovation it incorporated, why it is useful, meaningful and practical, and how it improves the baseline (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope), [§6 FR13](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements), and [§11](../docs/INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks), criterion 5). A candidate is the repository's existing negative test cases, which already function as an attack simulation. It is undecided whether the team will use this candidate or choose another innovation explanation.
 
 ## 2. NOT BUILT, BELONGS HERE OR TO THE DEMO
-
-### Payload content type
-
-`user_payload` accepts any bytes, so a receiver cannot tell a text note from a PNG or a WAV file without being told. The demonstration notebook assumes UTF-8 text and calls `.decode("utf-8")` on the recovered bytes. A binary payload raises an error there.
-
-Brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) requires the GUI to play or execute the payload. A player cannot select a handler for a payload it cannot identify. A declared content type is the missing part of that requirement.
-
-The design is decided, but it is **not built**. The content header goes inside the sealed blob, not in `metadata`, so it shows nothing to an observer who finds the packet. The layout is:
-
-```text
-version    u8, value 1
-mime_len   u8
-mime       UTF-8, lowercase ASCII
-name_len   u8
-name       UTF-8, can be empty
-body       the remaining bytes
-```
-
-These rules apply:
-
-- Use big-endian order and length prefixes, to agree with the packet format. There are no delimiters to escape.
-- Put the version byte first, so that a later change does not need a new packet format.
-- An empty `mime` means `application/octet-stream`. An unknown type is a permitted answer.
-- `name` must be a bare filename. Refuse `/`, `\`, and `..`. A receiver can save this file, and a signed name is not a safe name.
-- Keep the body length implicit. This removes one field that can disagree with the data.
-- A signed content type is a claim by the sender, not a fact about the bytes. Software that shows the payload must validate it first.
-
-This needs no library change. The caller builds and reads the header inside the encrypted plaintext.
 
 ### Party A to party B transfer
 
@@ -68,7 +40,8 @@ The brief names the exact test payload categories, but the notebook currently us
 
 - **Short message:** Use one Learning Outcome from brief [§3](../docs/INF2005-ACW1-spec_v5-f2f.md#3-learning-outcomes). The recorded choice is outcome 6, about designing and securing the start location. It is 138 bytes and is the outcome this implementation answers most directly.
 - **Large message:** Use the Project Overview paragraphs from brief [§2](../docs/INF2005-ACW1-spec_v5-f2f.md#2-project-overview). They are 673 bytes.
-- **Custom confidential payload:** The encryption mechanism is **built and demonstrated** in the Confidentiality payload section of the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb). A random AES-256-GCM key encrypts the message body, and RSA-OAEP with SHA-256 wraps that key with the receiver's public key. The sealed blob is a 256-byte wrapped key, a 12-byte nonce, and the ciphertext with its tag, which is a fixed 268-byte prefix. The receiver's private key is held in a password-protected PEM file and is loaded again in the receiver phase, so no secret value travels between the parties. Verification still needs only the stego file and the sender's public key, because the signature and the media hash are checked before any decryption. Only `user_payload` is encrypted: brief [FR3](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements) requires `media_id`, `timestamp`, `media_hash`, and `nonce` in the payload, and [FR9](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements) needs `media_hash` before decryption, so those fields and the team-defined `metadata` stay readable by design. The **message content is still undecided**. The notebook uses a placeholder string, and the team must choose the message it demonstrates.
+- **Custom confidential payload:** The encryption and content-type mechanisms are **built and demonstrated** in the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb), and the design is recorded in [Payload Envelope Design](PAYLOAD-ENVELOPE-DESIGN.md). Only the **message content is undecided**. The notebook uses a placeholder string, and the team must choose the message it demonstrates.
+- **Typed payload files:** The typed-payload demonstration generates its own payload files, a 64x64 image and a short tone. A supplied audio file replaces the generated tone later. The swap point is one variable in the typed-payload cell. A supplied file must stay below about 700,000 bytes to fit the image carrier at `k=1`, and should be plain PCM WAV or MP3 so that the notebook can play it.
 - **Capacity reference:** At `k=1`, the Banana cover holds 752,640 bytes and the 32,000-sample WAV holds 4,000 bytes. Therefore, the 673-byte large message fits both. The large message is large only relative to the short message; it is not a capacity test. The separate capacity case embeds the cover image inside itself (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)).
 
 ## 4. SUBMISSION PACKAGE, NOT ASSEMBLED
