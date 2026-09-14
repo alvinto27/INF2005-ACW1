@@ -34,7 +34,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Validation and LSB primitives | [stego/bits.py](../stego/bits.py) |
 | Layout, masked hash, and signing input | [stego/layout.py](../stego/layout.py) |
 | Packet records, framing, and scanning | [stego/packet.py](../stego/packet.py) |
-| RSA-PSS keys, signatures, fingerprints, and PEM | [stego/keys.py](../stego/keys.py) |
+| RSA-PSS keys, signatures, fingerprints, and PEM | [stego/crypto.py](../stego/crypto.py) |
 | PNG and WAV adapters | [stego/media.py](../stego/media.py) |
 | End-to-end encode and verification | [stego/core.py](../stego/core.py) |
 | FR1–FR12 demonstration notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |

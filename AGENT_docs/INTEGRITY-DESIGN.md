@@ -36,7 +36,7 @@ b"INF2005-ACW1\x00MEDIA-HASH\x00"
 
 ## Module dependencies
 
-Imports flow from `constants` to `bits`, then `layout`, `packet`, and `core`. The `keys` and `media` modules depend only on `constants` and `bits`; `core` is the only module where protocol, keys, and media meet.
+Imports flow from `constants` to `bits`, then `layout`, `packet`, and `core`. The `crypto` and `media` modules depend only on `constants` and `bits`; `core` is the only module where protocol, crypto, and media meet.
 
 ## Packet format and signing input
 
@@ -195,8 +195,8 @@ It used to be one file. Now it is eight, and the imports only ever flow one way:
 
 ```text
 constants -> bits -> layout -> packet -> core
-keys and media only need constants and bits
-core is the one place where the protocol, the keys, and the file formats meet
+crypto and media only need constants and bits
+core is the one place where the protocol, crypto, and the file formats meet
 ```
 
 One rule produced that shape: a module may never import something that imports it back. Follow it strictly and `core` ends up as the only place that knows both what a PNG is and what a signature is. Everything else stays small and unaware.

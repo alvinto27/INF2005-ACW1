@@ -28,7 +28,7 @@ from .constants import (
     RSA_SIGNATURE_SIZE,
     NONCE_SIZE,
 )
-from .keys import (
+from .crypto import (
     display_rsa_public_key_fingerprint,
     sign_bytes,
     validate_rsa_private_key,

@@ -26,7 +26,7 @@ from .core import (
     verify_png,
     verify_wav,
 )
-from .keys import (
+from .crypto import (
     display_rsa_public_key_fingerprint,
     generate_rsa_keypair,
     load_rsa_private_key_pem,

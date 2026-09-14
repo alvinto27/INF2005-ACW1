@@ -210,7 +210,9 @@ Body encryption needs no module of its own. The record bytes already come from `
 
 **Why the additional data forces a single owner.** The GCM tag covers the bootstrap layout fields, which makes the two envelopes one cryptographic unit. If two modules could encode those fields, the sender and the verifier would eventually disagree. `bootstrap.py` owns the encoding, and `crypto.py` takes `aad` as opaque bytes, so a reviewer checks the binding by reading one file.
 
-`keys.py` is renamed to `crypto.py` in the same change, because it gains symmetric operations and a module called `keys` holding AES-GCM describes two thirds of its contents. See decision 15.
+`keys.py` was renamed to `crypto.py` ahead of this work, because it gains symmetric operations and a module called `keys` holding AES-GCM would describe two thirds of its contents. The rename is a separate change so that the diff adding the envelope functions carries no import churn. See decision 15 and stage 2c.
+
+The module docstring still describes RSA-PSS signing and PEM handling only. It is accurate today and must be widened when the envelope functions land, not before.
 
 ## 4. Field binding audit
 
