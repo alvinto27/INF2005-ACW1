@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from stego import *
+from stego.layout import build_embedding_layout
 
 
 PRIVATE_KEY, PUBLIC_KEY = generate_rsa_keypair()
@@ -387,6 +388,46 @@ class TestMaskedStego(unittest.TestCase):
             with self.subTest(sample_width=sample_width):
                 with self.assertRaises(ValueError):
                     wav_frame_bytes_to_carrier(b"1234", sample_width)
+
+    def test_payload_capacity_boundary_is_exact(self) -> None:
+        total_units = 5000
+        start_unit = 137
+        for lsb_count in (1, 3, 8):
+            with self.subTest(lsb_count=lsb_count):
+                maximum = max_payload_length(total_units, start_unit, lsb_count)
+                layout = build_embedding_layout(total_units, start_unit, lsb_count, maximum)
+                self.assertLessEqual(start_unit + layout.footprint, total_units)
+                with self.assertRaises(ValueError):
+                    build_embedding_layout(total_units, start_unit, lsb_count, maximum + 1)
+
+    def test_payload_capacity_clamps_to_zero(self) -> None:
+        total_units = PACKET_HEADER_SIZE + RSA_SIGNATURE_SIZE - 1
+        self.assertEqual(max_payload_length(total_units, 0, 8), 0)
+
+    def test_payload_capacity_rejection_names_capacity_inputs(self) -> None:
+        total_units = 5000
+        start_unit = 137
+        lsb_count = 3
+        maximum = max_payload_length(total_units, start_unit, lsb_count)
+        with self.assertRaises(ValueError) as raised:
+            build_embedding_layout(total_units, start_unit, lsb_count, maximum + 1)
+        message = str(raised.exception)
+        for expected in (
+            f"total_units={total_units}",
+            f"start_unit={start_unit}",
+            f"lsb_count={lsb_count}",
+            f"max_payload_length={maximum}",
+        ):
+            self.assertIn(expected, message)
+
+    def test_payload_over_sixteen_mebibytes_uses_carrier_capacity(self) -> None:
+        payload_length = 16 * 1024 * 1024 + 1
+        total_units = PACKET_HEADER_SIZE + RSA_SIGNATURE_SIZE + payload_length
+        maximum = max_payload_length(total_units, 0, 8)
+        self.assertEqual(maximum, payload_length)
+        layout = build_embedding_layout(total_units, 0, 8, payload_length)
+        self.assertEqual(layout.payload_length, payload_length)
+        self.assertEqual(layout.footprint, total_units)
 
     def test_unsupported_image_formats_are_rejected(self):
         with TemporaryDirectory() as directory_name:

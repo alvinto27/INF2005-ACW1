@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from .constants import MAX_PAYLOAD_LENGTH, SUPPORTED_LSB_COUNTS, SUPPORTED_MEDIA_CODES
+from .constants import SUPPORTED_LSB_COUNTS, SUPPORTED_MEDIA_CODES
 
 
 def _validate_non_negative_integer(value: int, name: str) -> int:
@@ -120,15 +120,11 @@ def read_lsb_bits(carrier_units: np.ndarray, bit_length: int, lsb_count: int) ->
 
 
 def validate_payload_length(payload_length: int) -> int:
-    """Check the payload length is within the 16 MiB limit, and return it as an int."""
-    payload_length = _validate_non_negative_integer(payload_length, "payload_length")
-    if payload_length > MAX_PAYLOAD_LENGTH:
-        raise ValueError("payload exceeds the 16 MiB payload limit")
-    return payload_length
+    """Check that the payload length is non-negative, and return it as an int."""
+    return _validate_non_negative_integer(payload_length, "payload_length")
 
 
 def validate_payload_bytes(payload_bytes: bytes) -> bytes:
-    """Check the payload bytes are within the 16 MiB limit, and return a bytes copy."""
+    """Check that payload_bytes is bytes, and return a bytes copy."""
     payload_bytes = _require_bytes(payload_bytes, "payload_bytes")
-    validate_payload_length(len(payload_bytes))
     return bytes(payload_bytes)

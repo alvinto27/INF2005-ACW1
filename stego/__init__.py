@@ -39,6 +39,7 @@ from .layout import (
     calculate_masked_media_hash,
     ceil_unit_count,
     encode_signing_input,
+    max_payload_length,
     preserved_bit_count,
 )
 from .media import (
@@ -101,6 +102,7 @@ __all__ = [
     "load_png_from_path",
     "load_rsa_private_key_pem",
     "load_rsa_public_key_pem",
+    "max_payload_length",
     "parse_packet_header",
     "parse_payload",
     "preserved_bit_count",

@@ -44,6 +44,15 @@ class EmbeddingLayout:
     pad_bits: int
 
 
+def max_payload_length(total_units: int, start_unit: int, lsb_count: int) -> int:
+    """Calculate the maximum packet payload length that fits after start_unit."""
+    total_units = _validate_non_negative_integer(total_units, "total_units")
+    start_unit = _validate_non_negative_integer(start_unit, "start_unit")
+    lsb_count = _validate_lsb_count(lsb_count)
+    available_bytes = ((total_units - start_unit) * lsb_count) // 8
+    return max(0, available_bytes - PACKET_HEADER_SIZE - RSA_SIGNATURE_SIZE)
+
+
 def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, payload_length: int) -> EmbeddingLayout:
     """Calculate and check how many carrier units a packet needs."""
     total_units = _validate_non_negative_integer(total_units, "total_units")
@@ -54,7 +63,13 @@ def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, pa
     footprint = ceil_unit_count(packet_bits, lsb_count)
     pad_bits = footprint * lsb_count - packet_bits
     if start_unit + footprint > total_units:
-        raise ValueError("embedding footprint does not fit after start_unit")
+        maximum = max_payload_length(total_units, start_unit, lsb_count)
+        # Keep "does not fit": core.resolve_candidate maps it to Wrong Start Location.
+        raise ValueError(
+            "embedding footprint does not fit after start_unit: "
+            f"total_units={total_units}, start_unit={start_unit}, "
+            f"lsb_count={lsb_count}, max_payload_length={maximum}"
+        )
     return EmbeddingLayout(total_units, start_unit, footprint, lsb_count, payload_length, pad_bits)
 
 
