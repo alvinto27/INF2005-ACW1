@@ -28,12 +28,12 @@ class BootstrapFields:
     aead_nonce: bytes
 
 
-def bootstrap_span(public_key: rsa.RSAPublicKey) -> int:
+def bootstrap_span(key: rsa.RSAPublicKey | rsa.RSAPrivateKey) -> int:
     """Return the serialised envelope size in carrier units at one LSB."""
-    if not isinstance(public_key, rsa.RSAPublicKey):
-        raise TypeError("public_key must be an RSA public key")
+    if not isinstance(key, (rsa.RSAPublicKey, rsa.RSAPrivateKey)):
+        raise TypeError("key must be an RSA public or private key")
     # RSA-OAEP ciphertext length equals modulus length, so RSA envelope and key sizes coincide; span is envelope-defined.
-    envelope_bytes = (public_key.key_size + 7) // 8
+    envelope_bytes = (key.key_size + 7) // 8
     return envelope_bytes * 8
 
 
@@ -45,8 +45,6 @@ def _validate_bootstrap_fields(fields: BootstrapFields) -> BootstrapFields:
     if version != PROTOCOL_VERSION:
         raise ValueError("unsupported bootstrap version")
     flags = _validate_non_negative_integer(fields.flags, "flags")
-    if flags != PROTOCOL_FLAGS:
-        raise ValueError("bootstrap flags must be zero")
     lsb_count = _validate_lsb_count(fields.lsb_count)
     start_unit = _validate_non_negative_integer(fields.start_unit, "start_unit")
     ciphertext_length = _validate_non_negative_integer(fields.ciphertext_length, "ciphertext_length")
@@ -67,9 +65,17 @@ def _validate_bootstrap_fields(fields: BootstrapFields) -> BootstrapFields:
     )
 
 
+def require_supported_flags(flags: int) -> None:
+    """Reject bootstrap flags that this protocol does not support."""
+    flags = _validate_non_negative_integer(flags, "flags")
+    if flags != PROTOCOL_FLAGS:
+        raise ValueError("bootstrap flags must be zero")
+
+
 def serialize_bootstrap(fields: BootstrapFields, total_units: int) -> bytes:
     """Serialise bootstrap fields using the carrier-derived field width."""
     fields = _validate_bootstrap_fields(fields)
+    require_supported_flags(fields.flags)
     width = carrier_field_width(total_units)
     return (
         struct.pack(BOOTSTRAP_PREFIX_FORMAT, fields.version, fields.flags, fields.lsb_count)

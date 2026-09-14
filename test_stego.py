@@ -14,13 +14,16 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from stego import *
 from stego.constants import MEDIA_ID_SIZE
-from stego.crypto import verify_signature
+from stego.crypto import sign_bytes, verify_signature
 from stego.layout import build_embedding_layout, carrier_field_width
 from stego.packet import serialized_record_length
 
 
-PRIVATE_KEY, PUBLIC_KEY = generate_rsa_keypair()
+SIGNING_PRIVATE_KEY, SENDER_PUBLIC_KEY = generate_rsa_keypair()
+RECEIVER_PRIVATE_KEY, RECEIVER_PUBLIC_KEY = generate_rsa_keypair()
 OTHER_PRIVATE_KEY, OTHER_PUBLIC_KEY = generate_rsa_keypair()
+PRIVATE_KEY = SIGNING_PRIVATE_KEY
+PUBLIC_KEY = SENDER_PUBLIC_KEY
 
 
 def carrier(size=24000):
@@ -32,11 +35,44 @@ def payload_length(user_payload=b"hello", metadata=b"{}"):
     return serialized_record_length(media_id_length, len(user_payload), len(metadata))
 
 
-def encode_image_carrier(source=None, start=17, k=3, user_payload=b"hello", metadata=b"{}"):
+def encode_image_carrier(source=None, start=2048, k=3, user_payload=b"hello", metadata=b"{}"):
     if source is None:
         source = carrier()
     context = struct.pack(">II", source.size // 3, 1)
-    return encode_carrier(source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, start, k, user_payload, metadata), context
+    return encode_carrier(source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, start, k, user_payload, metadata), context
+
+
+def raw_bootstrap(total_units: int, version: int, flags: int, lsb_count: int, start_unit: int, ciphertext_length: int, session_key: bytes, aead_nonce: bytes, extra: bytes = b"") -> bytes:
+    width = carrier_field_width(total_units)
+    plaintext = (
+        struct.pack(">BBB", version, flags, lsb_count)
+        + start_unit.to_bytes(width, "big")
+        + ciphertext_length.to_bytes(width, "big")
+        + session_key
+        + aead_nonce
+        + extra
+    )
+    return seal_to_public_key(plaintext, RECEIVER_PUBLIC_KEY)
+
+
+def bootstrap_fields_from_carrier(encoded: np.ndarray, total_units: int) -> BootstrapFields:
+    span = bootstrap_span(RECEIVER_PRIVATE_KEY)
+    envelope_bits = read_lsb_bits(encoded[:span], span, BOOTSTRAP_LSB_COUNT)
+    envelope = bit_sequence_to_bytes(envelope_bits)
+    return parse_bootstrap(open_with_private_key(envelope, RECEIVER_PRIVATE_KEY), total_units)
+
+
+def reseal_bootstrap(total_units: int, fields: BootstrapFields, version: int | None = None, flags: int | None = None, lsb_count: int | None = None, start_unit: int | None = None, ciphertext_length: int | None = None) -> bytes:
+    return raw_bootstrap(
+        total_units,
+        fields.version if version is None else version,
+        fields.flags if flags is None else flags,
+        fields.lsb_count if lsb_count is None else lsb_count,
+        fields.start_unit if start_unit is None else start_unit,
+        fields.ciphertext_length if ciphertext_length is None else ciphertext_length,
+        fields.session_key,
+        fields.aead_nonce,
+    )
 
 
 def embedded_bit_flip(encoded, start, k, bit_offset):
@@ -95,11 +131,11 @@ class TestMaskedStego(unittest.TestCase):
         self.assertTrue(np.array_equal(source, np.array([0xFF, 0xA5, 0x5A, 0x00], dtype=np.uint8)))
 
     def test_signing_input_has_exact_approved_bytes(self):
-        layout = EmbeddingLayout(1000, 13, 300, 3, 5, 0)
+        layout = EmbeddingLayout(1000, 13, 300, 3, 5, 0, 0)
         payload = b"abcde"
         expected = (
             SIGNING_DOMAIN
-            + struct.pack(">BBBB", 1, 0, IMAGE_MEDIA_CODE, 3)
+            + struct.pack(">BBBB", 2, 0, IMAGE_MEDIA_CODE, 3)
             + b"\x03\xe8"
             + b"\x00\x0d"
             + b"\x01\x2c"
@@ -108,7 +144,11 @@ class TestMaskedStego(unittest.TestCase):
             + payload
         )
         self.assertEqual(len(expected), 42)
-        self.assertEqual(encode_signing_input(IMAGE_MEDIA_CODE, b"context", layout, payload), expected)
+        self.assertEqual(encode_signing_input(IMAGE_MEDIA_CODE, b"context", layout, 0, payload), expected)
+        self.assertNotEqual(
+            encode_signing_input(IMAGE_MEDIA_CODE, b"context", layout, 1, payload),
+            expected,
+        )
 
     def test_preserved_bit_count_accounts_for_bootstrap(self) -> None:
         self.assertEqual(preserved_bit_count(10000, 500, 3, 0), 78500)
@@ -171,13 +211,15 @@ class TestMaskedStego(unittest.TestCase):
         narrow = encode_signing_input(
             IMAGE_MEDIA_CODE,
             b"context",
-            EmbeddingLayout(255, 13, 3, 3, 5, 0),
+            EmbeddingLayout(255, 13, 3, 3, 5, 0, 0),
+            0,
             payload,
         )
         wide = encode_signing_input(
             IMAGE_MEDIA_CODE,
             b"context",
-            EmbeddingLayout(256, 13, 3, 3, 5, 0),
+            EmbeddingLayout(256, 13, 3, 3, 5, 0, 0),
+            0,
             payload,
         )
         prefix_length = len(SIGNING_DOMAIN) + 4
@@ -186,10 +228,10 @@ class TestMaskedStego(unittest.TestCase):
         self.assertEqual(len(wide) - len(narrow), 4)
 
     def test_bootstrap_round_trip_and_aad(self) -> None:
-        fields = BootstrapFields(1, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        fields = BootstrapFields(2, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
         expected_aad = {
-            255: b"\x01\x00\x03\x0d\x25",
-            256: b"\x01\x00\x03\x00\x0d\x00\x25",
+            255: b"\x02\x00\x03\x0d\x25",
+            256: b"\x02\x00\x03\x00\x0d\x00\x25",
         }
         expected_lengths = {255: 49, 256: 51}
         for total_units in (255, 256):
@@ -200,7 +242,7 @@ class TestMaskedStego(unittest.TestCase):
                 self.assertEqual(encode_bootstrap_aad(fields, total_units), expected_aad[total_units])
 
     def test_bootstrap_span_and_oaep_envelope_limit(self) -> None:
-        fields = BootstrapFields(1, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        fields = BootstrapFields(2, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
         serialized = serialize_bootstrap(fields, 255)
         self.assertEqual(bootstrap_span(PUBLIC_KEY), 2048)  # 256-byte serialised envelope at 1 LSB.
         oaep_plaintext_limit = PUBLIC_KEY.key_size // 8 - 2 * 32 - 2
@@ -235,17 +277,14 @@ class TestMaskedStego(unittest.TestCase):
                     aead_open(*changed)
 
     def test_bootstrap_parse_rejects_malformed_inputs(self) -> None:
-        fields = BootstrapFields(1, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        fields = BootstrapFields(2, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
         serialized = serialize_bootstrap(fields, 255)
         malformed = []
         malformed.append(serialized[:-1])
         malformed.append(serialized + b"x")
-        version_two = bytearray(serialized)
-        version_two[0] = 2
-        malformed.append(bytes(version_two))
-        flags_one = bytearray(serialized)
-        flags_one[1] = 1
-        malformed.append(bytes(flags_one))
+        version_one = bytearray(serialized)
+        version_one[0] = 1
+        malformed.append(bytes(version_one))
         lsb_zero = bytearray(serialized)
         lsb_zero[2] = 0
         malformed.append(bytes(lsb_zero))
@@ -258,6 +297,12 @@ class TestMaskedStego(unittest.TestCase):
             with self.subTest(length=len(plaintext), prefix=plaintext[:3]):
                 with self.assertRaises(ValueError):
                     parse_bootstrap(plaintext, 255)
+        flags_one = bytearray(serialized)
+        flags_one[1] = 1
+        parsed = parse_bootstrap(bytes(flags_one), 255)
+        self.assertEqual(parsed.flags, 1)
+        with self.assertRaisesRegex(ValueError, "flags must be zero"):
+            require_supported_flags(parsed.flags)
 
     def test_aead_sizes_match_bootstrap_constants(self) -> None:
         key = bytes(SESSION_KEY_SIZE)
@@ -279,10 +324,10 @@ class TestMaskedStego(unittest.TestCase):
         cases = []
         for k in SUPPORTED_LSB_COUNTS:
             for start_kind in ("zero", "middle", "boundary"):
-                footprint = ceil_unit_count((payload_length() + RSA_SIGNATURE_SIZE) * 8, k)
-                start = {"zero": 0, "middle": 211, "boundary": source.size - footprint}[start_kind]
-                encoded, layout, payload = encode_carrier(source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, start, k, b"hello", b"{}")
-                result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length)
+                footprint = ceil_unit_count((payload_length() + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE) * 8, k)
+                start = {"zero": bootstrap_span(RECEIVER_PUBLIC_KEY), "middle": bootstrap_span(RECEIVER_PUBLIC_KEY) + 211, "boundary": source.size - footprint}[start_kind]
+                encoded, layout, payload = encode_carrier(source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, start, k, b"hello", b"{}")
+                result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
                 self.assertEqual(result.verdict, "Authentic", (k, start_kind, result.detail))
                 self.assertEqual(result.payload, payload)
                 self.assertEqual((result.start_unit, result.lsb_count), (start, k))
@@ -299,7 +344,7 @@ class TestMaskedStego(unittest.TestCase):
         for user_payload, metadata in values:
             with self.subTest(length=len(user_payload), metadata=metadata):
                 (encoded, layout, payload), context = encode_image_carrier(carrier(50000), user_payload=user_payload, metadata=metadata)
-                result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length)
+                result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
                 self.assertEqual(result.verdict, "Authentic")
                 self.assertEqual(result.payload.user_payload, user_payload)
                 self.assertEqual(result.payload.metadata, metadata)
@@ -307,66 +352,142 @@ class TestMaskedStego(unittest.TestCase):
 
     def test_exact_negative_verdicts_for_bit_changes(self) -> None:
         source = carrier(30000)
-        (encoded, layout, payload), context = encode_image_carrier(source, start=31, k=3, user_payload=b"payload", metadata=b"meta")
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3, user_payload=b"payload", metadata=b"meta")
+        packet_bits = layout.ciphertext_length * 8
 
         outside = encoded.copy()
         outside[layout.start_unit + layout.footprint] ^= np.uint8(1)
-        self.assertEqual(decode_carrier(outside, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length).verdict, "Tampered")
+        self.assertEqual(decode_carrier(outside, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Tampered")
 
         upper_inside = encoded.copy()
         upper_inside[layout.start_unit + 5] ^= np.uint8(1 << layout.lsb_count)
-        self.assertEqual(decode_carrier(upper_inside, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length).verdict, "Tampered")
+        self.assertEqual(decode_carrier(upper_inside, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Tampered")
 
-        user_offset = 1 + len(payload.media_id.encode()) + 8 + 16 + 32 + 4
-        changed_payload = embedded_bit_flip(encoded, layout.start_unit, layout.lsb_count, user_offset * 8)
-        self.assertEqual(decode_carrier(changed_payload, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length).verdict, "Signature Invalid")
+        first_ciphertext = embedded_bit_flip(encoded, layout.start_unit, layout.lsb_count, 0)
+        self.assertEqual(decode_carrier(first_ciphertext, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Signature Invalid")
+        last_ciphertext = embedded_bit_flip(encoded, layout.start_unit, layout.lsb_count, packet_bits - 1)
+        self.assertEqual(decode_carrier(last_ciphertext, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Signature Invalid")
+        changed_signature = embedded_bit_flip(encoded, layout.start_unit, layout.lsb_count, packet_bits)
+        self.assertEqual(decode_carrier(changed_signature, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Signature Invalid")
+        self.assertEqual(decode_carrier(encoded, IMAGE_MEDIA_CODE, context, OTHER_PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Signature Invalid")
 
-        hash_offset = 1 + len(payload.media_id.encode()) + 8 + 16
-        changed_hash = embedded_bit_flip(encoded, layout.start_unit, layout.lsb_count, hash_offset * 8)
-        self.assertEqual(decode_carrier(changed_hash, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length).verdict, "Signature Invalid")
+        changed_bootstrap = encoded.copy()
+        changed_bootstrap[0] ^= np.uint8(1)
+        self.assertEqual(decode_carrier(changed_bootstrap, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Payload Missing")
 
-        signature_offset = layout.payload_length * 8
-        changed_signature = embedded_bit_flip(encoded, layout.start_unit, layout.lsb_count, signature_offset)
-        self.assertEqual(decode_carrier(changed_signature, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length).verdict, "Signature Invalid")
+    def test_bootstrap_authenticated_decryption_and_flags_binding(self) -> None:
+        source = carrier(30000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
+        fields = bootstrap_fields_from_carrier(encoded, source.size)
+        for change in ("session", "nonce"):
+            with self.subTest(change=change):
+                session_key = fields.session_key
+                aead_nonce = fields.aead_nonce
+                if change == "session":
+                    session_key = bytes((session_key[0] ^ 1,)) + session_key[1:]
+                else:
+                    aead_nonce = bytes((aead_nonce[0] ^ 1,)) + aead_nonce[1:]
+                envelope = raw_bootstrap(
+                    source.size, fields.version, fields.flags, fields.lsb_count,
+                    fields.start_unit, fields.ciphertext_length, session_key, aead_nonce,
+                )
+                changed = write_lsb_bits(encoded.copy(), bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT)
+                self.assertEqual(
+                    decode_carrier(changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict,
+                    "Cannot Decrypt",
+                )
+        flags_envelope = reseal_bootstrap(source.size, fields, flags=1)
+        flags_changed = write_lsb_bits(encoded.copy(), bytes_to_bit_sequence(flags_envelope), BOOTSTRAP_LSB_COUNT)
+        self.assertEqual(
+            decode_carrier(flags_changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict,
+            "Signature Invalid",
+        )
 
-        self.assertEqual(decode_carrier(encoded, IMAGE_MEDIA_CODE, context, OTHER_PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length).verdict, "Signature Invalid")
+    def test_exact_empty_packet_capacities_include_bootstrap(self) -> None:
+        expected_totals = {1: 5032, 3: 3043, 8: 2421}
+        span = bootstrap_span(RECEIVER_PUBLIC_KEY)
+        packet_bytes = serialized_record_length(MEDIA_ID_SIZE, 0, 0) + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE
+        for lsb_count, expected_total in expected_totals.items():
+            with self.subTest(lsb_count=lsb_count):
+                total_units = span + ceil_unit_count(packet_bytes * 8, lsb_count)
+                self.assertEqual(total_units, expected_total)
+                source = carrier(total_units)
+                context = struct.pack(">II", total_units // 3, 1)
+                encoded, layout, _ = encode_carrier(
+                    source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                    span, lsb_count, b"", b"",
+                )
+                self.assertEqual(layout.footprint + span, total_units)
+                self.assertEqual(
+                    decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict,
+                    "Authentic",
+                )
+
+    def test_signed_flags_policy_is_reached_after_signature(self) -> None:
+        source = carrier(30000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
+        fields = bootstrap_fields_from_carrier(encoded, source.size)
+        packet_bits = read_lsb_bits(
+            encoded[layout.start_unit:layout.start_unit + layout.footprint],
+            layout.footprint * layout.lsb_count,
+            layout.lsb_count,
+        )
+        packet = bit_sequence_to_bytes(packet_bits[:(layout.ciphertext_length + RSA_SIGNATURE_SIZE) * 8])
+        ciphertext = packet[:layout.ciphertext_length]
+        signature = sign_bytes(
+            encode_signing_input(IMAGE_MEDIA_CODE, context, layout, 1, ciphertext),
+            PRIVATE_KEY,
+        )
+        changed = encoded.copy()
+        packet_units = slice(layout.start_unit, layout.start_unit + layout.footprint)
+        changed[packet_units] = write_lsb_bits(
+            changed[packet_units],
+            bytes_to_bit_sequence(ciphertext + signature),
+            layout.lsb_count,
+        )
+        envelope = reseal_bootstrap(source.size, fields, flags=1)
+        changed = write_lsb_bits(changed, bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT)
+        result = decode_carrier(changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+        self.assertEqual(result.verdict, "Cannot Verify")
 
     def test_media_interpretation_changes_invalidate_signature(self) -> None:
-        (encoded, layout, _), context = encode_image_carrier(start=31, k=3)
+        (encoded, layout, _), context = encode_image_carrier(start=2048, k=3)
         self.assertEqual(
-            decode_carrier(encoded, AUDIO_MEDIA_CODE, context, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length).verdict,
+            decode_carrier(encoded, AUDIO_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict,
             "Signature Invalid",
         )
         self.assertEqual(
-            decode_carrier(encoded, IMAGE_MEDIA_CODE, context + b"changed", PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length).verdict,
+            decode_carrier(encoded, IMAGE_MEDIA_CODE, context + b"changed", PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict,
             "Signature Invalid",
         )
 
-    def test_raw_packet_has_record_then_literal_signature(self) -> None:
+    def test_raw_packet_hides_record_and_signs_ciphertext(self) -> None:
         source = carrier(30000)
         context = struct.pack(">II", 10000, 1)
         encoded, layout, payload = encode_carrier(
-            source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, 31, 3, b"hello", b"{}"
+            source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"hello", b"{}"
         )
-        expected_record_length = 108
-        self.assertEqual(layout.payload_length, expected_record_length)
-        self.assertEqual(layout.footprint, 971)
-        self.assertEqual(layout.pad_bits, 1)
+        self.assertEqual(layout.ciphertext_length, 124)
+        self.assertEqual(layout.footprint, 1014)
+        self.assertEqual(layout.pad_bits, 2)
         all_bits = read_lsb_bits(
             encoded[layout.start_unit:layout.start_unit + layout.footprint],
             layout.footprint * layout.lsb_count,
             layout.lsb_count,
         )
-        packet_bits_length = (expected_record_length + RSA_SIGNATURE_SIZE) * 8
+        packet_bits_length = (124 + 256) * 8
         packet = bit_sequence_to_bytes(all_bits[:packet_bits_length])
-        record_bytes = serialize_payload(payload)
-        self.assertEqual(packet[:expected_record_length], record_bytes)
-        signature = packet[expected_record_length:]
-        self.assertEqual(len(packet), 364)
+        ciphertext = packet[:124]
+        signature = packet[124:]
+        self.assertEqual(len(packet), 380)
         self.assertEqual(len(signature), 256)
+        record_bytes = serialize_payload(payload)
+        self.assertEqual(len(record_bytes), 108)
+        self.assertNotIn(record_bytes, encoded.tobytes())
+        self.assertFalse(ciphertext.startswith(b"\x24IMG-"))
         self.assertTrue(
             verify_signature(
-                encode_signing_input(IMAGE_MEDIA_CODE, context, layout, record_bytes),
+                encode_signing_input(IMAGE_MEDIA_CODE, context, layout, 0, ciphertext),
                 signature,
                 PUBLIC_KEY,
             )
@@ -375,130 +496,144 @@ class TestMaskedStego(unittest.TestCase):
 
     def test_relocated_packet_is_signature_invalid(self) -> None:
         source = carrier(30000)
-        (encoded, layout, _), context = encode_image_carrier(source, start=50, k=3)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
         bits = read_lsb_bits(encoded[layout.start_unit:layout.start_unit + layout.footprint], layout.footprint * layout.lsb_count, layout.lsb_count)
         relocated = source.copy()
         new_start = 5000
         relocated[new_start:new_start + layout.footprint] = write_lsb_bits(
             relocated[new_start:new_start + layout.footprint], bits, layout.lsb_count
         )
-        # Moving the mask window also changes the media hash, but signature checking occurs first.
-        self.assertEqual(decode_carrier(relocated, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, new_start, layout.lsb_count, layout.payload_length).verdict, "Signature Invalid")
+        fields = bootstrap_fields_from_carrier(encoded, source.size)
+        moved_bootstrap = reseal_bootstrap(source.size, fields, start_unit=new_start)
+        relocated = write_lsb_bits(relocated, bytes_to_bit_sequence(moved_bootstrap), BOOTSTRAP_LSB_COUNT)
+        self.assertEqual(decode_carrier(relocated, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Signature Invalid")
 
     def test_supplied_geometry_out_of_range_is_wrong_start_location(self) -> None:
-        (encoded, layout, _), context = encode_image_carrier(start=17, k=3)
-        result = decode_carrier(
-            encoded,
-            IMAGE_MEDIA_CODE,
-            context,
-            PUBLIC_KEY,
-            encoded.size - layout.footprint + 1,
-            layout.lsb_count,
-            layout.payload_length,
-        )
+        encoded_result, context = encode_image_carrier(carrier(30000), start=2048, k=3)
+        encoded, layout, _ = encoded_result
+        fields = bootstrap_fields_from_carrier(encoded, encoded.size)
+        forged = reseal_bootstrap(encoded.size, fields, start_unit=encoded.size - layout.footprint + 1)
+        changed = write_lsb_bits(encoded.copy(), bytes_to_bit_sequence(forged), BOOTSTRAP_LSB_COUNT)
+        result = decode_carrier(changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
         self.assertEqual(result.verdict, "Wrong Start Location")
 
-    def test_pristine_and_malformed_carriers_are_rejected_honestly(self) -> None:
-        context = struct.pack(">II", 5000 // 3, 1)
-        cases = (carrier(5000), np.zeros(5000, dtype=np.uint8))
-        for source in cases:
-            with self.subTest(first_unit=int(source[0])):
-                result = decode_carrier(source, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, 31, 3, 108)
-                self.assertEqual(result.verdict, "Cannot Verify")
-                self.assertNotEqual(result.verdict, "Payload Missing")
-
-    def test_invalid_geometry_is_rejected_before_bit_read(self) -> None:
-        source = carrier(5000)
+    def test_pristine_and_wrong_receiver_carriers_are_payload_missing(self) -> None:
+        source = carrier(10000)
         context = struct.pack(">II", source.size // 3, 1)
-        invalid = (
-            (-1, 1, 0),
-            (0, 0, 0),
-            (0, 9, 0),
-            (0, 1, -1),
+        for pristine in (source, np.zeros(source.size, dtype=np.uint8)):
+            with self.subTest(first_unit=int(pristine[0])):
+                result = decode_carrier(pristine, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                self.assertEqual(result.verdict, "Payload Missing")
+        (encoded, _, _), _ = encode_image_carrier(source)
+        self.assertEqual(
+            decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, OTHER_PRIVATE_KEY).verdict,
+            "Payload Missing",
         )
-        for start_unit, lsb_count, payload_length in invalid:
-            with self.subTest(start_unit=start_unit, lsb_count=lsb_count, payload_length=payload_length):
-                with patch("stego.core.read_lsb_bits") as read_bits:
-                    result = decode_carrier(
-                        source,
-                        IMAGE_MEDIA_CODE,
-                        context,
-                        PUBLIC_KEY,
-                        start_unit,
-                        lsb_count,
-                        payload_length,
-                    )
-                self.assertEqual(result.verdict, "Cannot Verify")
-                read_bits.assert_not_called()
 
-    def test_valid_but_unreadable_geometry_is_rejected_before_bit_read(self) -> None:
-        context = struct.pack(">II", 1, 1)
+    def test_invalid_bootstrap_fields_are_rejected_after_one_bootstrap_read(self) -> None:
+        source = carrier(10000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
+        fields = bootstrap_fields_from_carrier(encoded, source.size)
         cases = (
-            (0, 1, 1 << 100, carrier(5000)),
-            (5001, 1, 0, carrier(5000)),
-            (0, 8, 0, carrier(RSA_SIGNATURE_SIZE - 1)),
+            {"version": 1},
+            {"lsb_count": 0},
+            {"lsb_count": 9},
+            {"ciphertext_length": 0},
+            {"extra": b"x"},
         )
-        for start_unit, lsb_count, payload_length, source in cases:
-            with self.subTest(start_unit=start_unit, lsb_count=lsb_count, payload_length=payload_length, units=source.size):
-                with patch("stego.core.read_lsb_bits") as read_bits:
-                    result = decode_carrier(
-                        source,
-                        IMAGE_MEDIA_CODE,
-                        context,
-                        PUBLIC_KEY,
-                        start_unit,
-                        lsb_count,
-                        payload_length,
-                    )
+        for changes in cases:
+            with self.subTest(changes=changes):
+                if "extra" in changes:
+                    envelope = raw_bootstrap(source.size, fields.version, fields.flags, fields.lsb_count, fields.start_unit, fields.ciphertext_length, fields.session_key, fields.aead_nonce, changes["extra"])
+                else:
+                    envelope = reseal_bootstrap(source.size, fields, **changes)
+                changed = write_lsb_bits(encoded.copy(), bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT)
+                with patch("stego.core.read_lsb_bits", wraps=read_lsb_bits) as read_bits:
+                    result = decode_carrier(changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                self.assertEqual(result.verdict, "Cannot Verify")
+                self.assertEqual(read_bits.call_count, 1)
+
+    def test_valid_changed_geometry_is_signature_invalid(self) -> None:
+        source = carrier(30000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
+        fields = bootstrap_fields_from_carrier(encoded, source.size)
+        for changes in ({"lsb_count": 4}, {"ciphertext_length": fields.ciphertext_length + 1}):
+            with self.subTest(changes=changes):
+                envelope = reseal_bootstrap(source.size, fields, **changes)
+                changed = write_lsb_bits(encoded.copy(), bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT)
+                result = decode_carrier(changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                self.assertEqual(result.verdict, "Signature Invalid")
+
+    def test_unreadable_bootstrap_geometry_is_wrong_start_after_one_read(self) -> None:
+        source = carrier(10000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
+        fields = bootstrap_fields_from_carrier(encoded, source.size)
+        cases = (
+            {"start_unit": bootstrap_span(RECEIVER_PRIVATE_KEY) - 1},
+            {"start_unit": source.size},
+            {"ciphertext_length": source.size},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes):
+                envelope = reseal_bootstrap(source.size, fields, **changes)
+                changed = write_lsb_bits(encoded.copy(), bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT)
+                with patch("stego.core.read_lsb_bits", wraps=read_lsb_bits) as read_bits:
+                    result = decode_carrier(changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
                 self.assertEqual(result.verdict, "Wrong Start Location")
-                read_bits.assert_not_called()
+                self.assertEqual(read_bits.call_count, 1)
 
     def test_nonzero_alignment_padding_is_cannot_verify(self) -> None:
-        (encoded, layout, _), context = encode_image_carrier(start=17, k=5)
+        (encoded, layout, _), context = encode_image_carrier(start=2048, k=5, user_payload=b"x")
         self.assertGreater(layout.pad_bits, 0)
         changed = embedded_bit_flip(encoded, layout.start_unit, layout.lsb_count, layout.footprint * layout.lsb_count - 1)
-        self.assertEqual(decode_carrier(changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length).verdict, "Cannot Verify")
+        self.assertEqual(decode_carrier(changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Cannot Verify")
 
-    def test_capacity_failure_does_not_modify_input(self):
+    def test_capacity_failure_does_not_modify_input(self) -> None:
         source = carrier(1000)
         before = source.copy()
-        with self.assertRaisesRegex(ValueError, "footprint does not fit"):
-            encode_carrier(source, IMAGE_MEDIA_CODE, struct.pack(">II", 1, 1), PRIVATE_KEY, 0, 1, b"x" * 5000, b"")
+        with self.assertRaisesRegex(ValueError, "carrier is too small"):
+            encode_carrier(source, IMAGE_MEDIA_CODE, struct.pack(">II", 1, 1), PRIVATE_KEY, RECEIVER_PUBLIC_KEY, bootstrap_span(RECEIVER_PUBLIC_KEY), 1, b"x" * 5000, b"")
         self.assertTrue(np.array_equal(source, before))
 
     def test_k8_hash_and_preservation_honesty(self) -> None:
         source = carrier(10000)
-        (encoded, layout, _), context = encode_image_carrier(source, start=200, k=8)
-        result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=8)
+        result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
         self.assertEqual(result.verdict, "Authentic")
-        expected = 8 * (source.size - layout.footprint)
+        expected = (
+            8 * (source.size - layout.footprint - layout.bootstrap_span)
+            + 0 * layout.footprint
+            + 7 * layout.bootstrap_span
+        )
         self.assertEqual(result.preserved_bits, expected)
         self.assertEqual(result.preserved_ratio, expected / (source.size * 8))
 
         inside_changed = source.copy()
         inside_changed[layout.start_unit] ^= np.uint8(0xFF)
         self.assertEqual(
-            calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, 0),
-            calculate_masked_media_hash(inside_changed, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, 0),
+            calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, layout.bootstrap_span),
+            calculate_masked_media_hash(inside_changed, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, layout.bootstrap_span),
         )
         outside_changed = source.copy()
-        outside_changed[0] ^= np.uint8(1)
+        outside_changed[0] ^= np.uint8(2)
         self.assertNotEqual(
-            calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, 0),
-            calculate_masked_media_hash(outside_changed, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, 0),
+            calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, layout.bootstrap_span),
+            calculate_masked_media_hash(outside_changed, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, layout.bootstrap_span),
         )
 
-        exact_size = ceil_unit_count((payload_length() + RSA_SIGNATURE_SIZE) * 8, 8)
+        packet_bytes = payload_length(b"", b"") + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE
+        exact_footprint = ceil_unit_count(packet_bytes * 8, 8)
+        exact_size = bootstrap_span(RECEIVER_PUBLIC_KEY) + exact_footprint
         exact_source = carrier(exact_size)
         exact_context = struct.pack(">II", exact_size, 1)
         exact_encoded, exact_layout, _ = encode_carrier(
-            exact_source, IMAGE_MEDIA_CODE, exact_context, PRIVATE_KEY, 0, 8, b"hello", b"{}"
+            exact_source, IMAGE_MEDIA_CODE, exact_context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, bootstrap_span(RECEIVER_PUBLIC_KEY), 8, b"", b""
         )
-        exact_result = decode_carrier(exact_encoded, IMAGE_MEDIA_CODE, exact_context, PUBLIC_KEY, exact_layout.start_unit, exact_layout.lsb_count, exact_layout.payload_length)
-        self.assertEqual(exact_layout.footprint, exact_size)
+        exact_result = decode_carrier(exact_encoded, IMAGE_MEDIA_CODE, exact_context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+        self.assertEqual(exact_layout.footprint, exact_footprint)
+        self.assertEqual(exact_layout.bootstrap_span + exact_layout.footprint, exact_size)
         self.assertEqual(exact_result.verdict, "Authentic")
-        self.assertEqual(exact_result.preserved_bits, 0)
-        self.assertEqual(exact_result.preserved_ratio, 0.0)
+        self.assertEqual(exact_result.preserved_bits, 7 * exact_layout.bootstrap_span)
 
     def test_png_and_wav_file_round_trips(self) -> None:
         with TemporaryDirectory() as directory_name:
@@ -507,8 +642,8 @@ class TestMaskedStego(unittest.TestCase):
             png_output = directory / "output.png"
             image = np.arange(120 * 120 * 3, dtype=np.uint8).reshape((120, 120, 3))
             Image.fromarray(image, mode="RGB").save(png_input)
-            png_layout, _ = encode_png(png_input, png_output, PRIVATE_KEY, 101, 3, b"PNG bytes \xff", b"kind=image")
-            png_result = verify_png(png_output, PUBLIC_KEY, png_layout.start_unit, png_layout.lsb_count, png_layout.payload_length)
+            png_layout, _ = encode_png(png_input, png_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"PNG bytes \xff", b"kind=image")
+            png_result = verify_png(png_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
             self.assertEqual(png_result.verdict, "Authentic")
             self.assertEqual(png_result.payload.user_payload, b"PNG bytes \xff")
 
@@ -519,8 +654,8 @@ class TestMaskedStego(unittest.TestCase):
                 wav_file.setsampwidth(1)
                 wav_file.setframerate(8000)
                 wav_file.writeframes(bytes(range(256)) * 80)
-            wav_layout, _ = encode_wav(wav_input, wav_output, PRIVATE_KEY, 73, 5, b"WAV bytes", b"kind=audio")
-            wav_result = verify_wav(wav_output, PUBLIC_KEY, wav_layout.start_unit, wav_layout.lsb_count, wav_layout.payload_length)
+            wav_layout, _ = encode_wav(wav_input, wav_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 5, b"WAV bytes", b"kind=audio")
+            wav_result = verify_wav(wav_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
             self.assertEqual(wav_result.verdict, "Authentic")
             self.assertEqual(wav_result.payload.metadata, b"kind=audio")
 
@@ -535,12 +670,12 @@ class TestMaskedStego(unittest.TestCase):
                 wav_file.setsampwidth(1)
                 wav_file.setframerate(8000)
                 wav_file.writeframes(bytes(range(256)) * 80)
-            layout, _ = encode_wav(wav_input, wav_output, PRIVATE_KEY, 73, 5, b"WAV bytes", b"kind=audio")
+            layout, _ = encode_wav(wav_input, wav_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 5, b"WAV bytes", b"kind=audio")
             wav_data = load_pcm_wav_from_path(wav_output)
             changed = wav_frame_bytes_to_carrier(wav_data.frame_bytes, wav_data.sample_width)
             changed[layout.start_unit + layout.footprint] ^= np.uint8(1)
             save_pcm_wav_to_path(wav_data_with_carrier(wav_data, changed), wav_tampered)
-            self.assertEqual(verify_wav(wav_tampered, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length).verdict, "Tampered")
+            self.assertEqual(verify_wav(wav_tampered, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Tampered")
 
     def test_multibyte_wav_sample_stride_round_trips(self) -> None:
         sample_count = 6000
@@ -571,12 +706,13 @@ class TestMaskedStego(unittest.TestCase):
                             wav_input,
                             wav_output,
                             PRIVATE_KEY,
-                            0,
+                            RECEIVER_PUBLIC_KEY,
+                            2048,
                             lsb_count,
                             payload,
                             b"multi-byte",
                         )
-                        result = verify_wav(wav_output, PUBLIC_KEY, layout.start_unit, layout.lsb_count, layout.payload_length)
+                        result = verify_wav(wav_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
                         self.assertEqual(result.verdict, "Authentic", result.detail)
                         self.assertEqual(result.payload.user_payload, payload)
                         stego_data = load_pcm_wav_from_path(wav_output)
@@ -599,38 +735,29 @@ class TestMaskedStego(unittest.TestCase):
 
     def test_multibyte_wav_capacity_uses_sample_count(self) -> None:
         sample_width = 2
-        sample_count = 2000
+        sample_count = 6000
         lsb_count = 3
         wav_data = WavPcmData(1, sample_width, 8000, sample_count, bytes(sample_count * sample_width))
         carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes, wav_data.sample_width)
         context = encode_wav_media_context(wav_data, carrier.size)
-        fixed_payload_length = payload_length(b"", b"")
-        max_user_payload = carrier.size * lsb_count // 8 - RSA_SIGNATURE_SIZE - fixed_payload_length
-        self.assertGreater(max_user_payload, 0)
+        span = bootstrap_span(RECEIVER_PUBLIC_KEY)
+        record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, 0)
+        maximum = max_user_payload_length(carrier.size, span, span, lsb_count, record_overhead)
+        self.assertGreater(maximum, 0)
+        before = carrier.copy()
         encoded, layout, payload = encode_carrier(
-            carrier,
-            AUDIO_MEDIA_CODE,
-            context,
-            PRIVATE_KEY,
-            0,
-            lsb_count,
-            b"x" * max_user_payload,
-            b"",
+            carrier, AUDIO_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+            span, lsb_count, b"x" * maximum, b"",
         )
         self.assertEqual(layout.total_units, sample_count)
-        self.assertEqual(len(payload.user_payload), max_user_payload)
         self.assertEqual(encoded.size, sample_count)
-        with self.assertRaisesRegex(ValueError, "embedding footprint does not fit after start_unit"):
+        self.assertEqual(len(payload.user_payload), maximum)
+        with self.assertRaisesRegex(ValueError, "user payload exceeds capacity"):
             encode_carrier(
-                carrier,
-                AUDIO_MEDIA_CODE,
-                context,
-                PRIVATE_KEY,
-                0,
-                lsb_count,
-                b"x" * (max_user_payload + 1),
-                b"",
+                carrier, AUDIO_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                span, lsb_count, b"x" * (maximum + 1), b"",
             )
+        self.assertTrue(np.array_equal(carrier, before))
 
     def test_wav_carrier_stride_validation(self) -> None:
         carrier = wav_frame_bytes_to_carrier(bytes(range(12)), 3)
@@ -648,15 +775,15 @@ class TestMaskedStego(unittest.TestCase):
         self.assertEqual(len(payload.media_id.encode("utf-8")), MEDIA_ID_SIZE)
 
     def test_payload_capacity_boundary_is_exact(self) -> None:
-        total_units = 5000
-        start_unit = 137
-        for lsb_count in (1, 3, 8):
-            with self.subTest(lsb_count=lsb_count):
-                maximum = max_record_length(total_units, start_unit, 0, lsb_count)
-                layout = build_embedding_layout(total_units, start_unit, lsb_count, maximum, 0)
-                self.assertLessEqual(start_unit + layout.footprint, total_units)
-                with self.assertRaises(ValueError):
-                    build_embedding_layout(total_units, start_unit, lsb_count, maximum + 1, 0)
+        cases = ((5000, 137, 0), (10000, bootstrap_span(RECEIVER_PUBLIC_KEY) + 137, bootstrap_span(RECEIVER_PUBLIC_KEY)))
+        for total_units, start_unit, span in cases:
+            for lsb_count in (1, 3, 8):
+                with self.subTest(total_units=total_units, lsb_count=lsb_count):
+                    maximum = max_record_length(total_units, start_unit, span, lsb_count)
+                    layout = build_embedding_layout(total_units, start_unit, lsb_count, maximum + GCM_TAG_SIZE, span)
+                    self.assertLessEqual(start_unit + layout.footprint, total_units)
+                    with self.assertRaises(ValueError):
+                        build_embedding_layout(total_units, start_unit, lsb_count, maximum + GCM_TAG_SIZE + 1, span)
 
     def test_payload_capacity_clamps_to_zero(self) -> None:
         total_units = RSA_SIGNATURE_SIZE - 1
@@ -670,48 +797,49 @@ class TestMaskedStego(unittest.TestCase):
         self.assertEqual(layout.pad_bits, 0)
 
     def test_payload_capacity_rejection_names_capacity_inputs(self) -> None:
-        total_units = 5000
-        start_unit = 137
-        lsb_count = 3
-        maximum = max_record_length(total_units, start_unit, 0, lsb_count)
-        with self.assertRaises(ValueError) as raised:
-            build_embedding_layout(total_units, start_unit, lsb_count, maximum + 1, 0)
-        message = str(raised.exception)
-        for expected in (
-            f"total_units={total_units}",
-            f"start_unit={start_unit}",
-            f"lsb_count={lsb_count}",
-            f"max_record_length={maximum}",
-        ):
-            self.assertIn(expected, message)
+        cases = ((5000, 137, 0), (10000, bootstrap_span(RECEIVER_PUBLIC_KEY) + 137, bootstrap_span(RECEIVER_PUBLIC_KEY)))
+        for total_units, start_unit, span in cases:
+            with self.subTest(total_units=total_units, span=span):
+                lsb_count = 3
+                maximum = max_record_length(total_units, start_unit, span, lsb_count)
+                with self.assertRaises(ValueError) as raised:
+                    build_embedding_layout(total_units, start_unit, lsb_count, maximum + GCM_TAG_SIZE + 1, span)
+                message = str(raised.exception)
+                for expected in (
+                    f"total_units={total_units}",
+                    f"start_unit={start_unit}",
+                    f"lsb_count={lsb_count}",
+                    f"max_record_length={maximum}",
+                ):
+                    self.assertIn(expected, message)
 
     def test_payload_over_sixteen_mebibytes_uses_carrier_capacity(self) -> None:
         payload_length = 16 * 1024 * 1024 + 1
         total_units = RSA_SIGNATURE_SIZE + payload_length
         maximum = max_record_length(total_units, 0, 0, 8)
-        self.assertEqual(maximum, payload_length)
-        layout = build_embedding_layout(total_units, 0, 8, payload_length, 0)
-        self.assertEqual(layout.payload_length, payload_length)
-        self.assertEqual(layout.footprint, total_units)
+        self.assertEqual(maximum, payload_length - GCM_TAG_SIZE)
+        layout = build_embedding_layout(total_units, 0, 8, payload_length - GCM_TAG_SIZE, 0)
+        self.assertEqual(layout.ciphertext_length, payload_length - GCM_TAG_SIZE)
+        self.assertEqual(layout.footprint, total_units - GCM_TAG_SIZE)
 
     def test_user_payload_capacity_boundary_is_exact(self) -> None:
-        total_units = 5000
-        start_unit = 137
+        total_units = 10000
+        start_unit = bootstrap_span(RECEIVER_PUBLIC_KEY)
         metadata = b"m" * 17
         fixed_record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, 0)
         self.assertEqual(fixed_record_overhead, 101)
         record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, len(metadata))
         self.assertEqual(record_overhead, 118)
-        expected_record_maxima = (351, 1567, 4607)
-        expected_user_maxima = (233, 1449, 4489)
+        expected_record_maxima = tuple(max_record_length(total_units, start_unit, bootstrap_span(RECEIVER_PUBLIC_KEY), k) for k in (1, 3, 8))
+        expected_user_maxima = tuple(value - record_overhead for value in expected_record_maxima)
         source = carrier(total_units)
         context = struct.pack(">II", total_units // 3, 1)
         for lsb_count, expected_record, expected_user in zip(
             (1, 3, 8), expected_record_maxima, expected_user_maxima
         ):
             with self.subTest(lsb_count=lsb_count):
-                record_maximum = max_record_length(total_units, start_unit, 0, lsb_count)
-                user_maximum = max_user_payload_length(total_units, start_unit, 0, lsb_count, record_overhead)
+                record_maximum = max_record_length(total_units, start_unit, bootstrap_span(RECEIVER_PUBLIC_KEY), lsb_count)
+                user_maximum = max_user_payload_length(total_units, start_unit, bootstrap_span(RECEIVER_PUBLIC_KEY), lsb_count, record_overhead)
                 self.assertEqual(record_maximum, expected_record)
                 self.assertEqual(user_maximum, expected_user)
                 self.assertEqual(record_maximum - user_maximum, record_overhead)
@@ -721,6 +849,7 @@ class TestMaskedStego(unittest.TestCase):
                     IMAGE_MEDIA_CODE,
                     context,
                     PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY,
                     start_unit,
                     lsb_count,
                     b"x" * user_maximum,
@@ -731,19 +860,18 @@ class TestMaskedStego(unittest.TestCase):
                     IMAGE_MEDIA_CODE,
                     context,
                     PUBLIC_KEY,
-                    layout.start_unit,
-                    layout.lsb_count,
-                    layout.payload_length,
+                    RECEIVER_PRIVATE_KEY,
                 )
                 self.assertEqual(result.verdict, "Authentic")
                 self.assertEqual(len(payload.user_payload), expected_user)
                 self.assertTrue(np.array_equal(source, before))
-                with self.assertRaisesRegex(ValueError, "embedding footprint does not fit after start_unit"):
+                with self.assertRaisesRegex(ValueError, "user payload exceeds capacity"):
                     encode_carrier(
                         source,
                         IMAGE_MEDIA_CODE,
                         context,
                         PRIVATE_KEY,
+                        RECEIVER_PUBLIC_KEY,
                         start_unit,
                         lsb_count,
                         b"x" * (user_maximum + 1),
@@ -774,7 +902,7 @@ class TestMaskedStego(unittest.TestCase):
                 load_png_from_path(palette)
             with self.assertRaisesRegex(ValueError, "unsupported RGB PNG"):
                 load_png_from_path(sixteen)
-            self.assertEqual(verify_png(jpeg, PUBLIC_KEY, 0, 1, 0).verdict, "Cannot Verify")
+            self.assertEqual(verify_png(jpeg, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Cannot Verify")
 
     def test_pem_helpers_round_trip(self):
         with TemporaryDirectory() as directory_name:

@@ -40,7 +40,7 @@ Use this map before editing an unfamiliar part of the repository.
 | RSA-PSS keys, signatures, fingerprints, and PEM | [stego/crypto.py](../stego/crypto.py) |
 | Carrier-derived capacity and field widths | [stego/layout.py](../stego/layout.py) |
 | PNG and WAV adapters | [stego/media.py](../stego/media.py) |
-| End-to-end encode and verification with caller-supplied geometry (stage 4b) | [stego/core.py](../stego/core.py) |
+| End-to-end encrypted encode and receiver-gated verification (stage 4c) | [stego/core.py](../stego/core.py) |
 | FR1–FR12 demonstration notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol tests | [test_stego.py](../test_stego.py) |
 | Runtime and test dependencies | [requirements.txt](../requirements.txt) |

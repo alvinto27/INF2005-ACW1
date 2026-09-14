@@ -18,8 +18,8 @@ from .bits import (
 from .constants import (
     MEDIA_HASH_CONTEXT_PREFIX_FORMAT,
     MEDIA_HASH_DOMAIN,
-    PROTOCOL_FLAGS,
     PROTOCOL_VERSION,
+    GCM_TAG_SIZE,
     RSA_SIGNATURE_SIZE,
     SIGNING_CONTEXT_PREFIX_FORMAT,
     SIGNING_DOMAIN,
@@ -40,8 +40,9 @@ class EmbeddingLayout:
     start_unit: int
     footprint: int
     lsb_count: int
-    payload_length: int
+    ciphertext_length: int
     pad_bits: int
+    bootstrap_span: int
 
 
 def max_record_length(total_units: int, start_unit: int, bootstrap_span: int, lsb_count: int) -> int:
@@ -56,7 +57,7 @@ def max_record_length(total_units: int, start_unit: int, bootstrap_span: int, ls
             f"lowest legal start_unit is {bootstrap_span}"
         )
     available_bytes = ((total_units - start_unit) * lsb_count) // 8
-    return max(0, available_bytes - RSA_SIGNATURE_SIZE)
+    return max(0, available_bytes - RSA_SIGNATURE_SIZE - GCM_TAG_SIZE)
 
 
 def max_user_payload_length(total_units: int, start_unit: int, bootstrap_span: int, lsb_count: int, record_overhead: int) -> int:
@@ -71,19 +72,19 @@ def carrier_field_width(total_units: int) -> int:
     return max(1, (total_units.bit_length() + 7) // 8)
 
 
-def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, payload_length: int, bootstrap_span: int) -> EmbeddingLayout:
+def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, ciphertext_length: int, bootstrap_span: int) -> EmbeddingLayout:
     """Calculate and check how many carrier units a packet needs."""
     total_units = _validate_non_negative_integer(total_units, "total_units")
     start_unit = _validate_non_negative_integer(start_unit, "start_unit")
     lsb_count = _validate_lsb_count(lsb_count)
-    payload_length = validate_payload_length(payload_length)
+    ciphertext_length = validate_payload_length(ciphertext_length)
     bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
     if start_unit < bootstrap_span:
         raise ValueError(
             f"start_unit {start_unit} is below the bootstrap region; "
             f"lowest legal start_unit is {bootstrap_span}"
         )
-    packet_bits = (payload_length + RSA_SIGNATURE_SIZE) * 8
+    packet_bits = (ciphertext_length + RSA_SIGNATURE_SIZE) * 8
     footprint = ceil_unit_count(packet_bits, lsb_count)
     pad_bits = footprint * lsb_count - packet_bits
     if start_unit + footprint > total_units:
@@ -93,7 +94,7 @@ def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, pa
             f"total_units={total_units}, start_unit={start_unit}, "
             f"lsb_count={lsb_count}, max_record_length={maximum}"
         )
-    return EmbeddingLayout(total_units, start_unit, footprint, lsb_count, payload_length, pad_bits)
+    return EmbeddingLayout(total_units, start_unit, footprint, lsb_count, ciphertext_length, pad_bits, bootstrap_span)
 
 
 def preserved_bit_count(total_units: int, footprint: int, lsb_count: int, bootstrap_span: int) -> int:
@@ -142,15 +143,18 @@ def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_
     return hashlib.sha256(preimage).digest()
 
 
-def encode_signing_input(media_code: int, media_context: bytes, layout: EmbeddingLayout, payload_bytes: bytes) -> bytes:
-    """Build signed bytes covering the packet geometry and payload, so moving the packet makes verification fail."""
+def encode_signing_input(media_code: int, media_context: bytes, layout: EmbeddingLayout, flags: int, ciphertext: bytes) -> bytes:
+    """Build signed bytes covering recovered geometry and ciphertext."""
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
     if not isinstance(layout, EmbeddingLayout):
         raise TypeError("layout must be an EmbeddingLayout")
-    payload_bytes = validate_payload_bytes(payload_bytes)
-    if len(payload_bytes) != layout.payload_length:
-        raise ValueError("payload length does not match layout")
+    flags = _validate_non_negative_integer(flags, "flags")
+    if flags > 255:
+        raise ValueError("flags must fit in one byte")
+    ciphertext = validate_payload_bytes(ciphertext)
+    if len(ciphertext) != layout.ciphertext_length:
+        raise ValueError("ciphertext length does not match layout")
     width = carrier_field_width(layout.total_units)
     return (
         SIGNING_DOMAIN
@@ -158,14 +162,14 @@ def encode_signing_input(media_code: int, media_context: bytes, layout: Embeddin
             SIGNING_CONTEXT_PREFIX_FORMAT,
             # Use PROTOCOL_VERSION, never a packet version: reading it looks tidy but removes downgrade protection.
             PROTOCOL_VERSION,
-            PROTOCOL_FLAGS,
+            flags,
             media_code,
             layout.lsb_count,
         )
         + layout.total_units.to_bytes(width, "big")
         + layout.start_unit.to_bytes(width, "big")
         + layout.footprint.to_bytes(width, "big")
-        + layout.payload_length.to_bytes(width, "big")
+        + layout.ciphertext_length.to_bytes(width, "big")
         + media_context
-        + payload_bytes
+        + ciphertext
     )

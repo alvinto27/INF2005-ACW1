@@ -2,9 +2,9 @@
 
 ## What the system does
 
-**Current state: the intermediate stage 4b format.** See the [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md). The marker and packet header are removed. The receiver supplies the start unit, LSB count, and complete serialised record length separately. The record is not yet encrypted. This is not the completed version 2 protocol, and it does not read old version 1 files. `PROTOCOL_VERSION` stays at 1 until stage 4c.
+**Current state: protocol version 2 stage 4c.** See the [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md). The packet has no public marker or header. An RSA-OAEP bootstrap carries the packet geometry and AES-256-GCM session material for the intended receiver. The encrypted record is authenticated by RSA-PSS and the masked media hash. Version 1 files are not readable under this scheme.
 
-The system embeds a signed binary payload in the least-significant bits of a strict RGB PNG image or an uncompressed PCM WAV file. It hashes all carrier bits that the embedding operation preserves. Verification uses a caller-supplied RSA public key to authenticate the payload, media interpretation, and embedding layout.
+The system embeds an encrypted signed payload in the least-significant bits of a strict RGB PNG image or an uncompressed PCM WAV file. It hashes all carrier bits that the embedding operation preserves. Verification requires the sender public key and receiver private key.
 
 ## Integrity invariant
 
@@ -42,7 +42,7 @@ media_hash = hashlib.sha256(preimage).digest()
 b"INF2005-ACW1\x00MEDIA-HASH\x00"
 ```
 
-The shared hash and capacity functions take the reserved bootstrap span as a required argument. Core passes 0 in stage 4b because no bootstrap is embedded. A start unit below the span is rejected. `carrier_field_width(total_units)` is the single width rule: `max(1, (total_units.bit_length() + 7) // 8)`.
+The shared hash and capacity functions take the reserved bootstrap span as a required argument. Core derives the span from the RSA key and masks the one-LSB bootstrap region as well as the packet region. A start unit below the span is rejected. `carrier_field_width(total_units)` is the single width rule: `max(1, (total_units.bit_length() + 7) // 8)`.
 
 ## Module dependencies
 
@@ -53,10 +53,10 @@ The shared hash and capacity functions take the reserved bootstrap span as a req
 The packet has no header or marker:
 
 ```text
-serialised payload record || 256-byte RSA-PSS signature
+record ciphertext plus GCM tag || 256-byte RSA-PSS signature
 ```
 
-The caller supplies `start_unit`, `lsb_count`, and `payload_length` to `decode_carrier`, `verify_png`, or `verify_wav`. All three are required, with no defaults. `payload_length` counts the complete record below, not only `user_payload`. The encoder returns these values in `EmbeddingLayout`.
+The caller supplies the sender public key and receiver private key to `decode_carrier`, `verify_png`, or `verify_wav`. The receiver recovers `start_unit`, `lsb_count`, and `ciphertext_length` from the RSA-OAEP bootstrap. The encoder returns the recovered geometry in `EmbeddingLayout`.
 
 The payload record is exactly:
 
@@ -77,7 +77,7 @@ All integers use big-endian byte order. The packet continues with a 256-byte RSA
 The exact layout arithmetic is:
 
 ```python
-packet_bits = (payload_length + 256) * 8
+packet_bits = (ciphertext_length + 256) * 8
 footprint = (packet_bits + lsb_count - 1) // lsb_count
 pad_bits = footprint * lsb_count - packet_bits
 ```
@@ -89,17 +89,17 @@ SIGNING_DOMAIN = b"INF2005-ACW1\x00SIGN\x00"
 width = carrier_field_width(total_units)
 signing_input = (
     SIGNING_DOMAIN
-    + struct.pack(">BBBB", PROTOCOL_VERSION, PROTOCOL_FLAGS, media_code, lsb_count)
+    + struct.pack(">BBBB", PROTOCOL_VERSION, flags, media_code, lsb_count)
     + total_units.to_bytes(width, "big")
     + start_unit.to_bytes(width, "big")
     + footprint.to_bytes(width, "big")
-    + payload_length.to_bytes(width, "big")
+    + ciphertext_length.to_bytes(width, "big")
     + media_context
-    + payload_bytes
+    + ciphertext
 )
 ```
 
-`PROTOCOL_FLAGS` is 0. The version in this input comes from the protocol constant, not from received data. Stage 4b has no GCM tag cost. `max_record_length` subtracts only the signature; `max_user_payload_length` also subtracts the record overhead supplied by the caller. The generated record costs 101 bytes plus metadata before any user bytes.
+`PROTOCOL_FLAGS` is 0. The version in this input comes from the protocol constant, not from received data. The ciphertext length includes the 16-byte GCM tag. `max_record_length` accounts for the signature and tag; `max_user_payload_length` also subtracts the record overhead supplied by the caller. The generated record costs 101 bytes plus metadata before any user bytes.
 
 The PNG media context is exactly `struct.pack(">II", width, height)`. The WAV media context is exactly `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 
@@ -124,15 +124,15 @@ At `sample_width == 1` the stride is 1, so the sample-stride correction did not 
 
 Version 1 scanned for a fixed 16-byte marker at each LSB count from 1 to 8. The marker supplied a candidate start unit; its header supplied the record length. This public discovery path is deleted in stage 4b.
 
-The current decoder checks exactly the geometry supplied by the caller. It validates the numeric fields, builds a carrier-bounded layout before any bit read, checks alignment padding, parses the record, checks the signature, and then checks the masked media hash. It does not search for another packet after a failure. Relocating a packet still causes RSA-PSS verification to fail because the supplied start unit is signed.
+The current decoder reads one bootstrap, opens it with the receiver private key, validates its structure, checks geometry bounds, extracts the packet, verifies RSA-PSS over flags and ciphertext, applies the flags policy, opens AES-GCM, parses the record, and then checks the masked media hash. It does not search for another packet after a failure. Relocating a packet still causes RSA-PSS verification to fail because the recovered start unit is signed.
 
 The removed scan had a candidate limit and refused multiple valid candidates. There is no candidate list now, so there is no automatic choice between packets and no ambiguity branch. This does not prove that the carrier holds only one packet.
 
-**Removal of the marker does not provide location confidentiality.** The plaintext record still has a recognisable media-identifier prefix. Stage 4c will encrypt the whole record and move all three geometry values into the receiver bootstrap. See the measured attack in [Location Confidentiality Plan, section 1](LOCATION-CONFIDENTIALITY-PLAN.md#1-the-problem).
+**Removal of the marker is completed by encryption.** The record has no recognisable plaintext prefix at the user-selected location. The fixed bootstrap span remains observable, but its fields and the packet location are readable only with the receiver private key. See the measured attack in [Location Confidentiality Plan, section 1](LOCATION-CONFIDENTIALITY-PLAN.md#1-the-problem).
 
 ## Signature scope
 
-The RSA-PSS signature authenticates the protocol version, flags, media code, selected LSB count, total carrier-unit count, supplied start unit, derived footprint, payload length, fixed media context, and every payload byte. The payload bytes include the stored media hash, user payload, metadata, media identifier, timestamp, and nonce. RSA-PSS verification validates the received signature bytes against this signing input.
+The RSA-PSS signature authenticates the protocol version, flags, media code, selected LSB count, total carrier-unit count, recovered start unit, derived footprint, ciphertext length, fixed media context, and every ciphertext byte. AES-GCM authenticates the recovered session key, nonce, and plaintext record. The record includes the stored media hash, user payload, metadata, media identifier, timestamp, and nonce.
 
 The signature does not authenticate the original values of overwritten cover LSBs. It does not cover file-container metadata outside the decoded carrier units. It does not identify a person, prove freshness, or prevent removal of the embedded packet.
 
@@ -140,12 +140,13 @@ The signature does not authenticate the original values of overwritten cover LSB
 
 | Verdict | Operational meaning |
 | --- | --- |
-| `Authentic` | The packet parses, its padding is valid, its RSA-PSS signature verifies with the supplied key, and the recomputed masked media hash equals the signed stored hash. |
+| `Authentic` | The bootstrap and packet parse, padding is valid, RSA-PSS and AES-GCM verify, and the recomputed masked media hash equals the stored hash. |
 | `Tampered` | The signature verifies, but the recomputed masked media hash differs from the signed stored hash. |
 | `Signature Invalid` | RSA-PSS verification fails for the extracted signature and reconstructed signing input. |
-| `Payload Missing` | Not emitted in stage 4b. Without a recognition step, the decoder cannot distinguish absence from a damaged packet or wrong supplied geometry. |
-| `Wrong Start Location` | Numerically valid supplied geometry produces a footprint outside the carrier. |
-| `Cannot Verify` | The adapter rejects the file, a numeric geometry value is invalid, or record parsing or padding validation fails. |
+| `Payload Missing` | The bootstrap cannot be opened with the supplied receiver private key, including a pristine carrier or wrong receiver key. |
+| `Wrong Start Location` | Numerically valid geometry recovered from the opened bootstrap produces a footprint outside the carrier or overlaps the reserved bootstrap span. |
+| `Cannot Decrypt` | The signed ciphertext fails its AES-GCM authentication tag. |
+| `Cannot Verify` | The adapter rejects the file, the bootstrap is structurally malformed, flags policy fails after signature verification, or packet parsing or padding validation fails. |
 
 Version 1 preferred the deepest failure among discovered candidates. Stage 4b checks one supplied layout and reports its failure directly. A caller can supply a wrong location that remains in range; it then receives the parsing, padding, or signature failure reached at that location, not proof that the file has no payload.
 
@@ -155,7 +156,7 @@ Version 1 preferred the deepest failure among discovered candidates. Stage 4b ch
 - The alignment padding zero-check is a format check, not a cryptographic one.
 - RSA-PSS is randomised, so verification proves the signed input is intact, not that the signature bytes are byte-for-byte original.
 - As the footprint grows, the preserved-bit count falls. At `k = 8` with a full-carrier footprint, the media hash witnesses nothing, and the reported `preserved_bits` says so.
-- The record remains plaintext in stage 4b. Its predictable prefix can reveal the location even without a public marker. Location confidentiality is not yet provided.
+- The bootstrap field values and record are encrypted or authenticated for the receiver; the fixed bootstrap span still reveals the envelope footprint.
 - Container metadata outside the decoded carrier is not covered.
 - A timestamp and nonce alone do not prevent replay.
 
@@ -167,7 +168,7 @@ This claim says nothing about a real-world identity. The caller must obtain the 
 
 ## What this project does not implement
 
-- Encryption inside the encode/decode path; standalone encryption primitives are preparation for stage 4c
+- Caller-side key management, trust stores, and replay protection
 - Automatic packet discovery in the stage 4b format
 - Key management or a trust store
 - Public-key infrastructure (PKI)

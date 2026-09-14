@@ -1,6 +1,6 @@
 # Location Confidentiality Plan
 
-**Status: design for protocol version 2; stages through 4b are implemented.** The repository currently uses an intermediate headerless format with caller-supplied start unit, LSB count, and complete record length. Bootstrap integration and record encryption remain stage 4c work. Location confidentiality is not yet provided. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Masked Media Integrity Design](INTEGRITY-DESIGN.md) for current behaviour.
+**Status: protocol version 2 stage 4c is implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Masked Media Integrity Design](INTEGRITY-DESIGN.md) for current behaviour.
 
 The goal is to protect the payload start location, length, and LSB depth from everyone except the intended receiver, while the user still chooses all three by hand.
 
@@ -79,7 +79,7 @@ secret packet, user-selected start unit, user-selected LSB count
 | --- | --- | --- |
 | `BOOTSTRAP_START_UNIT` | 0 | fixed and public. There is no discovery step |
 | `BOOTSTRAP_LSB_COUNT` | 1 | least change to the cover |
-| `BOOTSTRAP_SPAN` | serialised bootstrap envelope size in bytes, multiplied by 8 | 2,048 units for RSA-2048 |
+| `bootstrap_span` | serialised bootstrap envelope size in bytes, multiplied by 8 | 2,048 units for RSA-2048 |
 | `PROTOCOL_VERSION` | 2 | version-1 files are not readable under this scheme |
 
 ### 3.2 The packet header is removed
@@ -337,8 +337,8 @@ That error looks harmless and is not. At 1 LSB with RSA-2048 it is 256 bytes, wh
 
 | Carrier | LSB count | Ignoring the span | Accounting for it |
 | --- | ---: | ---: | --- |
-| Notebook tone, 4,000 samples | 1 | 228 B free | **does not fit** |
-| Notebook tone, 4,000 samples | 8 | 3,728 B | 1,680 B |
+| Illustrative 4,000-unit carrier | 1 | 228 B free | **does not fit** |
+| Illustrative 4,000-unit carrier | 8 | 3,728 B | 1,680 B |
 | 32,000-sample WAV | 1 | 3,728 B | 3,472 B |
 
 A check that reports success and then fails during encode is worse than no check, because it moves the failure past the point where the user can still act on it.
@@ -492,14 +492,14 @@ Smallest usable carrier, empty payload, 1 LSB:
 
 | Scheme | Bootstrap | Packet | Total |
 | --- | ---: | ---: | ---: |
-| RSA-2048 | 2,048 | 2,872 | 4,920 units |
-| X25519 | 904 | 2,872 | 3,776 units |
+| RSA-2048 | 2,048 | 2,984 | 5,032 units |
+| X25519 | 904 | 2,984 | 3,888 units |
 
 The packet figure includes the 16-byte GCM tag.
 
 RSA-OAEP is chosen for version 2 because it adds no new primitive and keeps the explanation short. X25519 is recorded as the fallback if small audio carriers ever matter: it needs 113 bytes instead of 256 and it is available in the existing dependency.
 
-The demonstration notebook generates a 4,000-sample tone, which is below the RSA-2048 minimum. The fixture is lengthened. The protocol is not changed for a fixture.
+The demonstration notebook uses a 32,000-sample WAV cover. Its separate 4,000-sample tone is typed payload data, not the cover. The multi-byte WAV capacity test fixture was raised from 2,000 to 6,000 samples so it can prove exactness above the reserved span. The protocol is not changed for a fixture.
 
 ## 10. Security model
 
@@ -591,7 +591,7 @@ The decision therefore stays open rather than being settled twice. Documenting t
 | `stego/bootstrap.py` | new. Bootstrap field layout, span derivation, additional-data encoding, build, seal, open, parse |
 | Notebook confidentiality cells | the caller-side payload seal is deleted, per decision 16. The content-header cells stay |
 | `test_stego.py` | marker and discovery tests deleted. Added: bootstrap round trip, reserved-region refusal, untrusted-field validation, bootstrap tampering, power-of-two width, capacity boundary at several LSB counts |
-| Notebook | every section. The "verify with only a public key" narrative changes. The tone fixture is lengthened |
+| Notebook | every section. The "verify with only a public key" narrative changes. The 4,000-sample typed tone is clarified without lengthening it |
 | Existing files | version-1 files become unreadable. No migration is planned, and the repository stores no old artefacts |
 | [Payload Envelope Design](PAYLOAD-ENVELOPE-DESIGN.md) | the sealed blob is replaced by the bootstrap. The FR9 claim about a readable `media_hash` is withdrawn. `metadata` is no longer readable. Capacity loses the bootstrap span |
 
@@ -609,8 +609,8 @@ Each stage is one commit and one review. A stage is not finished until it has an
 | 3 | `bootstrap.py`: build, seal, open, parse | round-trip and malformed-input tests |
 | 4a | Name the two capacity quantities and thread the span through the capacity path. No cryptography, no API change | boundary tests for both quantities, and a refusal naming the reserved region |
 | 4b | Delete the marker, the scan, the candidate limit and the header format. Decode and file-verification wrappers take start unit, LSB count, and complete serialised record length as required arguments. **Update the capacity helper in the same commit**, per section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) | round trips pass with all three geometry values supplied; executable sources contain no deleted names; capacity tests prove exactness for the headerless, unencrypted layout |
-| 4c | The bootstrap carries the geometry, the record is encrypted, `verify_*` takes the receiver private key, `Cannot Decrypt` arrives, `PROTOCOL_VERSION` becomes 2 | the full verdict matrix including the bootstrap-tamper case |
-| 5 | Notebook: new narrative, lengthened tone, new verdict matrix, **exact preserved-bit integer alongside the ratio**, caller-side seal deleted per decision 16 | executes end to end with no error outputs, and the reported fidelity figure can show the span correction |
+| 4c | The bootstrap carries the geometry, the record is encrypted, `verify_*` takes the receiver private key, `Cannot Decrypt` arrives, `PROTOCOL_VERSION` becomes 2 | complete: 48 tests, including the full verdict matrix and bootstrap-tamper case |
+| 5 | Notebook and caller-side seal removal; caller-side sealing remains out of scope for stage 4c | executes end to end with no error outputs, and the reported fidelity figure can show the span correction |
 
 Stage 1 is deliberately first and separable. It is useful on its own, because the carrier-derived payload limit fixes a real defect in version 1 independently of anything else in this plan.
 

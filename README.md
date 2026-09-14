@@ -2,41 +2,36 @@
 A GUI-based LSB Replacement steganography program (window-based or web-based) that protects and verifies both image and audio cover objects using steganography, hashing and digital signatures
 
 The `stego` package provides the steganography implementation for strict
-RGB PNG and uncompressed PCM WAV carriers. It stores arbitrary user bytes in a
-single LSB embedding footprint and authenticates them with RSA-PSS.
+RGB PNG and uncompressed PCM WAV carriers. It encrypts arbitrary user bytes in a
+single LSB embedding footprint with AES-256-GCM and authenticates them with RSA-PSS.
 
 Every carrier bit that embedding intentionally preserves is represented in the
-masked media hash. The payload contains that hash and the user content. The
-signature authenticates the payload together with the media interpretation and
-embedding layout. RSA-PSS verification validates the signature bytes.
+masked media hash. The encrypted record contains that hash and the user content.
+The RSA-OAEP bootstrap gives only the receiver the packet geometry and AES-GCM
+session material. The signature authenticates the ciphertext, flags, media
+interpretation, and embedding layout.
 
 Requires Python 3.10+.
 
 ## Current development stage
 
-This branch implements stage 4b of the [version 2 plan](AGENT_docs/LOCATION-CONFIDENTIALITY-PLAN.md).
-It is an intermediate format, not the completed version 2 protocol. The public
-marker and packet header are removed. Existing version 1 files are not supported.
-The version constant stays at 1 until the encryption switch in stage 4c.
+This branch implements stage 4c of the [version 2 plan](AGENT_docs/LOCATION-CONFIDENTIALITY-PLAN.md).
+The public marker and packet header are removed. Existing version 1 files are not supported.
+The receiver recovers packet geometry from an RSA-OAEP bootstrap.
 
-Verification now requires three values supplied separately from the carrier:
-`start_unit`, `lsb_count`, and `payload_length`. The last value is the complete
-serialised record length, not the user message length. For example:
+Verification requires the sender public key and receiver private key. For example:
 
 ```python
 layout, payload = encode_png(
-    "cover.png", "stego.png", sender_private_key, 101, 3, b"message", b"{}"
+    "cover.png", "stego.png", sender_private_key, receiver_public_key,
+    2048, 3, b"message", b"{}"
 )
-result = verify_png(
-    "stego.png", sender_public_key,
-    layout.start_unit, layout.lsb_count, layout.payload_length,
-)
+result = verify_png("stego.png", sender_public_key, receiver_private_key)
 ```
 
-`verify_wav` and `decode_carrier` require the same three geometry arguments.
-The receiver needs no original cover file. The record is still plaintext, so
-**start-location confidentiality is not yet provided**. Stage 4c will encrypt the
-record and carry the geometry in the receiver's encrypted bootstrap.
+`verify_wav` and `decode_carrier` use the same sender and receiver key roles.
+The fixed RSA-2048 bootstrap span is 2,048 carrier units; the selected packet
+start must be at or after that span.
 
 ## Documentation
 
