@@ -15,11 +15,12 @@ Each entry names a commit, and a commit cannot contain its own hash, so an entry
 | 2b | Reserved region in the mask, the hash, and the fidelity count | `2d7220c` | done |
 | 2c | `keys.py` renamed to `crypto.py` | `4df44c4` | done |
 | 3 | `bootstrap.py` and the envelope primitives | `16ff1d3` | done |
-| 4 | Encode and decode flows, `Cannot Decrypt` | — | planned |
-| 5 | Delete the header, marker and scan; migrate the capacity helper | — | planned |
-| 6 | Notebook | — | planned |
+| 4a | Name the two capacity quantities, thread the span | — | next |
+| 4b | Delete the marker, scan and header; explicit geometry | — | planned |
+| 4c | Bootstrap carries the geometry; record encrypted | — | planned |
+| 5 | Notebook | — | planned |
 
-Version 1 behaviour is unchanged so far. Every stage to date is preparation, and all 32 tests pass without modification to any pre-existing test body.
+Version 1 behaviour is unchanged so far. Every stage to date is preparation, and all 38 tests pass without modification to any pre-existing test body.
 
 ## Stage 1: carrier-derived payload capacity
 

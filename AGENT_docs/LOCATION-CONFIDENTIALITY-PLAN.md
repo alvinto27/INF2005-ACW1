@@ -600,13 +600,22 @@ Each stage is one commit and one review. A stage is not finished until it has an
 | 2b | Two-region masking with a disjointness refusal, corrected `preserved_bit_count`, both taking the span as a required argument | tests for both masked regions, a refusal when the regions overlap, an exact-integer preserved-bit test |
 | 2c | Rename `keys.py` to `crypto.py`. Mechanical only, no new functions | every test passes with no behaviour change, and nothing still imports the old name |
 | 3 | `bootstrap.py`: build, seal, open, parse | round-trip and malformed-input tests |
-| 4 | `core.py`: encode and decode flows, record encryption with additional authenticated data, reserved-region validation, `Cannot Decrypt` | verdict matrix including the bootstrap-tamper case |
-| 5 | Delete the marker, the scan, the candidate limit, and the header format. **Update `max_payload_length` in the same commit**, per section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) | nothing references them, and the capacity boundary tests still prove exactness against the version 2 layout |
-| 6 | Notebook: new narrative, lengthened tone, new verdict matrix, **exact preserved-bit integer alongside the ratio** | executes end to end with no error outputs, and the reported fidelity figure can show the span correction |
+| 4a | Name the two capacity quantities and thread the span through the capacity path. No cryptography, no API change | boundary tests for both quantities, and a refusal naming the reserved region |
+| 4b | Delete the marker, the scan, the candidate limit and the header format. Decode takes the start unit and LSB count as explicit arguments. **Update the capacity helper in the same commit**, per section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) | round trips still pass with the caller supplying the geometry, nothing references the deleted names, and the capacity boundary tests prove exactness against the new layout |
+| 4c | The bootstrap carries the geometry, the record is encrypted, `verify_*` takes the receiver private key, `Cannot Decrypt` arrives, `PROTOCOL_VERSION` becomes 2 | the full verdict matrix including the bootstrap-tamper case |
+| 5 | Notebook: new narrative, lengthened tone, new verdict matrix, **exact preserved-bit integer alongside the ratio**, caller-side seal deleted per decision 16 | executes end to end with no error outputs, and the reported fidelity figure can show the span correction |
 
 Stage 1 is deliberately first and separable. It is useful on its own, because the carrier-derived payload limit fixes a real defect in version 1 independently of anything else in this plan.
 
 The derived width function moved from stage 1 to stage 2. Nothing calls it until the signing and hash formats change, and a function with no caller is a function with no test of its use.
+
+Stage 4 is split three ways, because encode and decode must change together or nothing round-trips, and one commit carrying that whole switch cannot be reviewed.
+
+The step that breaks the deadlock is 4b. Geometry moves in three hops: it is in the file and public today, it becomes an out-of-band argument the caller supplies, and only then does it move back into the file as encrypted bootstrap content. The middle state round-trips and stays green with no bootstrap in existence, so the marker, the scan and the header can be deleted on their own and reviewed on their own.
+
+That also absorbs the old stage 5. Keeping the header through the encryption switch would mean building a transitional carrier holding two locators, one public and one secret, and then deleting one of them immediately.
+
+The middle state declares the geometry out of band, which looks like a step back from the version 1 rule that the start unit is discovered and never declared. It is not: out of band means the geometry is not in the file at all, which is stronger than either version. It is merely inconvenient, and removing that inconvenience is precisely what the bootstrap is for.
 
 Stage 2c is a rename with no new code. It comes before stage 3 so that the diff introducing the envelope functions is not mixed with import churn across the package.
 
