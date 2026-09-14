@@ -434,7 +434,9 @@ The mistake was the question. Encrypting the record was judged against version-1
 
 The constant exists because the loader reads a declared frame count before it can check anything, so it is a resource guard rather than a format rule.
 
-**Status: deferred.** A larger architectural change has been raised that may remove the need for the constant. The decision waits for that proposal, so that a limit is not documented as permanent and then deleted in the next change.
+**Status: deferred.** A larger architectural change would remove the need for the constant: replacing whole-carrier arrays with seekable chunked access, so that the bound becomes a chunk size rather than a file-size ceiling. That change is shelved, and the reasons are in the [Streaming Carrier Note](STREAMING-CARRIER-NOTE.md).
+
+The decision therefore stays open rather than being settled twice. Documenting the constant as permanent, and then deleting it in the next change, would leave a false reason in the history.
 
 ## 13. What this breaks
 
