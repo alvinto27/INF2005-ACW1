@@ -263,7 +263,7 @@ The implementation commit is `d73918f`; this outcome is recorded in the follow-u
 | Fidelity | The cell prints `preserved_bits = 48,163,592` for both k=1 and k=8, plus `bootstrap_bits_written = 2,048` and `bootstrap_preserved_bits = 14,336`. The preserved count is `8N - packet_bits - bootstrap_span`; the separate 2,048 term makes the one-written-bit-per-bootstrap-unit correction visible. |
 | Demonstration coverage | Positive PNG and WAV cases, altered PNG and WAV cases, typed payload sizes, selectable LSB settings, capacity refusal, and all seven verdicts execute in a fresh kernel with zero error outputs. The current suite has 50 passing tests and `check-docs.py` reports zero errors. |
 
-The notebook does not choose the team's final short or large demonstration messages, invent an FR13 innovation statement, or simulate the required live A-to-B email/folder transfer. Those remain presentation and team decisions. The submission declaration, contribution statement, and criterion 7 reflection also remain outstanding in [Outstanding Work](WORK-NOT-BUILT.md#outstanding-work).
+The notebook does not choose the team's final short or large demonstration messages, invent an FR13 innovation statement, or simulate the required live A-to-B email/folder transfer. Those remain presentation and team decisions. The submission declaration, contribution statement, and criterion 7 reflection also remain outstanding in [Work Not Built](WORK-NOT-BUILT.md#work-not-built).
 
 ## Stage 6a: carrier-derived payload-record lengths
 

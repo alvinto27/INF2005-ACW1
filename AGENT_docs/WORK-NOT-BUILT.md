@@ -1,4 +1,4 @@
-# Outstanding Work
+# Work Not Built
 
 This record lists assignment work that remains outside the library and notebook. The library implements committed protocol version 2 stage 6b: verification recovers geometry through the encrypted bootstrap and is gated by the receiver private key; see the [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md).
 

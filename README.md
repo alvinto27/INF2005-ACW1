@@ -15,7 +15,7 @@ Requires Python 3.10+.
 
 ## Current development stage
 
-This branch implements stage 4c of the [version 2 plan](AGENT_docs/LOCATION-CONFIDENTIALITY-PLAN.md).
+This branch implements stage 6b of the [version 2 plan](AGENT_docs/LOCATION-CONFIDENTIALITY-PLAN.md).
 The public marker and packet header are removed. Existing version 1 files are not supported.
 The receiver recovers packet geometry from an RSA-OAEP bootstrap.
 

@@ -1,4 +1,4 @@
-# Masked Media Integrity Design
+# Protocol Design
 
 ## What the system does
 
@@ -179,9 +179,9 @@ This claim says nothing about a real-world identity. The caller must obtain the 
 
 ## Payload Envelope Design
 
-Protocol version 2 encrypts the complete payload record inside the library, including `user_payload`. This record describes what the caller places inside those encrypted bytes: an optional sealed envelope for an additional confidentiality layer, and a content header that declares what the bytes are.
+Protocol version 2 encrypts the complete payload record inside the library, including `user_payload`. This section describes what the caller places inside those encrypted bytes: an optional sealed envelope for an additional confidentiality layer, and a content header that declares what the bytes are.
 
-The content header remains caller-side. The caller-side seal was removed from the stage 5 demonstration under decision 16, while the content-header layer survives. This record therefore documents the caller-added layers, not the library's record encryption. See [Masked Media Integrity Design](PROTOCOL-DESIGN.md#what-the-system-does).
+The content header remains caller-side. The caller-side seal was removed from the stage 5 demonstration under decision 16, while the content-header layer survives. This section therefore documents the caller-added layers, not the library's record encryption. See [What the system does](PROTOCOL-DESIGN.md#what-the-system-does).
 
 **The encryption layer does not survive protocol version 2.** That version encrypts the whole payload record inside the library, unconditionally, so the caller-side seal described below becomes encryption inside encryption. The seal and its notebook demonstration are removed when version 2 lands; see decision 16 in the [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#11-decisions).
 

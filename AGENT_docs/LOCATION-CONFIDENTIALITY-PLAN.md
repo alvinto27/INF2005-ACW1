@@ -1,6 +1,6 @@
 # Location Confidentiality Plan
 
-**Status: protocol version 2 stage 6b is implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. Payload-record lengths use the carrier-derived field width, and unusable carriers are refused before encoding. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Masked Media Integrity Design](PROTOCOL-DESIGN.md#masked-media-integrity-design) for current behaviour.
+**Status: protocol version 2 stage 6b is implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. Payload-record lengths use the carrier-derived field width, and unusable carriers are refused before encoding. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Protocol Design](PROTOCOL-DESIGN.md#protocol-design) for current behaviour.
 
 The goal is to protect the payload start location, length, and LSB depth from everyone except the intended receiver, while the user still chooses all three by hand.
 
