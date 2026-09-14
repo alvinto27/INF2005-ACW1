@@ -24,8 +24,9 @@ For stage 4b, the owner clarified the working method: the worker makes all file 
 | 4c | Bootstrap carries the geometry; record encrypted | `b4a7b61` | done |
 | 5 | Notebook narrative, verdict matrix, fidelity evidence, and caller-seal removal | `d73918f` | done |
 | 6a | Carrier-derived payload-record length fields | `56fbae7` | done |
+| 6b | Reject unusable carriers and reserve zero for exact fits | `02e90d7` | done |
 
-Stages 1 through 4a were preparation and preserved version 1 behaviour. Stage 4b intentionally changed the packet format and verification API. Stage 4c changes it again to receiver-gated encrypted verification; stage 6a removes the inner record's fixed uint32 ceiling. The current suite has 54 tests.
+Stages 1 through 4a were preparation and preserved version 1 behaviour. Stage 4b intentionally changed the packet format and verification API. Stage 4c changes it again to receiver-gated encrypted verification; stage 6a removes the inner record's fixed uint32 ceiling; stage 6b rejects unusable carriers. The current suite has 55 tests.
 
 ## Stage 1: carrier-derived payload capacity
 
@@ -266,7 +267,7 @@ The notebook does not choose the team's final short or large demonstration messa
 
 ## Stage 6a: carrier-derived payload-record lengths
 
-The implementation commit is `56fbae7`; this outcome is recorded in the follow-up commit named in the status table above. No 6b or 6c work was included. The protocol architecture remains unchanged.
+The implementation commit is `56fbae7`; this outcome is recorded in the follow-up commit named in the status table above. No later-stage work was included. The protocol architecture remains unchanged.
 
 | Area | Outcome |
 | --- | --- |
@@ -280,6 +281,21 @@ The implementation commit is `56fbae7`; this outcome is recorded in the follow-u
 | Notebook | Dynamic packet, capacity, and fidelity outputs were refreshed in a fresh kernel: 51 cells, 20 output-bearing code cells, and zero error outputs. The analysis now prints packet bits 3,304 at k=1 and 8, footprint 3,304 and 413, and preserved bits 48,163,608 for both. |
 
 The earlier 101-byte record, 373-byte packet, minimum totals 5,032 / 3,043 / 2,421, and stage 5 capacity figures were correct for their own commits: they used W=4 because the old record fields were fixed at four bytes. Stage 6a supersedes them for current carriers because W is now derived; it does not rewrite the historical evidence.
+
+## Stage 6b: reject unusable carriers
+
+The implementation commit is `02e90d7`; this outcome is recorded in the follow-up commit named in the status table above. Historical stage entries remain unchanged.
+
+| Area | Outcome |
+| --- | --- |
+| Capacity helpers | `max_record_length` now refuses when the carrier cannot hold the signature and GCM tag. `max_user_payload_length` refuses when the minimum record does not fit. Neither helper clamps an unusable carrier to zero. |
+| Minimum guard | `minimum_carrier_units` takes a minimum record length derived from an actual carrier width. `encode_carrier` checks the minimum protocol object before copying or writing the carrier. The import direction remains acyclic: `packet.py` imports `layout.py`, while `layout.py` does not import `packet.py`. |
+| Boundary behavior | At 5,000 / 3,032 / 2,417 units for k=1 / 3 / 8, the empty record encodes and verifies as `Authentic`, and `max_user_payload_length` returns exactly zero. At 4,999 / 3,031 / 2,416 units, both an empty payload and a one-byte payload reach the same too-small refusal at the capacity guard; the input carrier remains unmodified. All boundary cases are W=2. |
+| Regression evidence | The prior empty and nonempty clamp behavior was discovered as an asymmetry: an above-span undersized carrier let an empty payload pass to layout while rejecting a nonempty payload at capacity. Both clamp tests were converted into refusal tests. The suite has 55 passing tests, including exact capacity inverses at k=1, 3, and 8. |
+| Notebook | The capacity cell still shows the payload-too-large refusal and now shows empty and one-byte too-small-carrier refusals beside it. The fresh-kernel notebook has 51 cells, 20 output-bearing code cells, and zero error outputs; temporary demonstration files are cleaned up. |
+| Decision | The owner cancelled stage 6c. No session-commitment signing change was made; decision 12 remains as previously recorded. |
+
+The section 5.3 illustrative figures remain record-level figures: 228, 3,728, and 1,680 are unchanged. Stage 6b changes the result's meaning from an observation that the carrier does not fit to an explicit refusal before encoding.
 
 ## Patterns worth keeping
 
