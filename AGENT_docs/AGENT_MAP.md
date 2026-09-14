@@ -21,6 +21,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
 | Current masked-media integrity design and design history | [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md) |
 | Caller-side payload encryption and content-type design | [PAYLOAD-ENVELOPE-DESIGN.md](PAYLOAD-ENVELOPE-DESIGN.md) |
+| Proposed protocol version 2 for start-location confidentiality | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
 | Outstanding assignment work | [OUTSTANDING-WORK.md](OUTSTANDING-WORK.md) |
 
 ## Implementation locations
