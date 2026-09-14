@@ -160,7 +160,37 @@ masked[0 : BOOTSTRAP_SPAN]                  &= 0xFE           bootstrap, k = 1
 masked[start_unit : start_unit + footprint] &= ~((1<<k)-1)     packet, user k
 ```
 
-`MEDIA_HASH_CONTEXT_FORMAT` gains the bootstrap span and uses the derived width. The span is a public constant, but it changes with the receiver key size, so the hash must commit to it.
+The span is runtime data, not a constant, so it reaches three separate places. Section [5.2](#52-the-reserved-region-is-runtime-data) covers the fourth, which is capacity.
+
+| Place | Requirement | If it is missed |
+| --- | --- | --- |
+| Mask range | clear the low bit over the span as well as the packet range | the hash covers bits the bootstrap overwrote, so every verification reports `Tampered` |
+| `MEDIA_HASH_CONTEXT_FORMAT` | commit to the span, at the derived width | the hash does not pin the geometry it was computed under |
+| `preserved_bit_count` | subtract the bootstrap's one bit per unit over the span | the reported fidelity number is false |
+
+### The preserved-bit metric is a published claim
+
+`preserved_bit_count` is not internal arithmetic. It is returned in `VerificationResult.preserved_bits` with a ratio, and the notebook reports it as the fidelity evidence for FR11 and FR12. A wrong value is a wrong claim about the carrier.
+
+The bootstrap writes one bit per unit across the span, so the correction is independent of the user's LSB count:
+
+```text
+preserved = 8 * (total_units - footprint - BOOTSTRAP_SPAN)
+            + (8 - lsb_count) * footprint
+            + 7 * BOOTSTRAP_SPAN
+```
+
+Measured on the 1280x1568 sample carrier with a 1 KiB payload, the uncorrected formula overstates untouched bits by 2,048 at every LSB count. That is 0.004% of the carrier, so no test that compares ratios to two decimal places will catch it. It needs a test that asserts the exact integer.
+
+### The two mask regions must be proven disjoint
+
+`calculate_masked_media_hash` must reject a start unit below the span, rather than trusting encode to have validated it. The check belongs beside the masking code because that is where the assumption lives. An overlapping start unit would clear bits the packet never wrote, and the failure would surface far away as `Tampered`.
+
+### A key-size mismatch cannot reach the hash
+
+If the sender used a 3,072-bit receiver key and the receiver tries a 2,048-bit key, the two sides derive different spans and would mask different ranges. That never happens, because the read length in decode step 3 is derived from the same key size: the receiver reads the wrong number of units, OAEP fails, and the verdict is `Payload Missing` at step 4. The hash is never reached, so the misleading `Tampered` verdict is not reachable by this route.
+
+This is worth stating because it is easy to break. Reading a fixed number of units instead of a key-derived number would turn a clear `Payload Missing` into a confusing `Tampered`.
 
 ## 4. Field binding audit
 
@@ -229,7 +259,42 @@ Three user choices in, one honest answer out. The rejection message must name th
 
 **Removing the cap tightens the allocation guard rather than weakening it.** `ciphertext_length` arrives from the attacker-writable bootstrap, so it must be bounded before anything is allocated. The carrier capacity is a tight bound taken from the file already in memory. The old constant was the looser guard in every case that mattered: far too large for a thumbnail, far too small for a photograph.
 
-### 5.2 One derived width
+### 5.2 The reserved region is runtime data
+
+`BOOTSTRAP_SPAN` is the receiver key size in bytes multiplied by 8, so it is not a compile-time constant. It is known only after a key is loaded:
+
+| Scheme | Bootstrap ciphertext | Span at 1 LSB |
+| --- | ---: | ---: |
+| RSA-2048 | 256 B | 2,048 units |
+| RSA-3072 | 384 B | 3,072 units |
+| RSA-4096 | 512 B | 4,096 units |
+| X25519 with AES-GCM | 113 B | 904 units |
+
+The span does **not** enter the capacity formula of section [5.1](#51-the-payload-limit-is-the-carrier), because that formula measures from the chosen start unit to the end of the carrier. The span constrains which start units are legal; it does not change the room available once a start unit is chosen.
+
+It does enter two other questions, and both must be answered after the receiver key is loaded:
+
+| Question | Needs the span |
+| --- | --- |
+| Is this carrier usable at all? | yes: the unit count must exceed the span plus a minimum footprint |
+| What is the most this carrier could hold? | yes: the best case is a start unit equal to the span |
+| How much fits at the start unit the user chose? | no: the chosen start unit already accounts for it |
+
+**Ordering requirement.** Encode must load the receiver key and set the span before it answers either of the first two questions. Answering them earlier overstates capacity by `span x lsb_count / 8` bytes.
+
+That error looks harmless and is not. At 1 LSB with RSA-2048 it is 256 bytes, which on a large carrier is noise. On a small carrier it changes the answer:
+
+| Carrier | LSB count | Ignoring the span | Accounting for it |
+| --- | ---: | ---: | --- |
+| Notebook tone, 4,000 samples | 1 | 228 B free | **does not fit** |
+| Notebook tone, 4,000 samples | 8 | 3,728 B | 1,680 B |
+| 32,000-sample WAV | 1 | 3,728 B | 3,472 B |
+
+A check that reports success and then fails during encode is worse than no check, because it moves the failure past the point where the user can still act on it.
+
+**Consequence for the code.** No helper may take a carrier and an LSB count alone and return a capacity. Any such function assumes a start unit of 0, which is correct in version 1 and silently wrong in version 2. The start unit stays a required argument with no default.
+
+### 5.3 One derived width
 
 ```python
 def carrier_field_width(total_units: int) -> int:
@@ -255,13 +320,13 @@ The width is applied in all three formats, so that no lower ceiling returns thro
 
 Both sides know the carrier geometry before they build or read either format, so both derive the same width.
 
-### 5.3 Two invariants that variable widths create
+### 5.4 Two invariants that variable widths create
 
 **Derive the width in one place.** If the sender and the verifier derive `W` differently, every signature breaks. `bit_length(N)` and `bit_length(N - 1)` disagree whenever the unit count is a power of two, and the two expressions look interchangeable. One function, called from all three formats, never re-derived inline. A test at a power-of-two unit count belongs with it.
 
 **The signing input must stay injective given the carrier.** It is: `W` is fixed once the unit count is known, `media_context` has a fixed length per medium, and `ciphertext_length` sits in the fixed-width prefix ahead of the variable tail. No two field tuples can serialise to the same bytes. A future field appended without a length prefix would break this, so the property is written down here.
 
-### 5.4 Remaining ceilings
+### 5.5 Remaining ceilings
 
 | Ceiling | Decision |
 | --- | --- |
@@ -282,7 +347,7 @@ Both sides know the carrier geometry before they build or read either format, so
 | ---: | --- |
 | 1 | Load the carrier and count addressable units |
 | 2 | Load the sender signing private key and the receiver encryption public key |
-| 3 | Set `BOOTSTRAP_SPAN` from the receiver key size. Refuse a carrier that is too small |
+| 3 | Set `BOOTSTRAP_SPAN` from the receiver key size. Refuse a carrier smaller than the span plus a minimum footprint. **This step must precede any capacity answer.** See section [5.2](#52-the-reserved-region-is-runtime-data) |
 | 4 | The user chooses the start unit, the LSB count, and the payload |
 | 5 | Refuse a start unit below `BOOTSTRAP_SPAN`, and name the reserved region in the error |
 | 6 | Check the payload against the carrier-derived capacity of section [5.1](#51-the-payload-limit-is-the-carrier). Name all four numbers in any rejection |
@@ -445,7 +510,7 @@ The decision therefore stays open rather than being settled twice. Documenting t
 | `stego/constants.py` | remove the marker, header format, candidate limit, and payload cap. Bump the version to 2. Add bootstrap constants. Replace the fixed-width signing and hash context formats |
 | `stego/bits.py` | `validate_payload_length` takes carrier capacity instead of comparing against a constant |
 | `stego/packet.py` | header build and parse deleted. Record serialisation unchanged, but it is now encrypted before embedding |
-| `stego/layout.py` | two-region masking. `flags` in the signing input. Derived widths in both context formats. A single width function |
+| `stego/layout.py` | two-region masking, with a disjointness check. `flags` in the signing input. Derived widths in both context formats. A single width function. `preserved_bit_count` takes the bootstrap span and subtracts one bit per unit across it |
 | `stego/core.py` | discovery scan deleted. `verify_*` takes a receiver private key. Record encryption and decryption. Carrier-derived capacity check. `Cannot Decrypt` |
 | `stego/media.py` | unchanged |
 | `test_stego.py` | marker and discovery tests deleted. Added: bootstrap round trip, reserved-region refusal, untrusted-field validation, bootstrap tampering, power-of-two width, capacity boundary at several LSB counts |
@@ -460,11 +525,13 @@ Each stage is one commit and one review.
 | Stage | Scope | Gate |
 | ---: | --- | --- |
 | 0 | This record, with map and index rows | `check-docs.py` reports no errors |
-| 1 | Derived width function, carrier-derived capacity, `MAX_PAYLOAD_LENGTH` removed | capacity boundary tests at several LSB counts, and a power-of-two width test |
-| 2 | `layout.py`: two-region masking, `flags` in the signing input, derived widths in both context formats | tests for both masked regions, version-1 tests updated |
+| 1 | Carrier-derived capacity, `MAX_PAYLOAD_LENGTH` removed, rejection message names all four numbers | capacity boundary tests at several LSB counts, proving the limit function is the exact inverse of the layout builder |
+| 2 | Derived width function, `layout.py` two-region masking, `flags` in the signing input, derived widths in both context formats, corrected `preserved_bit_count` | tests for both masked regions, a disjointness refusal, an exact-integer preserved-bit test, a power-of-two width test, version-1 tests updated |
 | 3 | `bootstrap.py`: build, seal, open, parse | round-trip and malformed-input tests |
 | 4 | `core.py`: encode and decode flows, record encryption with additional authenticated data, reserved-region validation, `Cannot Decrypt` | verdict matrix including the bootstrap-tamper case |
 | 5 | Delete the marker, the scan, the candidate limit, and the header format | nothing references them |
 | 6 | Notebook: new narrative, lengthened tone, new verdict matrix | executes end to end with no error outputs |
 
 Stage 1 is deliberately first and separable. It is useful on its own, because the carrier-derived payload limit fixes a real defect in version 1 independently of anything else in this plan.
+
+The derived width function moved from stage 1 to stage 2. Nothing calls it until the signing and hash formats change, and a function with no caller is a function with no test of its use.
