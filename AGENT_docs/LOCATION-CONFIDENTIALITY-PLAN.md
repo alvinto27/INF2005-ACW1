@@ -549,7 +549,8 @@ Each stage is one commit and one review.
 | ---: | --- | --- |
 | 0 | This record, with map and index rows | `check-docs.py` reports no errors |
 | 1 | Carrier-derived capacity, `MAX_PAYLOAD_LENGTH` removed, rejection message names all four numbers | capacity boundary tests at several LSB counts, proving the limit function is the exact inverse of the layout builder |
-| 2 | Derived width function, `layout.py` two-region masking, `flags` in the signing input, derived widths in both context formats, corrected `preserved_bit_count` | tests for both masked regions, a disjointness refusal, an exact-integer preserved-bit test, a power-of-two width test, version-1 tests updated |
+| 2a | Derived width function, derived widths in both context formats, `flags` in the signing input | a power-of-two width test, an exact-length and golden-byte test for each format, version-1 round trips still pass |
+| 2b | Two-region masking with a disjointness refusal, corrected `preserved_bit_count`, both taking the span as a required argument | tests for both masked regions, a refusal when the regions overlap, an exact-integer preserved-bit test |
 | 3 | `bootstrap.py`: build, seal, open, parse | round-trip and malformed-input tests |
 | 4 | `core.py`: encode and decode flows, record encryption with additional authenticated data, reserved-region validation, `Cannot Decrypt` | verdict matrix including the bootstrap-tamper case |
 | 5 | Delete the marker, the scan, the candidate limit, and the header format. **Update `max_payload_length` in the same commit**, per section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) | nothing references them, and the capacity boundary tests still prove exactness against the version 2 layout |
@@ -558,3 +559,5 @@ Each stage is one commit and one review.
 Stage 1 is deliberately first and separable. It is useful on its own, because the carrier-derived payload limit fixes a real defect in version 1 independently of anything else in this plan.
 
 The derived width function moved from stage 1 to stage 2. Nothing calls it until the signing and hash formats change, and a function with no caller is a function with no test of its use.
+
+Stage 2 is split. Stage 2a is byte-layout work that needs no new concept and leaves every function signature unchanged, so it can be reviewed as a format diff. Stage 2b introduces the bootstrap span as an argument, which is a new idea and deserves its own review. Bundling them would put four unrelated changes in one commit.
