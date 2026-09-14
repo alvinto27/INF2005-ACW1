@@ -4,6 +4,8 @@ This record holds what each completed stage of the [Location Confidentiality Pla
 
 One entry per stage, written when the stage is committed. A stage is not finished until it has an entry here.
 
+Each entry names a commit, and a commit cannot contain its own hash, so an entry lands in a small follow-up commit immediately after the stage it describes. Amending the stage commit to insert the hash changes the hash.
+
 ## Status
 
 | Stage | Scope | Commit | State |
@@ -12,7 +14,7 @@ One entry per stage, written when the stage is committed. A stage is not finishe
 | 2a | Derived widths in both signed formats, signed `flags` | `23fce87` | done |
 | 2b | Reserved region in the mask, the hash, and the fidelity count | `2d7220c` | done |
 | 2c | `keys.py` renamed to `crypto.py` | `4df44c4` | done |
-| 3 | `bootstrap.py` and the envelope primitives | — | next |
+| 3 | `bootstrap.py` and the envelope primitives | `16ff1d3` | done |
 | 4 | Encode and decode flows, `Cannot Decrypt` | — | planned |
 | 5 | Delete the header, marker and scan; migrate the capacity helper | — | planned |
 | 6 | Notebook | — | planned |
@@ -97,6 +99,42 @@ Stage 3 adds RSA-OAEP and AES-GCM to that module, and a module called `keys` hol
 
 The module docstring still describes RSA-PSS signing and PEM handling only. It is accurate today and is widened when the envelope functions land, not before.
 
+## Stage 3: the bootstrap envelope and the crypto primitives
+
+Commit `16ff1d3`. 38 tests. First stage that adds a module, and the first that adds cryptography.
+
+Nothing calls any of it yet, so it shipped with tests that exercise it. That rule came from stage 1, where the width function was moved out for having neither a caller nor a test of its use.
+
+| Layer | Module | Added |
+| --- | --- | --- |
+| Primitives | `crypto.py` | `rsa_oaep_padding`, `seal_to_public_key`, `open_with_private_key`, `aead_seal`, `aead_open` |
+| Constants | `constants.py` | `BOOTSTRAP_START_UNIT`, `BOOTSTRAP_LSB_COUNT`, `SESSION_KEY_SIZE`, `AEAD_NONCE_SIZE`, `BOOTSTRAP_PREFIX_FORMAT` |
+| Format | `bootstrap.py` | `BootstrapFields`, `bootstrap_span`, `serialize_bootstrap`, `parse_bootstrap`, `encode_bootstrap_aad` |
+
+**Measurements.**
+
+| Item | Value |
+| --- | ---: |
+| Serialised bootstrap at 255 units, width 1 | 49 B |
+| Serialised bootstrap at 256 units, width 2 | 51 B |
+| Additional authenticated data, same two cases | 5 B and 7 B |
+| RSA-2048 OAEP-SHA256 plaintext limit | 190 B |
+| `bootstrap_span` for an RSA-2048 key | 2,048 units |
+
+The envelope fits with 141 bytes to spare at width 1. The limit was asserted as a literal rather than computed, and the stage brief said to stop and report if any realistic carrier size made it not fit.
+
+**No fixed span constant exists.** The span is computed from the key at runtime. That was the single mistake most worth avoiding in this stage, because a constant would have been correct for RSA-2048 and wrong for everything else.
+
+**The span is defined by the envelope, not the key.** For RSA-OAEP the ciphertext length equals the modulus length, so the two coincide and the code looks as though it uses the key size. A comment states the coincidence, and the variable is named `envelope_bytes`. An X25519 envelope is 113 bytes against a 32-byte key, so a key-size definition would give 256 units instead of 904 and corrupt every read.
+
+**`InvalidTag` is not a `ValueError`.** Every AES-GCM failure raises `cryptography.exceptions.InvalidTag`, whose base class is `Exception`. `decode_carrier` catches `ValueError`. Stage 4 must catch `InvalidTag` explicitly, or the single failure that `Cannot Decrypt` exists for will escape the verdict machinery and surface as a crash. Recorded in the plan at [section 7](LOCATION-CONFIDENTIALITY-PLAN.md#7-decode).
+
+That finding matters because of decision 12. `Cannot Decrypt` was chosen over a signed commitment on the grounds that the informative verdict is worth more. The choice is worth nothing if the exception never reaches the code that names it.
+
+**One number, two owners.** `crypto.py` enforces a 32-byte key because that is a fact about AES-256. `constants.py` declares `SESSION_KEY_SIZE` because that is the width of a bootstrap field. They are equal because the protocol chose AES-256, not because they are the same thing, so neither module imports the other. A test asserts they agree: the declared sizes must seal and open, and one byte either side must raise. Without it, a switch to AES-128 would change one constant and fail at runtime instead of at test time.
+
+**Where the key size is pinned.** `bootstrap_span` accepts any RSA key size, because the envelope formula is general, while `seal_to_public_key` calls `validate_rsa_public_key`, which pins RSA-2048. The asymmetry is deliberate and was recorded rather than removed: one function is the single gate, so widening support is a one-line change.
+
 ## Patterns worth keeping
 
 These came out of the stages above and apply to the remaining ones.
@@ -110,4 +148,6 @@ These came out of the stages above and apply to the remaining ones.
 | A function ships with a caller or with tests that exercise it | the width function was moved out of stage 1 for having neither |
 | One reviewable idea per commit | stage 2 was split into 2a, 2b and 2c for carrying four unrelated changes |
 | The repository runs at every stage boundary | a broken intermediate state is breakage, not deferral |
+| An exception type is measured, not assumed | `InvalidTag` is not a `ValueError`, and the verdict that depends on it would have escaped its own handler |
+| A shared number keeps two owners and one test | importing across a layer boundary to remove a duplicate trades a caught error for a confused design |
 | Judge a version 2 change against version 2 goals | decision 10 and the byte-only payload API were both first judged against version 1 criteria, and both judgements were wrong |
