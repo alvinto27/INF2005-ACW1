@@ -14,7 +14,7 @@ The working demonstration is in the Confidentiality payload and Typed encrypted 
 
 ```text
 user_payload
-└─ sealed blob          wrapped key · nonce · ciphertext with tag
+└─ sealed blob          wrapped key · caller seal nonce · ciphertext with tag
    └─ content header    version · mime · name        (plaintext, inside the seal)
       └─ body           the file bytes
 ```
@@ -37,7 +37,16 @@ Hybrid encryption is required, not preferred. RSA-2048 OAEP with SHA-256 can enc
 
 ### Record visibility
 
-Nothing in the payload record stays readable. Protocol version 2 encrypts `media_id`, `timestamp`, both nonces, `media_hash`, `user_payload`, and `metadata` with AES-256-GCM. This still satisfies FR9: the receiver decrypts the record, recomputes the masked media hash, and compares it with the recovered value. The [Location Confidentiality Plan, section 3.5](LOCATION-CONFIDENTIALITY-PLAN.md#35-the-whole-payload-record-is-encrypted) records why FR9 requires the comparison, not plaintext access before decryption.
+Nothing in the payload record stays readable. Two protections carry separate fields:
+
+```text
+record     AES-256-GCM   media_id, timestamp, record nonce,
+                          media_hash, user_payload, metadata
+bootstrap  RSA-OAEP      version, flags, lsb_count, start_unit,
+                          ciphertext_length, session_key, aead nonce
+```
+
+The receiver decrypts the record, recomputes the masked media hash, and compares it with the recovered value. The [Location Confidentiality Plan, section 3.5](LOCATION-CONFIDENTIALITY-PLAN.md#35-the-whole-payload-record-is-encrypted) records why FR9 requires the comparison, not plaintext access before decryption.
 
 ### Key handling in the demonstration
 
