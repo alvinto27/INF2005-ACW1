@@ -19,10 +19,10 @@ For stage 4b, the owner clarified the working method: the worker makes all file 
 | 3 | `bootstrap.py` and the envelope primitives | `16ff1d3` | done |
 | 4a | Name the two capacity quantities, thread the span | `cc72dd3` | done |
 | 4b | Delete the marker, scan and header; explicit geometry | `e9ad8e7` | done |
-| 4c | Bootstrap carries the geometry; record encrypted | — | next |
+| 4c | Bootstrap carries the geometry; record encrypted | `b4a7b61` | done |
 | 5 | Notebook | — | planned |
 
-Stages 1 through 4a were preparation and preserved version 1 behaviour. Stage 4b intentionally changes the packet format and verification API; 46 tests pass, including the migrated geometry and capacity tests.
+Stages 1 through 4a were preparation and preserved version 1 behaviour. Stage 4b intentionally changed the packet format and verification API. Stage 4c changes it again to receiver-gated encrypted verification; the current suite has 50 tests.
 
 ## Stage 1: carrier-derived payload capacity
 
@@ -229,11 +229,21 @@ Independent geometry probes covered 336 cases across all supported LSB counts, t
 
 The stage does not provide location confidentiality. The plaintext record still has a recognizable media-identifier prefix; stage 4c must encrypt the record and move all three geometry values into the receiver bootstrap. This is the limitation recorded in the current integrity design and plan.
 
-### Stage 4c prerequisites
+## Stage 4c: encrypted record and receiver bootstrap
 
-- `parse_bootstrap` currently rejects `flags=1` immediately with `bootstrap flags must be zero`. Stage 4c must separate structural parsing from flags policy so verification can preserve signature-before-flags ordering.
-- The encode order must compute the masked media hash before encrypting the record, because the hash is inside the record plaintext. The current plan wording that places encryption first needs this correction.
-- `cryptography.exceptions.InvalidTag` is not a `ValueError`. Stage 4c must catch it explicitly and return the planned `Cannot Decrypt` verdict.
+This stage is complete. Its implementation commit is named in the status table above.
+
+| Area | Outcome |
+| --- | --- |
+| Bootstrap | RSA-OAEP carries version, flags, LSB count, start unit, ciphertext length, AES-256 session key, and nonce. `bootstrap_span` accepts either RSA public or private keys. |
+| Packet | The complete serialized record is encrypted with AES-256-GCM. The packet carries ciphertext plus its 16-byte tag, followed by the 256-byte RSA-PSS signature. |
+| Binding | The signature covers recovered flags and ciphertext. Bootstrap geometry is also GCM additional authenticated data. Flags are parsed structurally and checked only after signature verification. |
+| Decode order | Bootstrap read, OAEP open, structural parse, bounds, signature, flags policy, GCM open, payload parse, masked-hash check. `InvalidTag` maps to `Cannot Decrypt`. |
+| Verdicts | Wrong receiver key and bootstrap tampering are `Payload Missing`; invalid bounds are `Wrong Start Location`; malformed fields are `Cannot Verify`; valid signature with a bad GCM tag is `Cannot Decrypt`; hash mismatch is `Tampered`. |
+| Tests | 50 tests pass. They cover authentic PNG/WAV, all LSB counts and three legal positions, exact empty-packet capacities of 5,032, 3,043, and 2,421 units for k=1, 3, and 8, disjointness, flags binding, key/nonce tampering, ciphertext confidentiality, and one-bootstrap-read ordering. |
+| Notebook | The image and 32,000-sample WAV demonstrations use sender and receiver keys. The separate 4,000-sample tone is identified as typed payload data, not the WAV cover. |
+
+The empty record overhead is 101 bytes. The final empty packet overhead is therefore `101 + 16 + 256 = 373` bytes. With the RSA-2048 bootstrap span of 2,048 units, the exact minimum carrier sizes are 5,032 units at k=1, 3,043 at k=3, and 2,421 at k=8. The multi-byte WAV capacity fixture was increased from 2,000 to 6,000 samples because it sat below the reserved span and could not exercise the capacity arithmetic it existed to prove.
 
 ## Patterns worth keeping
 
