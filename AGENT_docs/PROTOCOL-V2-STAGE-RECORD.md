@@ -6,6 +6,8 @@ One entry per stage, written when the stage is committed. A stage is not finishe
 
 Each entry names a commit, and a commit cannot contain its own hash, so an entry lands in a small follow-up commit immediately after the stage it describes. Amending the stage commit to insert the hash changes the hash.
 
+For stage 4b, the owner clarified the working method: the worker makes all file changes, executes the notebook, and performs approved commits; the orchestrator decides, reviews, and checks. This supersedes the historical handoff role split.
+
 ## Status
 
 | Stage | Scope | Commit | State |
@@ -16,11 +18,11 @@ Each entry names a commit, and a commit cannot contain its own hash, so an entry
 | 2c | `keys.py` renamed to `crypto.py` | `4df44c4` | done |
 | 3 | `bootstrap.py` and the envelope primitives | `16ff1d3` | done |
 | 4a | Name the two capacity quantities, thread the span | `cc72dd3` | done |
-| 4b | Delete the marker, scan and header; explicit geometry | — | next |
-| 4c | Bootstrap carries the geometry; record encrypted | — | planned |
+| 4b | Delete the marker, scan and header; explicit geometry | `e9ad8e7` | done |
+| 4c | Bootstrap carries the geometry; record encrypted | — | next |
 | 5 | Notebook | — | planned |
 
-Version 1 behaviour is unchanged so far. Every stage to date is preparation, and all 38 tests pass without modification to any pre-existing test body.
+Stages 1 through 4a were preparation and preserved version 1 behaviour. Stage 4b intentionally changes the packet format and verification API; 46 tests pass, including the migrated geometry and capacity tests.
 
 ## Stage 1: carrier-derived payload capacity
 
@@ -194,6 +196,44 @@ Recorded because the review loop is what caught them, not care on my part.
 | Asked for a test that rebuilt its own expectation | review of the diff |
 
 The third is the stage 2a mirror-test pattern appearing in a brief that cited the stage 2a lesson. Knowing a rule and applying it are separate acts.
+
+## Stage 4b: headerless packet and explicit geometry
+
+Commit `e9ad8e7`. The stage removes the public marker, scanner, candidate limit, ambiguity branch, and fixed packet header. The packet is now a serialized payload record followed by its 256-byte RSA-PSS signature. `PROTOCOL_VERSION` remains 1 because the encryption and bootstrap switch is stage 4c.
+
+The deleted protections are exact: `START_MAGIC`, `MAX_MAGIC_CANDIDATES`, `PACKET_HEADER_FORMAT`, and `PACKET_HEADER_SIZE`; `PacketHeader`, `StartMagicCandidate`, `ResolvedCandidate`, `serialize_packet_header`, `parse_packet_header`, `scan_start_magic`, `resolve_candidate`, `verify_resolved_candidate`, the now-unused `VerificationError`, the candidate-failure priority branch, and the ambiguity check. The test `test_deeper_candidate_failure_has_priority` and `test_edited_header_k_is_cannot_verify` were deleted. Header assertions were removed from the renamed `test_constants_and_minimal_media_contexts`; the stale `Payload Missing` assertion was removed from `test_exact_negative_verdicts_for_bit_changes`.
+
+| Area | Outcome |
+| --- | --- |
+| `packet.py` | Keeps only payload-record serialization, parsing, and the single `serialized_record_length` calculator |
+| `layout.py` | Calculates packet footprint from `payload_length + RSA_SIGNATURE_SIZE`; capacity subtracts only the signature |
+| `core.py` | `decode_carrier`, `verify_png`, and `verify_wav` require `start_unit`, `lsb_count`, and complete serialized `payload_length`, with no defaults |
+| Verdicts | Numeric geometry is validated before layout construction; numerically valid geometry whose footprint is outside the carrier is `Wrong Start Location`; parsing and padding failures are `Cannot Verify`; `Payload Missing` is no longer emitted |
+| Notebook | Replaced scanning with labelled out-of-band geometry, updated every verification call, corrected headerless packet arithmetic, and executed all cells with zero error outputs |
+
+The decoder builds one layout before reading carrier bits. Geometry fields are already validated and `bootstrap_span` is zero in this stage, so the narrow layout failure can only mean that the numerically valid geometry describes a footprint outside the carrier. The comment beside the catch records that layering assumption.
+
+The measured capacity at 5,000 units, start unit 137, and 17 metadata bytes is:
+
+| LSB count | Record maximum | User maximum |
+| ---: | ---: | ---: |
+| 1 | 351 B | 233 B |
+| 3 | 1,567 B | 1,449 B |
+| 8 | 4,607 B | 4,489 B |
+
+The record overhead is 101 bytes plus 17 metadata bytes, giving 118 bytes for this test case; it is not fixed in general. These are independently asserted literals, and real `encode_carrier`/`decode_carrier` tests pass at each user maximum while maximum plus one refuses without changing the source. The stage 4b handoff and implementation brief omitted the required receiver length argument, so stage 4b makes the complete serialized record length explicit rather than inventing a temporary prefix reader.
+
+The migrated tests prove 24 round-trip cases (eight LSB depths times three start locations), exact signature-only boundaries, relocation and tamper verdicts, alignment padding, carrier-derived capacities, raw record-plus-signature bytes, malformed and pristine rejection, geometry refusal before bit reads, and file wrappers with explicit geometry. The full suite passes as `cyber_venv/bin/python -m unittest -v` (46 tests).
+
+Independent geometry probes covered 336 cases across all supported LSB counts, tiny and power-of-two carriers, and carrier counts up to `2**40`. The real sealed-plaintext boundary probe embedded 3,359 bytes successfully in 32,000 WAV units at start unit 0 and `k=1`; 3,360 bytes was refused. The notebook has 21 executable code cells, all refreshed in a fresh `cyber_venv` kernel with zero error outputs.
+
+The stage does not provide location confidentiality. The plaintext record still has a recognizable media-identifier prefix; stage 4c must encrypt the record and move all three geometry values into the receiver bootstrap. This is the limitation recorded in the current integrity design and plan.
+
+### Stage 4c prerequisites
+
+- `parse_bootstrap` currently rejects `flags=1` immediately with `bootstrap flags must be zero`. Stage 4c must separate structural parsing from flags policy so verification can preserve signature-before-flags ordering.
+- The encode order must compute the masked media hash before encrypting the record, because the hash is inside the record plaintext. The current plan wording that places encryption first needs this correction.
+- `cryptography.exceptions.InvalidTag` is not a `ValueError`. Stage 4c must catch it explicitly and return the planned `Cannot Decrypt` verdict.
 
 ## Patterns worth keeping
 
