@@ -267,7 +267,7 @@ The notebook does not choose the team's final short or large demonstration messa
 
 ## Stage 6a: carrier-derived payload-record lengths
 
-The implementation commit is `56fbae7`; this outcome is recorded in the follow-up commit named in the status table above. No later-stage work was included. The protocol architecture remains unchanged.
+The implementation commit is `56fbae7`; this outcome is recorded in the follow-up commit named in the status table above. No 6b or 6c work was included. The protocol architecture remains unchanged.
 
 | Area | Outcome |
 | --- | --- |

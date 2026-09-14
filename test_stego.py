@@ -897,12 +897,18 @@ class TestMaskedStego(unittest.TestCase):
                 )
                 too_small = carrier(expected_minimum - 1)
                 before = too_small.copy()
+                too_small_record_length = serialized_record_length(
+                    MEDIA_ID_SIZE, 0, 0, expected_minimum - 1
+                )
+                too_small_minimum_units = minimum_carrier_units(
+                    span, lsb_count, too_small_record_length
+                )
                 for user_payload in (b"", b"x"):
                     with self.subTest(payload=user_payload):
                         with self.assertRaisesRegex(
                             ValueError,
                             f"carrier is too small for the protocol.*total_units={expected_minimum - 1}.*"
-                            f"start_unit={span}.*lsb_count={lsb_count}.*minimum_units={expected_minimum}",
+                            f"start_unit={span}.*lsb_count={lsb_count}.*minimum_units={too_small_minimum_units}",
                         ):
                             encode_carrier(
                                 too_small,
