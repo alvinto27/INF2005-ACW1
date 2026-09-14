@@ -22,6 +22,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Current masked-media integrity design and design history | [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md) |
 | Caller-side payload encryption and content-type design | [PAYLOAD-ENVELOPE-DESIGN.md](PAYLOAD-ENVELOPE-DESIGN.md) |
 | Proposed protocol version 2 for start-location confidentiality | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
+| Handoff brief for the version 2 build | [ORCHESTRATION-HANDOFF.md](ORCHESTRATION-HANDOFF.md) |
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
 | Shelved chunked-carrier architecture note | [STREAMING-CARRIER-NOTE.md](STREAMING-CARRIER-NOTE.md) |
 | Outstanding assignment work | [OUTSTANDING-WORK.md](OUTSTANDING-WORK.md) |
