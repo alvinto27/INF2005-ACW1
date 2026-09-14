@@ -22,6 +22,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Current masked-media integrity design and design history | [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md) |
 | Caller-side payload encryption and content-type design | [PAYLOAD-ENVELOPE-DESIGN.md](PAYLOAD-ENVELOPE-DESIGN.md) |
 | Proposed protocol version 2 for start-location confidentiality | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
+| Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
 | Shelved chunked-carrier architecture note | [STREAMING-CARRIER-NOTE.md](STREAMING-CARRIER-NOTE.md) |
 | Outstanding assignment work | [OUTSTANDING-WORK.md](OUTSTANDING-WORK.md) |
 
@@ -35,6 +36,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Layout, masked hash, and signing input | [stego/layout.py](../stego/layout.py) |
 | Packet records, framing, and scanning | [stego/packet.py](../stego/packet.py) |
 | RSA-PSS keys, signatures, fingerprints, and PEM | [stego/crypto.py](../stego/crypto.py) |
+| Carrier-derived capacity and field widths | [stego/layout.py](../stego/layout.py) |
 | PNG and WAV adapters | [stego/media.py](../stego/media.py) |
 | End-to-end encode and verification | [stego/core.py](../stego/core.py) |
 | FR1–FR12 demonstration notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |

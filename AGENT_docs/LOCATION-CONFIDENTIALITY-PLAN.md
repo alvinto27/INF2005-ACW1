@@ -578,7 +578,7 @@ The decision therefore stays open rather than being settled twice. Documenting t
 
 ## 14. Staging
 
-Each stage is one commit and one review.
+Each stage is one commit and one review. A stage is not finished until it has an entry in the [Protocol Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md), which holds what each stage actually changed and measured. This plan holds intent; that record holds outcome.
 
 | Stage | Scope | Gate |
 | ---: | --- | --- |
