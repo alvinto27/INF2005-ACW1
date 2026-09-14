@@ -23,6 +23,8 @@ The content header is inside the optional caller-side seal. Protocol version 2 m
 
 ## 2. Sealed blob
 
+This caller-side layer is designed and recorded but is no longer shown in the notebook. Stage 5 removes it because protocol version 2 already encrypts and signs the complete record inside the library; adding this seal would encrypt the content twice. Decision 16 in the [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#11-decisions) records that choice.
+
 A random AES-256-GCM key encrypts the content header and the body together. RSA-OAEP with SHA-256 wraps that key with the receiver's public key.
 
 | Field | Size | Notes |
@@ -112,7 +114,7 @@ The function that writes the file derives its own safe filename. It does not tru
 
 ## 6. Capacity
 
-Capacity for the optional caller-side sealed content, with empty metadata and packet start at the reserved 2,048-unit RSA-2048 bootstrap span. This is measured from the reserved span, not unit 0. Deduct 256 signature bytes, 101 record bytes, the library's 16-byte GCM tag, the 268-byte caller-side seal prefix, and the caller-side 16-byte seal tag: 657 bytes in total. A later start or nonempty metadata reduces these values.
+Capacity if a caller adds the recorded optional seal on top of the library's encryption, with empty metadata and packet start at the reserved 2,048-unit RSA-2048 bootstrap span. This is measured from the reserved span, not unit 0. The notebook no longer demonstrates this layer; decision 16 schedules its removal. Deduct 256 signature bytes, 101 record bytes, the library's 16-byte GCM tag, the 268-byte caller-side seal prefix, and the caller-side 16-byte seal tag: 657 bytes in total. A later start or nonempty metadata reduces these values.
 
 | `k` | Banana PNG, 6,021,120 units | Demonstration WAV, 32,000 samples |
 | ---: | ---: | ---: |
@@ -121,7 +123,7 @@ Capacity for the optional caller-side sealed content, with empty metadata and pa
 | 3 | 2,256,495 | 10,575 |
 | 8 | 6,018,415 | 29,295 |
 
-Use the capacity helpers with the actual start and record overhead when accepting a user payload. The caller-side seal remains scheduled for deletion in stage 5; these figures document the current demonstration envelope, not a new protocol overhead.
+Use the capacity helpers with the actual start and record overhead when accepting a user payload. The caller-side seal was removed from the Stage 5 demonstration; these figures are hypothetical caller-side sealing overhead, not a new protocol overhead.
 
 The image carrier holds a small image or a short audio clip at `k=1`. The demonstration audio carrier holds text only. That limit comes from the short 8-bit mono tone the notebook generates, not from the design. Capacity grows in proportion to the sample count, so a longer cover removes the difference.
 

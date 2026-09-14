@@ -20,7 +20,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
 | Current masked-media integrity design and design history | [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md) |
-| Caller-added optional seal and content-type design | [PAYLOAD-ENVELOPE-DESIGN.md](PAYLOAD-ENVELOPE-DESIGN.md) |
+| Caller-added optional seal (recorded, not demonstrated) and content-type design | [PAYLOAD-ENVELOPE-DESIGN.md](PAYLOAD-ENVELOPE-DESIGN.md) |
 | Protocol version 2 design and remaining implementation stages | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
 | Handoff brief for the version 2 build | [ORCHESTRATION-HANDOFF.md](ORCHESTRATION-HANDOFF.md) |
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
@@ -41,7 +41,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Carrier-derived capacity and field widths | [stego/layout.py](../stego/layout.py) |
 | PNG and WAV adapters | [stego/media.py](../stego/media.py) |
 | End-to-end encrypted encode and receiver-gated verification (stage 4c) | [stego/core.py](../stego/core.py) |
-| FR1–FR12 demonstration notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
+| FR1–FR12 demonstration notebook and Stage 5 verdict/fidelity evidence | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol tests | [test_stego.py](../test_stego.py) |
 | Runtime and test dependencies | [requirements.txt](../requirements.txt) |
 | Optional demonstration-notebook dependency | [requirements-notebook.txt](../requirements-notebook.txt) |

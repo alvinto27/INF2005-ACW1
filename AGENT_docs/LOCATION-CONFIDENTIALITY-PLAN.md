@@ -182,7 +182,7 @@ preserved = 8 * (total_units - footprint - BOOTSTRAP_SPAN)
 
 Measured on the 1280x1568 sample carrier with a 1 KiB payload, the uncorrected formula overstates untouched bits by 2,048 at every LSB count. That is 0.004% of the carrier, so no test that compares ratios to two decimal places will catch it. It needs a test that asserts the exact integer.
 
-The notebook currently reports this figure as `preserved_ratio` formatted to two decimal places, which prints `99.99%` both with and without the correction. The reporting cell is therefore unable to show the difference it exists to demonstrate. Stage 5 must print the exact integer beside the ratio.
+The notebook reports the exact `preserved_bits` integer beside the ratio and prints the bootstrap's 2,048 written bits separately, so the span correction is visible rather than hidden by a rounded percentage.
 
 ### The two mask regions must be proven disjoint
 
@@ -609,8 +609,8 @@ Each stage is one commit and one review. A stage is not finished until it has an
 | 3 | `bootstrap.py`: build, seal, open, parse | round-trip and malformed-input tests |
 | 4a | Name the two capacity quantities and thread the span through the capacity path. No cryptography, no API change | boundary tests for both quantities, and a refusal naming the reserved region |
 | 4b | Delete the marker, the scan, the candidate limit and the header format. Decode and file-verification wrappers take start unit, LSB count, and complete serialised record length as required arguments. **Update the capacity helper in the same commit**, per section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) | round trips pass with all three geometry values supplied; executable sources contain no deleted names; capacity tests prove exactness for the headerless, unencrypted layout |
-| 4c | The bootstrap carries the geometry, the record is encrypted, `verify_*` takes the receiver private key, `Cannot Decrypt` arrives, `PROTOCOL_VERSION` becomes 2 | complete: 48 tests, including the full verdict matrix and bootstrap-tamper case |
-| 5 | Notebook and caller-side seal removal; caller-side sealing remains out of scope for stage 4c | executes end to end with no error outputs, and the reported fidelity figure can show the span correction |
+| 4c | The bootstrap carries the geometry, the record is encrypted, `verify_*` takes the receiver private key, `Cannot Decrypt` arrives, `PROTOCOL_VERSION` becomes 2 | complete: 50 tests, including the full verdict matrix and bootstrap-tamper case |
+| 5 | Notebook narrative, verdict matrix, fidelity integer, and caller-side seal removal | fresh-kernel execution has no error outputs, the fidelity output shows the exact integer and 2,048-bit bootstrap term, and 50 tests plus `check-docs.py` pass |
 
 Stage 1 is deliberately first and separable. It is useful on its own, because the carrier-derived payload limit fixes a real defect in version 1 independently of anything else in this plan.
 
