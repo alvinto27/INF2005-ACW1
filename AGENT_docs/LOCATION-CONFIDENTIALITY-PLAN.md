@@ -182,6 +182,8 @@ preserved = 8 * (total_units - footprint - BOOTSTRAP_SPAN)
 
 Measured on the 1280x1568 sample carrier with a 1 KiB payload, the uncorrected formula overstates untouched bits by 2,048 at every LSB count. That is 0.004% of the carrier, so no test that compares ratios to two decimal places will catch it. It needs a test that asserts the exact integer.
 
+The notebook currently reports this figure as `preserved_ratio` formatted to two decimal places, which prints `99.99%` both with and without the correction. The reporting cell is therefore unable to show the difference it exists to demonstrate. Stage 6 must print the exact integer beside the ratio.
+
 ### The two mask regions must be proven disjoint
 
 `calculate_masked_media_hash` must reject a start unit below the span, rather than trusting encode to have validated it. The check belongs beside the masking code because that is where the assumption lives. An overlapping start unit would clear bits the packet never wrote, and the failure would surface far away as `Tampered`.
@@ -554,7 +556,7 @@ Each stage is one commit and one review.
 | 3 | `bootstrap.py`: build, seal, open, parse | round-trip and malformed-input tests |
 | 4 | `core.py`: encode and decode flows, record encryption with additional authenticated data, reserved-region validation, `Cannot Decrypt` | verdict matrix including the bootstrap-tamper case |
 | 5 | Delete the marker, the scan, the candidate limit, and the header format. **Update `max_payload_length` in the same commit**, per section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) | nothing references them, and the capacity boundary tests still prove exactness against the version 2 layout |
-| 6 | Notebook: new narrative, lengthened tone, new verdict matrix | executes end to end with no error outputs |
+| 6 | Notebook: new narrative, lengthened tone, new verdict matrix, **exact preserved-bit integer alongside the ratio** | executes end to end with no error outputs, and the reported fidelity figure can show the span correction |
 
 Stage 1 is deliberately first and separable. It is useful on its own, because the carrier-derived payload limit fixes a real defect in version 1 independently of anything else in this plan.
 

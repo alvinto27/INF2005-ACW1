@@ -86,10 +86,11 @@ class TestMaskedStego(unittest.TestCase):
             + b"\x04"
             + b"\x01"
             + b"\x02"
+            + b"\x00"
             + expected_masked.tobytes()
         )
-        self.assertEqual(len(preimage), 33)
-        self.assertEqual(calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 3, 1, 2), hashlib.sha256(preimage).digest())
+        self.assertEqual(len(preimage), 34)
+        self.assertEqual(calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 3, 1, 2, 0), hashlib.sha256(preimage).digest())
         self.assertTrue(np.array_equal(source, np.array([0xFF, 0xA5, 0x5A, 0x00], dtype=np.uint8)))
 
     def test_signing_input_has_exact_approved_bytes(self):
@@ -107,6 +108,46 @@ class TestMaskedStego(unittest.TestCase):
         )
         self.assertEqual(len(expected), 42)
         self.assertEqual(encode_signing_input(IMAGE_MEDIA_CODE, b"context", layout, payload), expected)
+
+    def test_preserved_bit_count_accounts_for_bootstrap(self) -> None:
+        self.assertEqual(preserved_bit_count(10000, 500, 3, 0), 78500)
+        self.assertEqual(preserved_bit_count(10000, 500, 3, 2048), 76452)
+
+    def test_preserved_bit_count_bootstrap_cost_is_span(self) -> None:
+        for lsb_count in (1, 3, 8):
+            with self.subTest(lsb_count=lsb_count):
+                without_bootstrap = preserved_bit_count(10000, 500, lsb_count, 0)
+                with_bootstrap = preserved_bit_count(10000, 500, lsb_count, 2048)
+                self.assertEqual(without_bootstrap - with_bootstrap, 2048)
+
+    def test_preserved_bit_count_rejects_overlapping_regions(self) -> None:
+        with self.assertRaises(ValueError):
+            preserved_bit_count(10, 6, 1, 5)
+
+    def test_masked_hash_masks_bootstrap_and_packet_regions(self) -> None:
+        source = np.array([0x01, 0x03, 0x05, 0x07, 0x09, 0xAB, 0xCD, 0xEF], dtype=np.uint8)
+        expected_masked = source.copy()
+        expected_masked[0:2] &= np.uint8(0xFE)
+        expected_masked[4:6] &= np.uint8(0xF8)
+        preimage = (
+            MEDIA_HASH_DOMAIN
+            + struct.pack(">BB", IMAGE_MEDIA_CODE, 3)
+            + b"\x08"
+            + b"\x04"
+            + b"\x02"
+            + b"\x02"
+            + expected_masked.tobytes()
+        )
+        self.assertTrue(np.all((expected_masked[0:2] & np.uint8(1)) == 0))
+        self.assertTrue(np.all((expected_masked[4:6] & np.uint8(7)) == 0))
+        self.assertEqual(
+            calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 3, 4, 2, 2),
+            hashlib.sha256(preimage).digest(),
+        )
+
+    def test_masked_hash_rejects_overlapping_bootstrap_region(self) -> None:
+        with self.assertRaisesRegex(ValueError, "start_unit must be at least bootstrap_span"):
+            calculate_masked_media_hash(carrier(8), IMAGE_MEDIA_CODE, 3, 1, 2, 2)
 
     def test_carrier_field_width_boundaries(self) -> None:
         expected_widths = {
@@ -273,14 +314,14 @@ class TestMaskedStego(unittest.TestCase):
         inside_changed = source.copy()
         inside_changed[layout.start_unit] ^= np.uint8(0xFF)
         self.assertEqual(
-            calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint),
-            calculate_masked_media_hash(inside_changed, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint),
+            calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, 0),
+            calculate_masked_media_hash(inside_changed, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, 0),
         )
         outside_changed = source.copy()
         outside_changed[0] ^= np.uint8(1)
         self.assertNotEqual(
-            calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint),
-            calculate_masked_media_hash(outside_changed, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint),
+            calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, 0),
+            calculate_masked_media_hash(outside_changed, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, 0),
         )
 
         exact_size = ceil_unit_count((PACKET_HEADER_SIZE + payload_length() + RSA_SIGNATURE_SIZE) * 8, 8)

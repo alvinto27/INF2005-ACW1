@@ -80,17 +80,22 @@ def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, pa
     return EmbeddingLayout(total_units, start_unit, footprint, lsb_count, payload_length, pad_bits)
 
 
-def preserved_bit_count(total_units: int, footprint: int, lsb_count: int) -> int:
-    """Count the carrier bits left unchanged after embedding a packet footprint."""
+def preserved_bit_count(total_units: int, footprint: int, lsb_count: int, bootstrap_span: int) -> int:
+    """Count the carrier bits left unchanged after embedding a packet and bootstrap."""
     total_units = _validate_non_negative_integer(total_units, "total_units")
     footprint = _validate_non_negative_integer(footprint, "footprint")
     lsb_count = _validate_lsb_count(lsb_count)
-    if footprint > total_units:
-        raise ValueError("footprint exceeds total_units")
-    return 8 * (total_units - footprint) + (8 - lsb_count) * footprint
+    bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
+    if footprint + bootstrap_span > total_units:
+        raise ValueError("footprint and bootstrap span exceed total_units")
+    return (
+        8 * (total_units - footprint - bootstrap_span)
+        + (8 - lsb_count) * footprint
+        + 7 * bootstrap_span
+    )
 
 
-def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_count: int, start_unit: int, footprint: int) -> bytes:
+def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_count: int, start_unit: int, footprint: int, bootstrap_span: int) -> bytes:
     """Hash the carrier with the packet's low bits cleared, so the sender and receiver get the
     same answer even though the packet overwrote those bits."""
     carrier_units = _validate_carrier_units(carrier_units)
@@ -99,9 +104,13 @@ def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_
     total_units = _validate_non_negative_integer(carrier_units.size, "total_units")
     start_unit = _validate_non_negative_integer(start_unit, "start_unit")
     footprint = _validate_non_negative_integer(footprint, "footprint")
+    bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
     if start_unit + footprint > total_units:
         raise ValueError("masked media footprint is out of range")
+    if start_unit < bootstrap_span:
+        raise ValueError("start_unit must be at least bootstrap_span")
     masked = carrier_units.copy()
+    masked[0:bootstrap_span] &= np.uint8(0xFE)
     mask = (~((1 << lsb_count) - 1)) & 0xFF
     masked[start_unit:start_unit + footprint] &= np.uint8(mask)
     width = carrier_field_width(total_units)
@@ -111,6 +120,7 @@ def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_
         + total_units.to_bytes(width, "big")
         + start_unit.to_bytes(width, "big")
         + footprint.to_bytes(width, "big")
+        + bootstrap_span.to_bytes(width, "big")
         + masked.tobytes()
     )
     return hashlib.sha256(preimage).digest()

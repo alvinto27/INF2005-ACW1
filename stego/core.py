@@ -101,7 +101,7 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
     nonce = secrets.token_bytes(NONCE_SIZE)
     payload_length = 1 + len(media_id.encode("utf-8")) + 8 + 16 + 32 + 4 + len(user_payload) + 4 + len(metadata)
     layout = build_embedding_layout(carrier_units.size, start_unit, lsb_count, payload_length)
-    media_hash = calculate_masked_media_hash(carrier_units, media_code, lsb_count, start_unit, layout.footprint)
+    media_hash = calculate_masked_media_hash(carrier_units, media_code, lsb_count, start_unit, layout.footprint, 0)
     payload = PayloadRecord(media_id, timestamp, nonce, media_hash, user_payload, metadata)
     payload_bytes = serialize_payload(payload)
     signing_input = encode_signing_input(media_code, media_context, layout, payload_bytes)
@@ -172,7 +172,7 @@ def verify_resolved_candidate(carrier_units: np.ndarray, media_code: int, media_
     signing_input = encode_signing_input(media_code, media_context, layout, payload_bytes)
     if not verify_signature(signing_input, signature, public_key):
         raise VerificationError("Signature Invalid", "RSA-PSS signature verification failed")
-    calculated_hash = calculate_masked_media_hash(carrier_units, media_code, layout.lsb_count, layout.start_unit, layout.footprint)
+    calculated_hash = calculate_masked_media_hash(carrier_units, media_code, layout.lsb_count, layout.start_unit, layout.footprint, 0)
     if calculated_hash != payload.media_hash:
         raise VerificationError("Tampered", "masked media hash mismatch")
     return payload
@@ -225,7 +225,7 @@ def decode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
         return _failure_result("Cannot Verify", "ambiguous valid candidates were found")
     if len(valid) == 1:
         payload, layout = valid[0]
-        preserved_bits = preserved_bit_count(layout.total_units, layout.footprint, layout.lsb_count)
+        preserved_bits = preserved_bit_count(layout.total_units, layout.footprint, layout.lsb_count, 0)
         total_bits = layout.total_units * 8
         ratio = preserved_bits / total_bits if total_bits else 0.0
         return VerificationResult(
