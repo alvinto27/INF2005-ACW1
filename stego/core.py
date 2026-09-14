@@ -128,7 +128,9 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
     media_id = f"{MEDIA_PREFIXES[media_code]}-{secrets.token_hex(16)}"
     timestamp = int(datetime.now(timezone.utc).timestamp())
     nonce = secrets.token_bytes(NONCE_SIZE)
-    record_overhead = serialized_record_length(len(media_id.encode("utf-8")), 0, len(metadata))
+    record_overhead = serialized_record_length(
+        len(media_id.encode("utf-8")), 0, len(metadata), total_units
+    )
     maximum_user_payload = max_user_payload_length(
         total_units, start_unit, span, lsb_count, record_overhead
     )
@@ -139,7 +141,7 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
             f"start_unit={start_unit}, lsb_count={lsb_count}"
         )
     record_length = serialized_record_length(
-        len(media_id.encode("utf-8")), len(user_payload), len(metadata)
+        len(media_id.encode("utf-8")), len(user_payload), len(metadata), total_units
     )
     ciphertext_length = record_length + GCM_TAG_SIZE
     layout = build_embedding_layout(
@@ -149,7 +151,7 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
         carrier_units, media_code, lsb_count, start_unit, layout.footprint, span
     )
     payload = PayloadRecord(media_id, timestamp, nonce, media_hash, user_payload, metadata)
-    record_bytes = serialize_payload(payload)
+    record_bytes = serialize_payload(payload, total_units)
     session_key = secrets.token_bytes(SESSION_KEY_SIZE)
     aead_nonce = secrets.token_bytes(AEAD_NONCE_SIZE)
     fields = BootstrapFields(
@@ -288,7 +290,7 @@ def decode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
             "signature verified but the AES-GCM tag rejected the body",
         )
     try:
-        payload = parse_payload(record_bytes)
+        payload = parse_payload(record_bytes, carrier_units.size)
     except ValueError as error:
         return _failure_result("Cannot Verify", str(error))
     calculated_hash = calculate_masked_media_hash(

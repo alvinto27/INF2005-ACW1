@@ -13,14 +13,16 @@ from .constants import (
     NONCE_SIZE,
     SHA256_DIGEST_SIZE,
 )
+from .layout import carrier_field_width
 
 
-def serialized_record_length(media_id_length: int, user_payload_length: int, metadata_length: int) -> int:
-    """Calculate the serialised record length from its field lengths."""
+def serialized_record_length(media_id_length: int, user_payload_length: int, metadata_length: int, total_units: int) -> int:
+    """Calculate the serialised record length from its field lengths and carrier width."""
     media_id_length = _validate_non_negative_integer(media_id_length, "media_id_length")
     user_payload_length = _validate_non_negative_integer(user_payload_length, "user_payload_length")
     metadata_length = _validate_non_negative_integer(metadata_length, "metadata_length")
-    return 1 + media_id_length + 8 + 16 + 32 + 4 + user_payload_length + 4 + metadata_length
+    width = carrier_field_width(total_units)
+    return 1 + media_id_length + 8 + 16 + 32 + width + user_payload_length + width + metadata_length
 
 
 @dataclass(frozen=True)
@@ -56,10 +58,11 @@ class PayloadRecord:
         object.__setattr__(self, "timestamp", timestamp)
 
 
-def serialize_payload(record: PayloadRecord) -> bytes:
+def serialize_payload(record: PayloadRecord, total_units: int) -> bytes:
     """Turn a payload record into checked packet payload bytes."""
     if not isinstance(record, PayloadRecord):
         raise TypeError("record must be a PayloadRecord")
+    width = carrier_field_width(total_units)
     media_id = record.media_id.encode("utf-8")
     payload = (
         bytes((len(media_id),))
@@ -67,9 +70,9 @@ def serialize_payload(record: PayloadRecord) -> bytes:
         + struct.pack(">Q", record.timestamp)
         + record.nonce
         + record.media_hash
-        + struct.pack(">I", len(record.user_payload))
+        + len(record.user_payload).to_bytes(width, "big")
         + record.user_payload
-        + struct.pack(">I", len(record.metadata))
+        + len(record.metadata).to_bytes(width, "big")
         + record.metadata
     )
     return validate_payload_bytes(payload)
@@ -83,9 +86,10 @@ def _take_payload_field(payload_bytes: bytes, offset: int, length: int, name: st
     return payload_bytes[offset:end], end
 
 
-def parse_payload(payload_bytes: bytes) -> PayloadRecord:
+def parse_payload(payload_bytes: bytes, total_units: int) -> PayloadRecord:
     """Read checked payload bytes into a payload record."""
     payload_bytes = validate_payload_bytes(payload_bytes)
+    width = carrier_field_width(total_units)
     if not payload_bytes:
         raise ValueError("payload is truncated before media_id length")
     media_id_length = payload_bytes[0]
@@ -95,11 +99,11 @@ def parse_payload(payload_bytes: bytes) -> PayloadRecord:
     timestamp = struct.unpack(">Q", fixed[:8])[0]
     nonce = fixed[8:24]
     media_hash = fixed[24:56]
-    user_length_bytes, offset = _take_payload_field(payload_bytes, offset, 4, "user length")
-    user_length = struct.unpack(">I", user_length_bytes)[0]
+    user_length_bytes, offset = _take_payload_field(payload_bytes, offset, width, "user length")
+    user_length = int.from_bytes(user_length_bytes, "big")
     user_payload, offset = _take_payload_field(payload_bytes, offset, user_length, "user payload")
-    metadata_length_bytes, offset = _take_payload_field(payload_bytes, offset, 4, "metadata length")
-    metadata_length = struct.unpack(">I", metadata_length_bytes)[0]
+    metadata_length_bytes, offset = _take_payload_field(payload_bytes, offset, width, "metadata length")
+    metadata_length = int.from_bytes(metadata_length_bytes, "big")
     metadata, offset = _take_payload_field(payload_bytes, offset, metadata_length, "metadata")
     if offset != len(payload_bytes):
         raise ValueError("payload contains trailing bytes")

@@ -30,9 +30,9 @@ def carrier(size=24000):
     return np.arange(size, dtype=np.uint8)
 
 
-def payload_length(user_payload=b"hello", metadata=b"{}"):
+def payload_length(total_units, user_payload=b"hello", metadata=b"{}"):
     media_id_length = len("IMG-" + "0" * 32)
-    return serialized_record_length(media_id_length, len(user_payload), len(metadata))
+    return serialized_record_length(media_id_length, len(user_payload), len(metadata), total_units)
 
 
 def encode_image_carrier(source=None, start=2048, k=3, user_payload=b"hello", metadata=b"{}"):
@@ -106,12 +106,76 @@ class TestMaskedStego(unittest.TestCase):
             b"\x00\xff\x80binary\x00",
             "author: 张三".encode(),
         )
-        encoded = serialize_payload(record)
-        self.assertEqual(parse_payload(encoded), record)
+        encoded = serialize_payload(record, 24000)
+        self.assertEqual(parse_payload(encoded, 24000), record)
         with self.assertRaisesRegex(ValueError, "metadata must contain valid UTF-8"):
             PayloadRecord("IMG-test", 1, bytes(16), bytes(32), b"", b"\xff")
         with self.assertRaisesRegex(ValueError, "trailing bytes"):
-            parse_payload(encoded + b"x")
+            parse_payload(encoded + b"x", 24000)
+
+    def test_payload_record_widths_and_overhead(self) -> None:
+        record = PayloadRecord(
+            "IMG-" + "0" * 32,
+            1_700_000_000,
+            bytes(range(16)),
+            bytes(range(32)),
+            b"hello",
+            b"{}",
+        )
+        for total_units, width in ((255, 1), (256, 2), (65535, 2), (65536, 3)):
+            with self.subTest(total_units=total_units):
+                encoded = serialize_payload(record, total_units)
+                self.assertEqual(len(encoded), 93 + 2 * width + 5 + 2)
+                self.assertEqual(parse_payload(encoded, total_units), record)
+
+    def test_payload_record_width_transitions_add_two_length_bytes(self) -> None:
+        record = PayloadRecord(
+            "IMG-" + "0" * 32,
+            1_700_000_000,
+            bytes(range(16)),
+            bytes(range(32)),
+            b"x",
+            b"m",
+        )
+        lengths = [len(serialize_payload(record, total_units)) for total_units in (255, 256, 65535, 65536)]
+        self.assertEqual(lengths[1] - lengths[0], 2)
+        self.assertEqual(lengths[3] - lengths[2], 2)
+
+    def test_payload_record_width_handles_length_above_uint32(self) -> None:
+        total_units = 1 << 32
+        large_length = 1 << 32
+        self.assertEqual(
+            serialized_record_length(MEDIA_ID_SIZE, large_length, 0, total_units),
+            93 + 2 * 5 + large_length,
+        )
+        media_id = b"IMG-" + b"0" * 32
+        declared = (
+            bytes((len(media_id),))
+            + media_id
+            + bytes(8 + 16 + 32)
+            + large_length.to_bytes(5, "big")
+        )
+        with self.assertRaisesRegex(ValueError, "truncated in user payload"):
+            parse_payload(declared, total_units)
+
+    def test_power_of_two_carrier_record_width_round_trip(self) -> None:
+        source = carrier(65536)
+        context = struct.pack(">II", source.size, 1)
+        encoded, layout, payload = encode_carrier(
+            source,
+            IMAGE_MEDIA_CODE,
+            context,
+            PRIVATE_KEY,
+            RECEIVER_PUBLIC_KEY,
+            bootstrap_span(RECEIVER_PUBLIC_KEY),
+            3,
+            b"power-of-two width",
+            b"",
+        )
+        self.assertEqual(carrier_field_width(source.size), 3)
+        result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+        self.assertEqual(result.verdict, "Authentic")
+        self.assertEqual(result.payload, payload)
 
     def test_masked_media_hash_has_exact_approved_preimage(self):
         source = np.array([0xFF, 0xA5, 0x5A, 0x00], dtype=np.uint8)
@@ -324,7 +388,7 @@ class TestMaskedStego(unittest.TestCase):
         cases = []
         for k in SUPPORTED_LSB_COUNTS:
             for start_kind in ("zero", "middle", "boundary"):
-                footprint = ceil_unit_count((payload_length() + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE) * 8, k)
+                footprint = ceil_unit_count((payload_length(source.size) + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE) * 8, k)
                 start = {"zero": bootstrap_span(RECEIVER_PUBLIC_KEY), "middle": bootstrap_span(RECEIVER_PUBLIC_KEY) + 211, "boundary": source.size - footprint}[start_kind]
                 encoded, layout, payload = encode_carrier(source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, start, k, b"hello", b"{}")
                 result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
@@ -404,9 +468,9 @@ class TestMaskedStego(unittest.TestCase):
         )
 
     def test_exact_empty_packet_capacities_include_bootstrap(self) -> None:
-        expected_totals = {1: 5032, 3: 3043, 8: 2421}
+        expected_totals = {1: 5000, 3: 3032, 8: 2417}
         span = bootstrap_span(RECEIVER_PUBLIC_KEY)
-        packet_bytes = serialized_record_length(MEDIA_ID_SIZE, 0, 0) + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE
+        packet_bytes = serialized_record_length(MEDIA_ID_SIZE, 0, 0, 5000) + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE
         for lsb_count, expected_total in expected_totals.items():
             with self.subTest(lsb_count=lsb_count):
                 total_units = span + ceil_unit_count(packet_bytes * 8, lsb_count)
@@ -467,22 +531,22 @@ class TestMaskedStego(unittest.TestCase):
         encoded, layout, payload = encode_carrier(
             source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"hello", b"{}"
         )
-        self.assertEqual(layout.ciphertext_length, 124)
-        self.assertEqual(layout.footprint, 1014)
-        self.assertEqual(layout.pad_bits, 2)
+        self.assertEqual(layout.ciphertext_length, 120)
+        self.assertEqual(layout.footprint, 1003)
+        self.assertEqual(layout.pad_bits, 1)
         all_bits = read_lsb_bits(
             encoded[layout.start_unit:layout.start_unit + layout.footprint],
             layout.footprint * layout.lsb_count,
             layout.lsb_count,
         )
-        packet_bits_length = (124 + 256) * 8
+        packet_bits_length = (120 + 256) * 8
         packet = bit_sequence_to_bytes(all_bits[:packet_bits_length])
-        ciphertext = packet[:124]
-        signature = packet[124:]
-        self.assertEqual(len(packet), 380)
+        ciphertext = packet[:120]
+        signature = packet[120:]
+        self.assertEqual(len(packet), 376)
         self.assertEqual(len(signature), 256)
-        record_bytes = serialize_payload(payload)
-        self.assertEqual(len(record_bytes), 108)
+        record_bytes = serialize_payload(payload, source.size)
+        self.assertEqual(len(record_bytes), 104)
         self.assertNotIn(record_bytes, encoded.tobytes())
         self.assertFalse(ciphertext.startswith(b"\x24IMG-"))
         self.assertTrue(
@@ -557,12 +621,15 @@ class TestMaskedStego(unittest.TestCase):
         source = carrier(30000)
         (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
         fields = bootstrap_fields_from_carrier(encoded, source.size)
-        for changes in ({"lsb_count": 4}, {"ciphertext_length": fields.ciphertext_length + 1}):
+        for changes, expected_verdict in (
+            ({"lsb_count": 4}, "Signature Invalid"),
+            ({"ciphertext_length": fields.ciphertext_length + 1}, "Cannot Verify"),
+        ):
             with self.subTest(changes=changes):
                 envelope = reseal_bootstrap(source.size, fields, **changes)
                 changed = write_lsb_bits(encoded.copy(), bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT)
                 result = decode_carrier(changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
-                self.assertEqual(result.verdict, "Signature Invalid")
+                self.assertEqual(result.verdict, expected_verdict)
 
     def test_unreadable_bootstrap_geometry_is_wrong_start_after_one_read(self) -> None:
         source = carrier(10000)
@@ -621,7 +688,7 @@ class TestMaskedStego(unittest.TestCase):
             calculate_masked_media_hash(outside_changed, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, layout.bootstrap_span),
         )
 
-        packet_bytes = payload_length(b"", b"") + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE
+        packet_bytes = payload_length(source.size, b"", b"") + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE
         exact_footprint = ceil_unit_count(packet_bytes * 8, 8)
         exact_size = bootstrap_span(RECEIVER_PUBLIC_KEY) + exact_footprint
         exact_source = carrier(exact_size)
@@ -741,7 +808,7 @@ class TestMaskedStego(unittest.TestCase):
         carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes, wav_data.sample_width)
         context = encode_wav_media_context(wav_data, carrier.size)
         span = bootstrap_span(RECEIVER_PUBLIC_KEY)
-        record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, 0)
+        record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, 0, carrier.size)
         maximum = max_user_payload_length(carrier.size, span, span, lsb_count, record_overhead)
         self.assertGreater(maximum, 0)
         before = carrier.copy()
@@ -826,10 +893,10 @@ class TestMaskedStego(unittest.TestCase):
         total_units = 10000
         start_unit = bootstrap_span(RECEIVER_PUBLIC_KEY)
         metadata = b"m" * 17
-        fixed_record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, 0)
-        self.assertEqual(fixed_record_overhead, 101)
-        record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, len(metadata))
-        self.assertEqual(record_overhead, 118)
+        fixed_record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, 0, total_units)
+        self.assertEqual(fixed_record_overhead, 97)
+        record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, len(metadata), total_units)
+        self.assertEqual(record_overhead, 114)
         expected_record_maxima = tuple(max_record_length(total_units, start_unit, bootstrap_span(RECEIVER_PUBLIC_KEY), k) for k in (1, 3, 8))
         expected_user_maxima = tuple(value - record_overhead for value in expected_record_maxima)
         source = carrier(total_units)

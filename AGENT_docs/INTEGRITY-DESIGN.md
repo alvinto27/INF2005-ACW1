@@ -66,9 +66,9 @@ media_id         media_id_length bytes of UTF-8
 timestamp        u64, Unix seconds in UTC
 nonce            16 bytes
 media_hash       32 bytes
-user_length      u32
+user_length      W-byte unsigned length, where W = carrier_field_width(total_units)
 user_payload     user_length arbitrary bytes
-metadata_length  u32
+metadata_length  W-byte unsigned length
 metadata         metadata_length UTF-8 bytes
 ```
 
@@ -99,7 +99,7 @@ signing_input = (
 )
 ```
 
-`PROTOCOL_FLAGS` is 0. The version in this input comes from the protocol constant, not from received data. The ciphertext length includes the 16-byte GCM tag. `max_record_length` accounts for the signature and tag; `max_user_payload_length` also subtracts the record overhead supplied by the caller. The generated record costs 101 bytes plus metadata before any user bytes.
+`PROTOCOL_FLAGS` is 0. The version in this input comes from the protocol constant, not from received data. The ciphertext length includes the 16-byte GCM tag. `max_record_length` accounts for the signature and tag; `max_user_payload_length` also subtracts the record overhead supplied by the caller. The generated record costs `93 + 2W` bytes plus metadata before any user bytes, where W is derived from the carrier unit count.
 
 The PNG media context is exactly `struct.pack(">II", width, height)`. The WAV media context is exactly `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 

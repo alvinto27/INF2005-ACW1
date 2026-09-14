@@ -2,13 +2,13 @@
 
 Protocol version 2 encrypts the complete payload record inside the library, including `user_payload`. This record describes what the caller places inside those encrypted bytes: an optional sealed envelope for an additional confidentiality layer, and a content header that declares what the bytes are.
 
-The content header remains caller-side. The caller-side seal is scheduled for deletion in stage 5 under decision 16, while the content-header layer survives. This record therefore documents the caller-added layers, not the library's record encryption. See [Masked Media Integrity Design](INTEGRITY-DESIGN.md).
+The content header remains caller-side. The caller-side seal was removed from the stage 5 demonstration under decision 16, while the content-header layer survives. This record therefore documents the caller-added layers, not the library's record encryption. See [Masked Media Integrity Design](INTEGRITY-DESIGN.md).
 
 **The encryption layer does not survive protocol version 2.** That version encrypts the whole payload record inside the library, unconditionally, so the caller-side seal described below becomes encryption inside encryption. The seal and its notebook demonstration are removed when version 2 lands; see decision 16 in the [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#11-decisions).
 
 **The content-type header is unaffected.** Version 2 encrypts the record; it still does not describe the bytes inside `user_payload`, so that layer stays caller-side and stays necessary.
 
-The working demonstration is in the Confidentiality payload and Typed encrypted payloads sections of the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb).
+The working demonstration is in the Confidentiality from the protocol and Typed payloads sections of the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb).
 
 ## 1. Layering
 
@@ -114,16 +114,16 @@ The function that writes the file derives its own safe filename. It does not tru
 
 ## 6. Capacity
 
-Capacity if a caller adds the recorded optional seal on top of the library's encryption, with empty metadata and packet start at the reserved 2,048-unit RSA-2048 bootstrap span. This is measured from the reserved span, not unit 0. The notebook no longer demonstrates this layer; decision 16 schedules its removal. Deduct 256 signature bytes, 101 record bytes, the library's 16-byte GCM tag, the 268-byte caller-side seal prefix, and the caller-side 16-byte seal tag: 657 bytes in total. A later start or nonempty metadata reduces these values.
+Capacity if a caller adds the recorded optional seal on top of the library's encryption, with empty metadata and packet start at the reserved 2,048-unit RSA-2048 bootstrap span. This is measured from the reserved span, not unit 0. The notebook no longer demonstrates this layer; decision 16 records its removal. The total hypothetical overhead is per carrier: current record overhead (`93 + 2W`) + 16-byte library GCM tag + 256-byte RSA-PSS signature + 268-byte caller-side seal prefix + 16-byte caller-side seal tag, giving 655 bytes for Banana (W=3) and 653 bytes for the WAV (W=2). A later start or nonempty metadata reduces these values.
 
 | `k` | Banana PNG, 6,021,120 units | Demonstration WAV, 32,000 samples |
 | ---: | ---: | ---: |
-| 1 | 751,727 | 3,087 |
-| 2 | 1,504,111 | 6,831 |
-| 3 | 2,256,495 | 10,575 |
-| 8 | 6,018,415 | 29,295 |
+| 1 | 751,729 | 3,091 |
+| 2 | 1,504,113 | 6,835 |
+| 3 | 2,256,497 | 10,579 |
+| 8 | 6,018,417 | 29,299 |
 
-Use the capacity helpers with the actual start and record overhead when accepting a user payload. The caller-side seal was removed from the Stage 5 demonstration; these figures are hypothetical caller-side sealing overhead, not a new protocol overhead.
+Use the capacity helpers with the actual start and record overhead when accepting a user payload. These figures are hypothetical caller-side sealing overhead, not a new protocol overhead; the seal was removed from the Stage 5 demonstration.
 
 The image carrier holds a small image or a short audio clip at `k=1`. The demonstration audio carrier holds text only. That limit comes from the short 8-bit mono tone the notebook generates, not from the design. Capacity grows in proportion to the sample count, so a longer cover removes the difference.
 

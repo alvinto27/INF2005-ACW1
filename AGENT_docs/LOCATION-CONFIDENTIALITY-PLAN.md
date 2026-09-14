@@ -1,6 +1,6 @@
 # Location Confidentiality Plan
 
-**Status: protocol version 2 stage 4c is implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Masked Media Integrity Design](INTEGRITY-DESIGN.md) for current behaviour.
+**Status: protocol version 2 stage 6a is implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. Payload-record lengths now use the carrier-derived field width. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Masked Media Integrity Design](INTEGRITY-DESIGN.md) for current behaviour.
 
 The goal is to protect the payload start location, length, and LSB depth from everyone except the intended receiver, while the user still chooses all three by hand.
 
@@ -262,7 +262,7 @@ Version 1 caps payloads with `MAX_PAYLOAD_LENGTH = 16 MiB`. That constant is unr
 
 | Carrier | LSB count | Actually fits | 16 MiB cap |
 | --- | ---: | ---: | --- |
-| Banana 1280x1568 | 8 | 6,018,699 B | within the cap |
+| Banana 1280x1568 | 8 | 6,018,701 B | within the cap |
 | Phone photo 4000x3000 | 8 | 35,997,579 B | **rejects 19 MB that fit** |
 | DSLR 6000x4000 | 8 | 71,997,579 B | **rejects 55 MB that fit** |
 
@@ -272,7 +272,7 @@ Brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) lists a requi
 
 ```text
 max_user_payload = (total_units - start_unit) * lsb_count / 8
-                   - record_overhead      101 bytes
+                   - record_overhead      93 + 2W bytes
                    - gcm_tag               16 bytes
                    - signature            256 bytes
 ```
@@ -292,13 +292,13 @@ Stage 4b deletes the header. **The helper changes in the same commit.** At this 
 | Version 1 packet: header 23 + signature 256 | 279 |
 | Stage 4b packet: signature 256 only | 256 |
 | Version 2 packet: GCM tag 16 + signature 256 | 272 |
-| Version 2 user payload: also record overhead 101 | 373 |
+| Version 2 user payload: also record overhead `93 + 2W` | `272 + (93 + 2W)`; 369 B at W=2, 371 B at W=3 |
 
 **Error one: the header is deleted and the helper is not touched.** It returns `available - 279` where the truth is `available - 272`, so it understates by 7 bytes and refuses payloads that fit. That is the same defect stage 1 removed, smaller by a factor of two million, and still wrong.
 
-**Error two, the dangerous one: a caller reads the result as a user payload maximum.** The version 1 return value is the maximum *serialised record* length, not the maximum *user payload* length. Those two quantities differ by the 101 bytes of record overhead. A caller that treats the old return value as a user payload budget overstates it by 94 bytes, accepts the payload, and fails during encode. Section [5.3](#53-the-reserved-region-is-runtime-data) explains why a check that reports success and then fails is worse than no check at all.
+**Error two, the dangerous one: a caller reads the result as a user payload maximum.** The version 1 return value is the maximum *serialised record* length, not the maximum *user payload* length. Those two quantities differ by the record overhead, which is `93 + 2W` in the current format. A caller that treats the old return value as a user payload budget overstates it by that overhead, accepts the payload, and fails during encode. Section [5.3](#53-the-reserved-region-is-runtime-data) explains why a check that reports success and then fails is worse than no check at all.
 
-**Requirement for stage 4.** Two capacity quantities exist in version 2 and they differ by 101 bytes. Each function name must say which one it returns. Do not keep a single name whose meaning changes with the protocol version.
+**Requirement for stage 4.** Two capacity quantities exist in version 2 and they differ by the current record overhead, `93 + 2W` bytes. Each function name must say which one it returns. Do not keep a single name whose meaning changes with the protocol version.
 
 **Which quantity a rejection reports.** `build_embedding_layout` receives the serialised record length, so its message reports the record maximum. It has never seen a metadata length and cannot compute the user payload maximum.
 
@@ -353,7 +353,7 @@ def carrier_field_width(total_units: int) -> int:
     return max(1, (total_units.bit_length() + 7) // 8)
 ```
 
-Because the LSB count never exceeds 8, the largest possible packet byte count is `total_units * lsb_count / 8`, which is at most `total_units`. A width derived from the unit count therefore covers positions, footprints, and lengths alike.
+Because the LSB count never exceeds 8, the largest possible packet byte count is `total_units * lsb_count / 8`, which is at most `total_units`. A width derived from the unit count therefore covers positions, footprints, and lengths alike. The same bound covers the `user_payload_length` and `metadata_length` fields in `PayloadRecord`; their largest possible values are no greater than the carrier's unit count, so W bytes is sufficient for either field.
 
 | Carrier | Units | W | Signed prefix |
 | --- | ---: | ---: | --- |
@@ -377,12 +377,14 @@ Both sides know the carrier geometry before they build or read either format, so
 
 **The signing input must stay injective given the carrier.** It is: `W` is fixed once the unit count is known, `media_context` has a fixed length per medium, and `ciphertext_length` sits in the fixed-width prefix ahead of the variable tail. No two field tuples can serialise to the same bytes. A future field appended without a length prefix would break this, so the property is written down here.
 
+**The payload record keeps the same invariant.** W is fixed by the carrier, both length fields occupy fixed-width big-endian slots, and each variable tail follows its own length. Therefore no two record field tuples can serialise to the same bytes.
+
 ### 5.6 Remaining ceilings
 
 | Ceiling | Decision |
 | --- | --- |
 | `MAX_PAYLOAD_LENGTH` | removed. The carrier is the limit |
-| `payload_length` as `u32` | replaced by the derived width |
+| `PayloadRecord.user_payload_length` and `metadata_length` as `u32` | replaced by the derived width |
 | `total_units`, `start_unit`, `footprint` as `u64` | replaced by the derived width |
 | `MEDIA_HASH_CONTEXT_FORMAT` three `u64` fields | replaced by the derived width |
 | `PACKET_HEADER_FORMAT` `u32` length | deleted with the header |
@@ -492,8 +494,8 @@ Smallest usable carrier, empty payload, 1 LSB:
 
 | Scheme | Bootstrap | Packet | Total |
 | --- | ---: | ---: | ---: |
-| RSA-2048 | 2,048 | 2,984 | 5,032 units |
-| X25519 | 904 | 2,984 | 3,888 units |
+| RSA-2048 | 2,048 | 2,952 | 5,000 units |
+| X25519 | 904 | 2,952 | 3,856 units |
 
 The packet figure includes the 16-byte GCM tag.
 
@@ -611,6 +613,8 @@ Each stage is one commit and one review. A stage is not finished until it has an
 | 4b | Delete the marker, the scan, the candidate limit and the header format. Decode and file-verification wrappers take start unit, LSB count, and complete serialised record length as required arguments. **Update the capacity helper in the same commit**, per section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) | round trips pass with all three geometry values supplied; executable sources contain no deleted names; capacity tests prove exactness for the headerless, unencrypted layout |
 | 4c | The bootstrap carries the geometry, the record is encrypted, `verify_*` takes the receiver private key, `Cannot Decrypt` arrives, `PROTOCOL_VERSION` becomes 2 | complete: 50 tests, including the full verdict matrix and bootstrap-tamper case |
 | 5 | Notebook narrative, verdict matrix, fidelity integer, and caller-side seal removal | fresh-kernel execution has no error outputs, the fidelity output shows the exact integer and 2,048-bit bootstrap term, and 50 tests plus `check-docs.py` pass |
+| 6a | Replace `PayloadRecord`'s fixed uint32 length fields with the carrier-derived width; keep the one-byte media-id prefix | record round trips at W=1, 2, 3, and 4; width transitions, >uint32 declared lengths, power-of-two agreement, exact capacities, and 54 tests pass |
+| 6b | Reject an actual carrier that cannot hold the minimum protocol object; do not derive a minimum from no carrier | approved; detailed brief follows after stage 6a review |
 
 Stage 1 is deliberately first and separable. It is useful on its own, because the carrier-derived payload limit fixes a real defect in version 1 independently of anything else in this plan.
 
