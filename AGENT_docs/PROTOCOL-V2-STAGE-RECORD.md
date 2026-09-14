@@ -6,6 +6,8 @@ One entry per stage, written when the stage is committed. A stage is not finishe
 
 Each entry names a commit, and a commit cannot contain its own hash, so an entry lands in a small follow-up commit immediately after the stage it describes. Amending the stage commit to insert the hash changes the hash.
 
+Entries describe the state at their own commit and are never retro-fitted; later stages may supersede their figures without making the older entries wrong.
+
 For stage 4b, the owner clarified the working method: the worker makes all file changes, executes the notebook, and performs approved commits; the orchestrator decides, reviews, and checks. This supersedes the historical handoff role split.
 
 ## Status
@@ -21,8 +23,9 @@ For stage 4b, the owner clarified the working method: the worker makes all file 
 | 4b | Delete the marker, scan and header; explicit geometry | `e9ad8e7` | done |
 | 4c | Bootstrap carries the geometry; record encrypted | `b4a7b61` | done |
 | 5 | Notebook narrative, verdict matrix, fidelity evidence, and caller-seal removal | `d73918f` | done |
+| 6a | Carrier-derived payload-record length fields | `56fbae7` | done |
 
-Stages 1 through 4a were preparation and preserved version 1 behaviour. Stage 4b intentionally changed the packet format and verification API. Stage 4c changes it again to receiver-gated encrypted verification; the current suite has 50 tests.
+Stages 1 through 4a were preparation and preserved version 1 behaviour. Stage 4b intentionally changed the packet format and verification API. Stage 4c changes it again to receiver-gated encrypted verification; stage 6a removes the inner record's fixed uint32 ceiling. The current suite has 54 tests.
 
 ## Stage 1: carrier-derived payload capacity
 
@@ -260,6 +263,23 @@ The implementation commit is `d73918f`; this outcome is recorded in the follow-u
 | Demonstration coverage | Positive PNG and WAV cases, altered PNG and WAV cases, typed payload sizes, selectable LSB settings, capacity refusal, and all seven verdicts execute in a fresh kernel with zero error outputs. The current suite has 50 passing tests and `check-docs.py` reports zero errors. |
 
 The notebook does not choose the team's final short or large demonstration messages, invent an FR13 innovation statement, or simulate the required live A-to-B email/folder transfer. Those remain presentation and team decisions. The submission declaration, contribution statement, and criterion 7 reflection also remain outstanding in [Outstanding Work](OUTSTANDING-WORK.md).
+
+## Stage 6a: carrier-derived payload-record lengths
+
+The implementation commit is `56fbae7`; this outcome is recorded in the follow-up commit named in the status table above. No 6b or 6c work was included. The protocol architecture remains unchanged.
+
+| Area | Outcome |
+| --- | --- |
+| Record format | `PayloadRecord.user_payload_length` and `metadata_length` now use `W = carrier_field_width(total_units)` bytes in big-endian form. The one-byte media-id prefix and `MAX_MEDIA_ID_BYTES` remain unchanged. The record overhead is `93 + 2W`: 97 bytes at W=2, 99 bytes at W=3, and 101 bytes at W=4. |
+| Callers | `serialize_payload`, `parse_payload`, and `serialized_record_length` receive `total_units`. `core.py` derives and passes the same carrier width used by the receiver. `packet.py` imports `carrier_field_width` from `layout.py`; `layout.py` does not import `packet.py`, so the dependency remains acyclic. |
+| Tests | The suite has 54 passing tests. New tests cover record round trips at W=1, 2, 3, and 4; both width transitions (255→256 and 65,535→65,536) growing by two bytes; a declared length of 2^32 without allocating a 4 GiB payload; a power-of-two carrier round trip; and real capacity-boundary encode calls at k=1, 3, and 8. |
+| Measured minima | With W=2, empty metadata and payload give a 97-byte record, a 369-byte packet, and minimum totals of 5,000 units at k=1, 3,032 at k=3, and 2,417 at k=8. All three totals remain W=2, so the derivation is self-consistent. |
+| Measured capacities | From start unit 2,048, Banana (W=3) accepts 752,013 bytes at k=1 and 6,018,701 at k=8; the 32,000-sample WAV (W=2) accepts 3,375 and 29,583. The exact inverse was exercised at k=1, 3, and 8, with maximum plus one refused. |
+| Demo packet | At 30,000 units (W=2), payload `hello`, and metadata `{}`, the record is 104 bytes, ciphertext 120 bytes, packet 376 bytes, footprint 1,003 units at k=3, and one pad bit. |
+| Hypothetical caller seal | The recorded, non-demonstrated caller-side comparison now has per-carrier totals: Banana W=3 has 655 bytes and rows 751,729 / 1,504,113 / 2,256,497 / 6,018,417; WAV W=2 has 653 bytes and rows 3,091 / 6,835 / 10,579 / 29,299 for k=1 / 2 / 3 / 8. |
+| Notebook | Dynamic packet, capacity, and fidelity outputs were refreshed in a fresh kernel: 51 cells, 20 output-bearing code cells, and zero error outputs. The analysis now prints packet bits 3,304 at k=1 and 8, footprint 3,304 and 413, and preserved bits 48,163,608 for both. |
+
+The earlier 101-byte record, 373-byte packet, minimum totals 5,032 / 3,043 / 2,421, and stage 5 capacity figures were correct for their own commits: they used W=4 because the old record fields were fixed at four bytes. Stage 6a supersedes them for current carriers because W is now derived; it does not rewrite the historical evidence.
 
 ## Patterns worth keeping
 
