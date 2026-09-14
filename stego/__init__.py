@@ -59,6 +59,7 @@ from .layout import (
     encode_signing_input,
     max_record_length,
     max_user_payload_length,
+    minimum_carrier_units,
     preserved_bit_count,
 )
 from .media import (
@@ -126,6 +127,7 @@ __all__ = [
     "load_rsa_public_key_pem",
     "max_record_length",
     "max_user_payload_length",
+    "minimum_carrier_units",
     "open_with_private_key",
     "parse_bootstrap",
     "parse_payload",

@@ -36,6 +36,7 @@ from .constants import (
     BOOTSTRAP_START_UNIT,
     GCM_TAG_SIZE,
     IMAGE_MEDIA_CODE,
+    MEDIA_ID_SIZE,
     MEDIA_PREFIXES,
     NONCE_SIZE,
     PROTOCOL_FLAGS,
@@ -60,6 +61,7 @@ from .layout import (
     calculate_masked_media_hash,
     encode_signing_input,
     max_user_payload_length,
+    minimum_carrier_units,
     preserved_bit_count,
 )
 from .media import (
@@ -98,7 +100,7 @@ def _embed_packet(carrier_units: np.ndarray, layout: EmbeddingLayout, packet: by
 
 def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: bytes, signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[np.ndarray, EmbeddingLayout, PayloadRecord]:
     """Encrypt, sign, and embed a record with a receiver bootstrap."""
-    carrier_units = _validate_carrier_units(carrier_units).copy()
+    carrier_units = _validate_carrier_units(carrier_units)
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
     signing_private_key = validate_rsa_private_key(signing_private_key)
@@ -114,11 +116,15 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
 
     total_units = carrier_units.size
     span = bootstrap_span(receiver_public_key)
-    if total_units <= span:
+    minimum_record_length = serialized_record_length(MEDIA_ID_SIZE, 0, 0, total_units)
+    minimum_units = minimum_carrier_units(span, lsb_count, minimum_record_length)
+    if total_units < minimum_units:
         raise ValueError(
-            f"carrier is too small for the reserved bootstrap region: "
-            f"total_units={total_units}, bootstrap_span={span}"
+            "carrier is too small for the protocol: "
+            f"total_units={total_units}, start_unit={start_unit}, "
+            f"lsb_count={lsb_count}, minimum_units={minimum_units}"
         )
+    carrier_units = carrier_units.copy()
     if start_unit < span:
         raise ValueError(
             f"start_unit {start_unit} is below the reserved bootstrap region; "

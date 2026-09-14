@@ -57,13 +57,53 @@ def max_record_length(total_units: int, start_unit: int, bootstrap_span: int, ls
             f"lowest legal start_unit is {bootstrap_span}"
         )
     available_bytes = ((total_units - start_unit) * lsb_count) // 8
-    return max(0, available_bytes - RSA_SIGNATURE_SIZE - GCM_TAG_SIZE)
+    packet_overhead = RSA_SIGNATURE_SIZE + GCM_TAG_SIZE
+    if available_bytes < packet_overhead:
+        minimum_units = start_unit + ceil_unit_count(packet_overhead * 8, lsb_count)
+        raise ValueError(
+            "carrier cannot hold a packet: "
+            f"total_units={total_units}, start_unit={start_unit}, "
+            f"lsb_count={lsb_count}, minimum_units={minimum_units}"
+        )
+    return available_bytes - packet_overhead
 
 
 def max_user_payload_length(total_units: int, start_unit: int, bootstrap_span: int, lsb_count: int, record_overhead: int) -> int:
     """Calculate the maximum user payload length after the supplied record overhead."""
+    total_units = _validate_non_negative_integer(total_units, "total_units")
+    start_unit = _validate_non_negative_integer(start_unit, "start_unit")
+    bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
+    lsb_count = _validate_lsb_count(lsb_count)
     record_overhead = _validate_non_negative_integer(record_overhead, "record_overhead")
-    return max(0, max_record_length(total_units, start_unit, bootstrap_span, lsb_count) - record_overhead)
+    record_maximum = max_record_length(total_units, start_unit, bootstrap_span, lsb_count)
+    if record_maximum < record_overhead:
+        minimum_units = start_unit + ceil_unit_count(
+            (record_overhead + RSA_SIGNATURE_SIZE + GCM_TAG_SIZE) * 8,
+            lsb_count,
+        )
+        raise ValueError(
+            "carrier is too small for the protocol: "
+            f"total_units={total_units}, start_unit={start_unit}, "
+            f"lsb_count={lsb_count}, minimum_units={minimum_units}"
+        )
+    return record_maximum - record_overhead
+
+
+def minimum_carrier_units(bootstrap_span: int, lsb_count: int, minimum_record_length: int) -> int:
+    """Return minimum units for a known minimum record length.
+
+    The caller must derive minimum_record_length from an actual carrier unit count;
+    deriving both values independently would create a width-dependent fixed point.
+    """
+    bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
+    lsb_count = _validate_lsb_count(lsb_count)
+    minimum_record_length = _validate_non_negative_integer(
+        minimum_record_length, "minimum_record_length"
+    )
+    return bootstrap_span + ceil_unit_count(
+        (minimum_record_length + RSA_SIGNATURE_SIZE + GCM_TAG_SIZE) * 8,
+        lsb_count,
+    )
 
 
 def carrier_field_width(total_units: int) -> int:

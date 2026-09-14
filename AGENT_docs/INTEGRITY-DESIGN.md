@@ -99,7 +99,7 @@ signing_input = (
 )
 ```
 
-`PROTOCOL_FLAGS` is 0. The version in this input comes from the protocol constant, not from received data. The ciphertext length includes the 16-byte GCM tag. `max_record_length` accounts for the signature and tag; `max_user_payload_length` also subtracts the record overhead supplied by the caller. The generated record costs `93 + 2W` bytes plus metadata before any user bytes, where W is derived from the carrier unit count.
+`PROTOCOL_FLAGS` is 0. The version in this input comes from the protocol constant, not from received data. The ciphertext length includes the 16-byte GCM tag. `max_record_length` accounts for the signature and tag; `max_user_payload_length` also subtracts the record overhead supplied by the caller. The generated record costs `93 + 2W` bytes plus metadata before any user bytes, where W is derived from the carrier unit count. Capacity helpers refuse a carrier that cannot hold the mandatory packet or record instead of clamping that case to zero. A returned user capacity of zero therefore means the complete protocol object fits exactly and leaves no user bytes.
 
 The PNG media context is exactly `struct.pack(">II", width, height)`. The WAV media context is exactly `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 

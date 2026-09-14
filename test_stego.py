@@ -470,9 +470,11 @@ class TestMaskedStego(unittest.TestCase):
     def test_exact_empty_packet_capacities_include_bootstrap(self) -> None:
         expected_totals = {1: 5000, 3: 3032, 8: 2417}
         span = bootstrap_span(RECEIVER_PUBLIC_KEY)
-        packet_bytes = serialized_record_length(MEDIA_ID_SIZE, 0, 0, 5000) + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE
         for lsb_count, expected_total in expected_totals.items():
             with self.subTest(lsb_count=lsb_count):
+                packet_bytes = serialized_record_length(
+                    MEDIA_ID_SIZE, 0, 0, expected_total
+                ) + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE
                 total_units = span + ceil_unit_count(packet_bytes * 8, lsb_count)
                 self.assertEqual(total_units, expected_total)
                 source = carrier(total_units)
@@ -852,12 +854,91 @@ class TestMaskedStego(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         build_embedding_layout(total_units, start_unit, lsb_count, maximum + GCM_TAG_SIZE + 1, span)
 
-    def test_payload_capacity_clamps_to_zero(self) -> None:
+    def test_minimum_carrier_units_and_zero_capacity_boundaries(self) -> None:
+        span = bootstrap_span(RECEIVER_PUBLIC_KEY)
+        expected_minimums = {1: 5000, 3: 3032, 8: 2417}
+        for lsb_count, expected_minimum in expected_minimums.items():
+            with self.subTest(lsb_count=lsb_count):
+                minimum_record_length = serialized_record_length(
+                    MEDIA_ID_SIZE, 0, 0, expected_minimum
+                )
+                self.assertEqual(carrier_field_width(expected_minimum), 2)
+                self.assertEqual(carrier_field_width(expected_minimum - 1), 2)
+                self.assertEqual(
+                    minimum_carrier_units(span, lsb_count, minimum_record_length),
+                    expected_minimum,
+                )
+                self.assertEqual(
+                    max_user_payload_length(
+                        expected_minimum,
+                        span,
+                        span,
+                        lsb_count,
+                        minimum_record_length,
+                    ),
+                    0,
+                )
+                source = carrier(expected_minimum)
+                context = struct.pack(">II", expected_minimum, 1)
+                encoded, _, _ = encode_carrier(
+                    source,
+                    IMAGE_MEDIA_CODE,
+                    context,
+                    PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY,
+                    span,
+                    lsb_count,
+                    b"",
+                    b"",
+                )
+                self.assertEqual(
+                    decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict,
+                    "Authentic",
+                )
+                too_small = carrier(expected_minimum - 1)
+                before = too_small.copy()
+                for user_payload in (b"", b"x"):
+                    with self.subTest(payload=user_payload):
+                        with self.assertRaisesRegex(
+                            ValueError,
+                            f"carrier is too small for the protocol.*total_units={expected_minimum - 1}.*"
+                            f"start_unit={span}.*lsb_count={lsb_count}.*minimum_units={expected_minimum}",
+                        ):
+                            encode_carrier(
+                                too_small,
+                                IMAGE_MEDIA_CODE,
+                                context,
+                                PRIVATE_KEY,
+                                RECEIVER_PUBLIC_KEY,
+                                span,
+                                lsb_count,
+                                user_payload,
+                                b"",
+                            )
+                        self.assertTrue(np.array_equal(too_small, before))
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"carrier is too small for the protocol.*total_units={expected_minimum - 1}.*"
+                    f"start_unit={span}.*lsb_count={lsb_count}.*minimum_units={expected_minimum}",
+                ):
+                    max_user_payload_length(
+                        expected_minimum - 1,
+                        span,
+                        span,
+                        lsb_count,
+                        minimum_record_length,
+                    )
+
+    def test_payload_capacity_refuses_carrier_without_packet(self) -> None:
         total_units = RSA_SIGNATURE_SIZE - 1
-        self.assertEqual(max_record_length(total_units, 0, 0, 8), 0)
+        with self.assertRaisesRegex(
+            ValueError,
+            "carrier cannot hold a packet.*total_units=255.*start_unit=0.*lsb_count=8.*minimum_units=",
+        ):
+            max_record_length(total_units, 0, 0, 8)
 
     def test_signature_only_layout_boundary_is_exact(self) -> None:
-        with self.assertRaisesRegex(ValueError, "embedding footprint does not fit"):
+        with self.assertRaisesRegex(ValueError, "carrier cannot hold a packet"):
             build_embedding_layout(255, 0, 8, 0, 0)
         layout = build_embedding_layout(256, 0, 8, 0, 0)
         self.assertEqual(layout.footprint, 256)
@@ -946,9 +1027,13 @@ class TestMaskedStego(unittest.TestCase):
                     )
                 self.assertTrue(np.array_equal(source, before))
 
-    def test_user_payload_capacity_clamps_to_zero(self) -> None:
+    def test_user_payload_capacity_refuses_carrier_without_protocol(self) -> None:
         total_units = RSA_SIGNATURE_SIZE - 1
-        self.assertEqual(max_user_payload_length(total_units, 0, 0, 8, 0), 0)
+        with self.assertRaisesRegex(
+            ValueError,
+            "carrier cannot hold a packet.*total_units=255.*start_unit=0.*lsb_count=8.*minimum_units=",
+        ):
+            max_user_payload_length(total_units, 0, 0, 8, 0)
 
     def test_layout_rejects_start_inside_bootstrap_region(self) -> None:
         with self.assertRaisesRegex(ValueError, "bootstrap region.*lowest legal start_unit is 128"):

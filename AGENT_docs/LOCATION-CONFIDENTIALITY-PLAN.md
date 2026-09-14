@@ -1,6 +1,6 @@
 # Location Confidentiality Plan
 
-**Status: protocol version 2 stage 6a is implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. Payload-record lengths now use the carrier-derived field width. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Masked Media Integrity Design](INTEGRITY-DESIGN.md) for current behaviour.
+**Status: protocol version 2 stage 6b is implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. Payload-record lengths use the carrier-derived field width, and unusable carriers are refused before encoding. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Masked Media Integrity Design](INTEGRITY-DESIGN.md) for current behaviour.
 
 The goal is to protect the payload start location, length, and LSB depth from everyone except the intended receiver, while the user still chooses all three by hand.
 
@@ -277,7 +277,7 @@ max_user_payload = (total_units - start_unit) * lsb_count / 8
                    - signature            256 bytes
 ```
 
-Three user choices in, one honest answer out. The rejection message must name the carrier units, the start unit, the LSB count, and the computed maximum, because that message is the capacity check the brief asks to see demonstrated.
+Three user choices in, one honest answer out. The rejection message must name the carrier units, the start unit, the LSB count, and the computed maximum, because that message is the capacity check the brief asks to see demonstrated. A usable carrier may have a user capacity of exactly zero; an unusable carrier is refused instead of being clamped to the same value.
 
 **Removing the cap tightens the allocation guard rather than weakening it.** `ciphertext_length` arrives from the attacker-writable bootstrap, so it must be bounded before anything is allocated. The carrier capacity is a tight bound taken from the file already in memory. The old constant was the looser guard in every case that mattered: far too large for a thumbnail, far too small for a photograph.
 
@@ -341,7 +341,7 @@ That error looks harmless and is not. At 1 LSB with RSA-2048 it is 256 bytes, wh
 | Illustrative 4,000-unit carrier | 8 | 3,728 B | 1,680 B |
 | 32,000-sample WAV | 1 | 3,728 B | 3,472 B |
 
-A check that reports success and then fails during encode is worse than no check, because it moves the failure past the point where the user can still act on it.
+A check that reports success and then fails during encode is worse than no check, because it moves the failure past the point where the user can still act on it. Stage 6b turns the table's “does not fit” result into an explicit refusal before encoding; the record-level figures remain unchanged. A zero user capacity now means the protocol fits and leaves no user bytes.
 
 **Consequence for the code.** No helper may take a carrier and an LSB count alone and return a capacity. Any such function assumes a start unit of 0, which is correct in version 1 and silently wrong in version 2. The start unit stays a required argument with no default.
 
@@ -390,6 +390,7 @@ Both sides know the carrier geometry before they build or read either format, so
 | `PACKET_HEADER_FORMAT` `u32` length | deleted with the header |
 | `MAX_MAGIC_CANDIDATES` | deleted with the scan |
 | `MAX_MEDIA_ID_BYTES` = 255 | kept. A one-byte length prefix on an internally generated 36-byte value. Not a payload ceiling |
+| Capacity-helper zero clamp | removed. An unusable carrier now raises; zero means an exact-fit protocol object |
 | `PNG_MEDIA_CONTEXT_FORMAT` `">II"` | kept. Four billion pixels per side |
 | `WAV_MEDIA_CONTEXT_FORMAT` `">HBIQ"` | kept. The frame count is already 64-bit |
 | `MAX_WAV_FRAME_BYTES` = 64 MiB | **deferred.** See [Open decisions](#12-open-decisions) |
@@ -538,6 +539,9 @@ The bootstrap region is public and unauthenticated, and its bits are masked out 
 | 10 | Encrypt the whole payload record | yes | the plaintext record is a second locator, measured at 0.002 s |
 | 11 | Split the result into a verdict and a body status | no | one added verdict carries the same meaning with less API |
 | 12 | Bind the session key and nonce with a signed commitment | no | substitution already fails at the tag, so this is only a naming choice, and the informative name wins |
+
+Decision 12 was reconsidered in the owner review and reaffirmed: the session key and nonce remain implied by the GCM tag, with no signed commitment added. The existing rationale remains the reason on record.
+
 | 12b | Bootstrap layout as GCM additional authenticated data | yes | no bytes on the wire, and a second binding on the fields that matter most |
 | 13 | Fixed-width layout fields in the signing input | no | it would reintroduce a ceiling the bootstrap had removed |
 | 14 | `MAX_WAV_FRAME_BYTES` | **deferred** | see [Open decisions](#12-open-decisions) |
@@ -614,7 +618,7 @@ Each stage is one commit and one review. A stage is not finished until it has an
 | 4c | The bootstrap carries the geometry, the record is encrypted, `verify_*` takes the receiver private key, `Cannot Decrypt` arrives, `PROTOCOL_VERSION` becomes 2 | complete: 50 tests, including the full verdict matrix and bootstrap-tamper case |
 | 5 | Notebook narrative, verdict matrix, fidelity integer, and caller-side seal removal | fresh-kernel execution has no error outputs, the fidelity output shows the exact integer and 2,048-bit bootstrap term, and 50 tests plus `check-docs.py` pass |
 | 6a | Replace `PayloadRecord`'s fixed uint32 length fields with the carrier-derived width; keep the one-byte media-id prefix | record round trips at W=1, 2, 3, and 4; width transitions, >uint32 declared lengths, power-of-two agreement, exact capacities, and 54 tests pass |
-| 6b | Reject an actual carrier that cannot hold the minimum protocol object; do not derive a minimum from no carrier | approved; detailed brief follows after stage 6a review |
+| 6b | Reject an actual carrier that cannot hold the minimum protocol object; do not derive a minimum from no carrier | 55 tests pass; minima encode and verify, one-below minima refuse without modifying input, and zero capacity is reserved for exact fits |
 
 Stage 1 is deliberately first and separable. It is useful on its own, because the carrier-derived payload limit fixes a real defect in version 1 independently of anything else in this plan.
 
