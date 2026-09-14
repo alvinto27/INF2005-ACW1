@@ -20,7 +20,7 @@ For stage 4b, the owner clarified the working method: the worker makes all file 
 | 4a | Name the two capacity quantities, thread the span | `cc72dd3` | done |
 | 4b | Delete the marker, scan and header; explicit geometry | `e9ad8e7` | done |
 | 4c | Bootstrap carries the geometry; record encrypted | `b4a7b61` | done |
-| 5 | Notebook | — | planned |
+| 5 | Notebook narrative, verdict matrix, fidelity evidence, and caller-seal removal | `d73918f` | done |
 
 Stages 1 through 4a were preparation and preserved version 1 behaviour. Stage 4b intentionally changed the packet format and verification API. Stage 4c changes it again to receiver-gated encrypted verification; the current suite has 50 tests.
 
@@ -90,7 +90,7 @@ Equal to four decimal places. The tests therefore assert exact integers, 78,500 
 
 **What the stage taught.** The notebook called `preserved_bit_count` with three arguments and would have raised `TypeError`. It was corrected in the same commit. Leaving the repository unrunnable between stages is breakage, not deferral.
 
-Reading that cell to apply the fix revealed a second problem: it reports the figure as a ratio formatted to two decimal places, which prints `99.99%` with or without the correction. The cell cannot show the difference it exists to demonstrate, so the stage 6 gate now asks for the exact integer beside the ratio.
+Reading that cell to apply the fix revealed a second problem: it reports the figure as a ratio formatted to two decimal places, which prints `99.99%` with or without the correction. The cell cannot show the difference it exists to demonstrate, so the stage 5 gate now asks for the exact integer beside the ratio.
 
 ## Stage 2c: crypto module rename
 
@@ -244,6 +244,22 @@ This stage is complete. Its implementation commit is named in the status table a
 | Notebook | The image and 32,000-sample WAV demonstrations use sender and receiver keys. The separate 4,000-sample tone is identified as typed payload data, not the WAV cover. |
 
 The empty record overhead is 101 bytes. The final empty packet overhead is therefore `101 + 16 + 256 = 373` bytes. With the RSA-2048 bootstrap span of 2,048 units, the exact minimum carrier sizes are 5,032 units at k=1, 3,043 at k=3, and 2,421 at k=8. The multi-byte WAV capacity fixture was increased from 2,000 to 6,000 samples because it sat below the reserved span and could not exercise the capacity arithmetic it existed to prove.
+
+## Stage 5: notebook evidence and caller-seal removal
+
+The implementation commit is `d73918f`; this outcome is recorded in the follow-up commit named in the status table above. No files under `stego/` changed.
+
+| Area | Outcome |
+| --- | --- |
+| Protocol-level confidentiality | The notebook now presents the AES-256-GCM record and RSA-PSS signature as the custom confidential payload. The old caller-side AES-GCM/RSA-OAEP seal and its `oaep_sha256`, `seal`, and `unseal` demonstration are removed. The password-protected receiver PEM save/load remains in the receiver story. |
+| Location security | The notebook claims that protocol structure cannot recover packet geometry without the receiver private key. It also states the limits: the fixed bootstrap span is observable, statistical steganalysis is out of scope, and an attacker can overwrite the bootstrap to destroy extraction. |
+| Signing narrative | The prose names recovered `flags` and `ciphertext_length`, and no longer describes geometry as an out-of-band input. Wrong sender and wrong receiver keys are separate cases. `Payload Missing` is explained as an intentionally ambiguous result for an unreadable or differently addressed bootstrap. |
+| Verdicts | A real verification matrix reaches `Authentic`, `Tampered`, `Signature Invalid`, `Payload Missing`, `Wrong Start Location`, `Cannot Decrypt`, and `Cannot Verify`. `Cannot Decrypt` exists for a valid signature followed by an AES-GCM tag failure; collapsing it into `Tampered` or `Cannot Verify` would lose that distinction. |
+| Capacity | The retained library payload overhead is `101 + 16 + 256 = 373` bytes. With empty metadata and start 2,048, the user-payload capacity is `floor((N - 2048) * k / 8) - 373`: Banana gives 752,011 bytes at k=1 and 6,018,699 at k=8; the 32,000-sample WAV gives 3,371 and 29,579. The old 657-byte table is relabelled as hypothetical caller-side sealing overhead, not current library capacity. |
+| Fidelity | The cell prints `preserved_bits = 48,163,592` for both k=1 and k=8, plus `bootstrap_bits_written = 2,048` and `bootstrap_preserved_bits = 14,336`. The preserved count is `8N - packet_bits - bootstrap_span`; the separate 2,048 term makes the one-written-bit-per-bootstrap-unit correction visible. |
+| Demonstration coverage | Positive PNG and WAV cases, altered PNG and WAV cases, typed payload sizes, selectable LSB settings, capacity refusal, and all seven verdicts execute in a fresh kernel with zero error outputs. The current suite has 50 passing tests and `check-docs.py` reports zero errors. |
+
+The notebook does not choose the team's final short or large demonstration messages, invent an FR13 innovation statement, or simulate the required live A-to-B email/folder transfer. Those remain presentation and team decisions. The submission declaration, contribution statement, and criterion 7 reflection also remain outstanding in [Outstanding Work](OUTSTANDING-WORK.md).
 
 ## Patterns worth keeping
 
