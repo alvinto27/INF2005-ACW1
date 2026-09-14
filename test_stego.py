@@ -12,7 +12,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from stego import *
+from stego.constants import MEDIA_ID_SIZE
 from stego.layout import build_embedding_layout, carrier_field_width
+from stego.packet import serialized_record_length
 
 
 PRIVATE_KEY, PUBLIC_KEY = generate_rsa_keypair()
@@ -25,7 +27,7 @@ def carrier(size=24000):
 
 def payload_length(user_payload=b"hello", metadata=b"{}"):
     media_id_length = len("IMG-" + "0" * 32)
-    return 1 + media_id_length + 8 + 16 + 32 + 4 + len(user_payload) + 4 + len(metadata)
+    return serialized_record_length(media_id_length, len(user_payload), len(metadata))
 
 
 def encode_image_carrier(source=None, start=17, k=3, user_payload=b"hello", metadata=b"{}"):
@@ -568,45 +570,75 @@ class TestMaskedStego(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     wav_frame_bytes_to_carrier(b"1234", sample_width)
 
+    def test_generated_media_id_matches_constant(self) -> None:
+        (_, _, payload), _ = encode_image_carrier()
+        self.assertEqual(len(payload.media_id.encode("utf-8")), MEDIA_ID_SIZE)
+
     def test_payload_capacity_boundary_is_exact(self) -> None:
         total_units = 5000
         start_unit = 137
         for lsb_count in (1, 3, 8):
             with self.subTest(lsb_count=lsb_count):
-                maximum = max_payload_length(total_units, start_unit, lsb_count)
-                layout = build_embedding_layout(total_units, start_unit, lsb_count, maximum)
+                maximum = max_record_length(total_units, start_unit, 0, lsb_count)
+                layout = build_embedding_layout(total_units, start_unit, lsb_count, maximum, 0)
                 self.assertLessEqual(start_unit + layout.footprint, total_units)
                 with self.assertRaises(ValueError):
-                    build_embedding_layout(total_units, start_unit, lsb_count, maximum + 1)
+                    build_embedding_layout(total_units, start_unit, lsb_count, maximum + 1, 0)
 
     def test_payload_capacity_clamps_to_zero(self) -> None:
         total_units = PACKET_HEADER_SIZE + RSA_SIGNATURE_SIZE - 1
-        self.assertEqual(max_payload_length(total_units, 0, 8), 0)
+        self.assertEqual(max_record_length(total_units, 0, 0, 8), 0)
 
     def test_payload_capacity_rejection_names_capacity_inputs(self) -> None:
         total_units = 5000
         start_unit = 137
         lsb_count = 3
-        maximum = max_payload_length(total_units, start_unit, lsb_count)
+        maximum = max_record_length(total_units, start_unit, 0, lsb_count)
         with self.assertRaises(ValueError) as raised:
-            build_embedding_layout(total_units, start_unit, lsb_count, maximum + 1)
+            build_embedding_layout(total_units, start_unit, lsb_count, maximum + 1, 0)
         message = str(raised.exception)
         for expected in (
             f"total_units={total_units}",
             f"start_unit={start_unit}",
             f"lsb_count={lsb_count}",
-            f"max_payload_length={maximum}",
+            f"max_record_length={maximum}",
         ):
             self.assertIn(expected, message)
 
     def test_payload_over_sixteen_mebibytes_uses_carrier_capacity(self) -> None:
         payload_length = 16 * 1024 * 1024 + 1
         total_units = PACKET_HEADER_SIZE + RSA_SIGNATURE_SIZE + payload_length
-        maximum = max_payload_length(total_units, 0, 8)
+        maximum = max_record_length(total_units, 0, 0, 8)
         self.assertEqual(maximum, payload_length)
-        layout = build_embedding_layout(total_units, 0, 8, payload_length)
+        layout = build_embedding_layout(total_units, 0, 8, payload_length, 0)
         self.assertEqual(layout.payload_length, payload_length)
         self.assertEqual(layout.footprint, total_units)
+
+    def test_user_payload_capacity_boundary_is_exact(self) -> None:
+        total_units = 5000
+        start_unit = 137
+        metadata_length = 17
+        fixed_record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, 0)
+        self.assertEqual(fixed_record_overhead, 101)
+        record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, metadata_length)
+        for lsb_count in (1, 3, 8):
+            with self.subTest(lsb_count=lsb_count):
+                record_maximum = max_record_length(total_units, start_unit, 0, lsb_count)
+                user_maximum = max_user_payload_length(total_units, start_unit, 0, lsb_count, record_overhead)
+                self.assertEqual(record_maximum - user_maximum, record_overhead)
+                record_length = record_overhead + user_maximum
+                layout = build_embedding_layout(total_units, start_unit, lsb_count, record_length, 0)
+                self.assertLessEqual(start_unit + layout.footprint, total_units)
+                with self.assertRaises(ValueError):
+                    build_embedding_layout(total_units, start_unit, lsb_count, record_length + 1, 0)
+
+    def test_user_payload_capacity_clamps_to_zero(self) -> None:
+        total_units = PACKET_HEADER_SIZE + RSA_SIGNATURE_SIZE - 1
+        self.assertEqual(max_user_payload_length(total_units, 0, 0, 8, 0), 0)
+
+    def test_layout_rejects_start_inside_bootstrap_region(self) -> None:
+        with self.assertRaisesRegex(ValueError, "bootstrap region.*lowest legal start_unit is 128"):
+            build_embedding_layout(5000, 100, 1, 0, 128)
 
     def test_unsupported_image_formats_are_rejected(self):
         with TemporaryDirectory() as directory_name:

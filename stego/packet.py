@@ -39,6 +39,14 @@ class PacketHeader:
     payload_length: int
 
 
+def serialized_record_length(media_id_length: int, user_payload_length: int, metadata_length: int) -> int:
+    """Calculate the serialised record length from its field lengths."""
+    media_id_length = _validate_non_negative_integer(media_id_length, "media_id_length")
+    user_payload_length = _validate_non_negative_integer(user_payload_length, "user_payload_length")
+    metadata_length = _validate_non_negative_integer(metadata_length, "metadata_length")
+    return 1 + media_id_length + 8 + 16 + 32 + 4 + user_payload_length + 4 + metadata_length
+
+
 def serialize_packet_header(lsb_count: int, media_code: int, payload_length: int) -> bytes:
     """Turn packet header fields into fixed-size header bytes."""
     return struct.pack(

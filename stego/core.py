@@ -63,6 +63,7 @@ from .packet import (
     parse_packet_header,
     parse_payload,
     scan_start_magic,
+    serialized_record_length,
     serialize_packet_header,
     serialize_payload,
 )
@@ -99,8 +100,8 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
     media_id = f"{MEDIA_PREFIXES[media_code]}-{secrets.token_hex(16)}"
     timestamp = int(datetime.now(timezone.utc).timestamp())
     nonce = secrets.token_bytes(NONCE_SIZE)
-    payload_length = 1 + len(media_id.encode("utf-8")) + 8 + 16 + 32 + 4 + len(user_payload) + 4 + len(metadata)
-    layout = build_embedding_layout(carrier_units.size, start_unit, lsb_count, payload_length)
+    payload_length = serialized_record_length(len(media_id.encode("utf-8")), len(user_payload), len(metadata))
+    layout = build_embedding_layout(carrier_units.size, start_unit, lsb_count, payload_length, 0)
     media_hash = calculate_masked_media_hash(carrier_units, media_code, lsb_count, start_unit, layout.footprint, 0)
     payload = PayloadRecord(media_id, timestamp, nonce, media_hash, user_payload, metadata)
     payload_bytes = serialize_payload(payload)
@@ -142,7 +143,7 @@ def resolve_candidate(carrier_units: np.ndarray, candidate: StartMagicCandidate,
     if header.media_code != expected_media_code:
         raise ValueError("header media code does not match adapter media code")
     try:
-        layout = build_embedding_layout(carrier_units.size, candidate.start_unit, candidate.lsb_count, header.payload_length)
+        layout = build_embedding_layout(carrier_units.size, candidate.start_unit, candidate.lsb_count, header.payload_length, 0)
     except ValueError as error:
         if "does not fit" in str(error):
             raise VerificationError("Wrong Start Location", "declared embedding footprint is out of range") from error

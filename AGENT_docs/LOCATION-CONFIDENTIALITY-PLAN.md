@@ -299,6 +299,12 @@ Version 2 deletes the header in stage 5. **The helper must change in the same co
 
 **Requirement for stage 4.** Two capacity quantities exist in version 2 and they differ by 101 bytes. Each function name must say which one it returns. Do not keep a single name whose meaning changes with the protocol version.
 
+**Which quantity a rejection reports.** `build_embedding_layout` receives the serialised record length, so its message reports the record maximum. It has never seen a metadata length and cannot compute the user payload maximum.
+
+That leaves a gap. The message a user should see is about their own file, not about an internal record. Brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) asks whether the payload is larger than the cover object, and a user reading `max_record_length` has to subtract an overhead they know nothing about.
+
+**Stage 4c must add a user-facing capacity refusal** at the encode entry points, reporting the user payload maximum, the carrier size, the chosen start unit and the LSB count. The layout-level message stays as an internal check. Two messages, because there are two questions and only one of them is the user's.
+
 ### 5.3 The reserved region is runtime data
 
 `BOOTSTRAP_SPAN` is the **serialised bootstrap envelope size** in bytes multiplied by 8, because the bootstrap is written at 1 LSB. It is not a compile-time constant. It is known only after a key is loaded:

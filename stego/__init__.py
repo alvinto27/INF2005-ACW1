@@ -56,7 +56,8 @@ from .layout import (
     calculate_masked_media_hash,
     ceil_unit_count,
     encode_signing_input,
-    max_payload_length,
+    max_record_length,
+    max_user_payload_length,
     preserved_bit_count,
 )
 from .media import (
@@ -129,7 +130,8 @@ __all__ = [
     "load_png_from_path",
     "load_rsa_private_key_pem",
     "load_rsa_public_key_pem",
-    "max_payload_length",
+    "max_record_length",
+    "max_user_payload_length",
     "open_with_private_key",
     "parse_bootstrap",
     "parse_packet_header",

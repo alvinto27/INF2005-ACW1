@@ -45,13 +45,25 @@ class EmbeddingLayout:
     pad_bits: int
 
 
-def max_payload_length(total_units: int, start_unit: int, lsb_count: int) -> int:
-    """Calculate the maximum packet payload length that fits after start_unit."""
+def max_record_length(total_units: int, start_unit: int, bootstrap_span: int, lsb_count: int) -> int:
+    """Calculate the maximum serialised record length that fits after start_unit."""
     total_units = _validate_non_negative_integer(total_units, "total_units")
     start_unit = _validate_non_negative_integer(start_unit, "start_unit")
+    bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
     lsb_count = _validate_lsb_count(lsb_count)
+    if start_unit < bootstrap_span:
+        raise ValueError(
+            f"start_unit {start_unit} is below bootstrap_span {bootstrap_span}; "
+            f"lowest legal start_unit is {bootstrap_span}"
+        )
     available_bytes = ((total_units - start_unit) * lsb_count) // 8
     return max(0, available_bytes - PACKET_HEADER_SIZE - RSA_SIGNATURE_SIZE)
+
+
+def max_user_payload_length(total_units: int, start_unit: int, bootstrap_span: int, lsb_count: int, record_overhead: int) -> int:
+    """Calculate the maximum user payload length after the supplied record overhead."""
+    record_overhead = _validate_non_negative_integer(record_overhead, "record_overhead")
+    return max(0, max_record_length(total_units, start_unit, bootstrap_span, lsb_count) - record_overhead)
 
 
 def carrier_field_width(total_units: int) -> int:
@@ -60,22 +72,28 @@ def carrier_field_width(total_units: int) -> int:
     return max(1, (total_units.bit_length() + 7) // 8)
 
 
-def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, payload_length: int) -> EmbeddingLayout:
+def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, payload_length: int, bootstrap_span: int) -> EmbeddingLayout:
     """Calculate and check how many carrier units a packet needs."""
     total_units = _validate_non_negative_integer(total_units, "total_units")
     start_unit = _validate_non_negative_integer(start_unit, "start_unit")
     lsb_count = _validate_lsb_count(lsb_count)
     payload_length = validate_payload_length(payload_length)
+    bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
+    if start_unit < bootstrap_span:
+        raise ValueError(
+            f"start_unit {start_unit} is below the bootstrap region; "
+            f"lowest legal start_unit is {bootstrap_span}"
+        )
     packet_bits = (PACKET_HEADER_SIZE + payload_length + RSA_SIGNATURE_SIZE) * 8
     footprint = ceil_unit_count(packet_bits, lsb_count)
     pad_bits = footprint * lsb_count - packet_bits
     if start_unit + footprint > total_units:
-        maximum = max_payload_length(total_units, start_unit, lsb_count)
+        maximum = max_record_length(total_units, start_unit, bootstrap_span, lsb_count)
         # Keep "does not fit": core.resolve_candidate maps it to Wrong Start Location.
         raise ValueError(
             "embedding footprint does not fit after start_unit: "
             f"total_units={total_units}, start_unit={start_unit}, "
-            f"lsb_count={lsb_count}, max_payload_length={maximum}"
+            f"lsb_count={lsb_count}, max_record_length={maximum}"
         )
     return EmbeddingLayout(total_units, start_unit, footprint, lsb_count, payload_length, pad_bits)
 
