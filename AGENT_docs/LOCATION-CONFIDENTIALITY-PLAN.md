@@ -1,6 +1,6 @@
 # Location Confidentiality Plan
 
-**Status: protocol version 2 stage 6b is implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. Payload-record lengths use the carrier-derived field width, and unusable carriers are refused before encoding. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Masked Media Integrity Design](INTEGRITY-DESIGN.md) for current behaviour.
+**Status: protocol version 2 stage 6b is implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. Payload-record lengths use the carrier-derived field width, and unusable carriers are refused before encoding. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Masked Media Integrity Design](PROTOCOL-DESIGN.md#masked-media-integrity-design) for current behaviour.
 
 The goal is to protect the payload start location, length, and LSB depth from everyone except the intended receiver, while the user still chooses all three by hand.
 
@@ -8,7 +8,7 @@ One decision is deferred. See [Open decisions](#12-open-decisions).
 
 ## 1. The problem
 
-Version 1 finds the packet by scanning the carrier for a public 16-byte marker under each LSB count from 1 to 8. See [Payload discovery](INTEGRITY-DESIGN.md#payload-discovery).
+Version 1 finds the packet by scanning the carrier for a public 16-byte marker under each LSB count from 1 to 8. See [Payload discovery](PROTOCOL-DESIGN.md#payload-discovery).
 
 The marker is a public constant, so the scan is available to everybody. Measured on the sample carriers, an attacker with no key finds the packet in 0.01 to 0.43 seconds. Brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) asks the team to explain how the start location is secured against guessing and unauthorised extraction. Version 1 has no real answer.
 
@@ -460,7 +460,7 @@ OAEP decoding requires a leading zero byte, a 32-byte label-hash equality, and a
 
 ## 8. Verdicts
 
-Version 1 verdicts keep their meaning. See [Verification verdicts](INTEGRITY-DESIGN.md#verification-verdicts). One verdict is added.
+Version 1 verdicts keep their meaning. See [Verification verdicts](PROTOCOL-DESIGN.md#verification-verdicts). One verdict is added.
 
 | Verdict | Meaning |
 | --- | --- |
@@ -550,7 +550,7 @@ Decision 12 was reconsidered in the owner review and reaffirmed: the session key
 
 ### The byte-only payload API is withdrawn
 
-[Masked Media Integrity Design](INTEGRITY-DESIGN.md#decisions-and-what-was-rejected) recorded a byte-only payload API, with confidentiality left to the caller and no library change. Version 2 withdraws it.
+[Masked Media Integrity Design](PROTOCOL-DESIGN.md#decisions-and-what-was-rejected) recorded a byte-only payload API, with confidentiality left to the caller and no library change. Version 2 withdraws it.
 
 The reason is not that the old decision was wrong. It was right for a protocol whose only goal was integrity. Location confidentiality is a goal version 1 never had, and it cannot be reached from outside the library, because the structure that leaks the location is the record that `core.py` builds. Section [1](#1-the-problem) holds the measurement: 0.002 seconds to recover a secret start unit from a plaintext record.
 
@@ -578,7 +578,7 @@ The mistake was the question. Encrypting the record was judged against version-1
 
 The constant exists because the loader reads a declared frame count before it can check anything, so it is a resource guard rather than a format rule.
 
-**Status: deferred.** A larger architectural change would remove the need for the constant: replacing whole-carrier arrays with seekable chunked access, so that the bound becomes a chunk size rather than a file-size ceiling. That change is shelved, and the reasons are in the [Streaming Carrier Note](STREAMING-CARRIER-NOTE.md).
+**Status: deferred.** A larger architectural change would remove the need for the constant: replacing whole-carrier arrays with seekable chunked access, so that the bound becomes a chunk size rather than a file-size ceiling. That change is deferred, and the reasons are in the [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#why-it-is-deferred).
 
 The decision therefore stays open rather than being settled twice. Documenting the constant as permanent, and then deleting it in the next change, would leave a false reason in the history.
 
@@ -599,7 +599,7 @@ The decision therefore stays open rather than being settled twice. Documenting t
 | `test_stego.py` | marker and discovery tests deleted. Added: bootstrap round trip, reserved-region refusal, untrusted-field validation, bootstrap tampering, power-of-two width, capacity boundary at several LSB counts |
 | Notebook | every section. The "verify with only a public key" narrative changes. The 4,000-sample typed tone is clarified without lengthening it |
 | Existing files | version-1 files become unreadable. No migration is planned, and the repository stores no old artefacts |
-| [Payload Envelope Design](PAYLOAD-ENVELOPE-DESIGN.md) | the sealed blob is replaced by the bootstrap. The FR9 claim about a readable `media_hash` is withdrawn. `metadata` is no longer readable. Capacity loses the bootstrap span |
+| [Payload Envelope Design](PROTOCOL-DESIGN.md#payload-envelope-design) | the sealed blob is replaced by the bootstrap. The FR9 claim about a readable `media_hash` is withdrawn. `metadata` is no longer readable. Capacity loses the bootstrap span |
 
 ## 14. Staging
 

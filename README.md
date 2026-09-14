@@ -35,6 +35,8 @@ start must be at or after that span.
 
 ## Documentation
 
+Records are grouped by the question a reader arrives with.
+
 - [Agent instructions](AGENTS.md)
 - [Documentation index](AGENT_docs/README.md)
 - [Agent navigation map](AGENT_docs/AGENT_MAP.md)

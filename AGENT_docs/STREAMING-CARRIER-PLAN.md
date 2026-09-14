@@ -1,6 +1,6 @@
-# Streaming Carrier Note
+# Streaming Carrier Plan
 
-**Status: shelved. Not designed, not planned, not scheduled.** This note exists so that [decision 14](LOCATION-CONFIDENTIALITY-PLAN.md#12-open-decisions) has a named target, and so that the idea is not rediscovered from scratch.
+**Status: deferred and upcoming.** This work will be revisited now that protocol version 2 is complete. This record owns the `MAX_WAV_FRAME_BYTES` question: the WAV cover cap and seekable chunked access are one topic because the cap exists only while carriers are loaded whole into memory. This plan exists so that [decision 14](LOCATION-CONFIDENTIALITY-PLAN.md#12-open-decisions) has a named target, and so that the idea is not rediscovered from scratch.
 
 The brief does not ask for this. It is an internal architecture question.
 
@@ -8,7 +8,7 @@ The brief does not ask for this. It is an internal architecture question.
 
 The package holds the whole carrier in memory as one NumPy array of 8-bit units. `MAX_WAV_FRAME_BYTES = 64 MiB` exists because of that: the WAV loader reads a declared frame count before it can validate anything, so the constant guards the allocation.
 
-The shelved change replaces whole-carrier arrays with chunked access, so the working set stays bounded and the constant is no longer needed.
+The deferred change replaces whole-carrier arrays with chunked access, so the working set stays bounded and the constant is no longer needed.
 
 ## The name is slightly wrong
 
@@ -45,13 +45,13 @@ The carrier array is the central type of the package. Every module takes or retu
 
 PNG gains less than WAV. Pillow decodes a whole image regardless, so the honest benefit is on the audio side.
 
-## Why it is shelved
+## Why it is deferred
 
 - The brief sets no memory or carrier-size requirement.
 - It touches every module, so it cannot be reviewed in small pieces the way the version 2 stages can.
 - Protocol version 2 is assignment-relevant and this is not. Doing this first would delay work that is graded.
 
-## Order, if it is ever revisited
+## Order when it is revisited
 
 Do protocol version 2 first. Its stage 1 introduces the carrier-derived width and capacity functions, which take the unit count as a plain integer and do not care how the carrier is stored. That part survives a move to chunked access unchanged.
 

@@ -17,10 +17,9 @@ For repository structure and implementation entry points, see [Agent Navigation 
 
 - [Agent Navigation Map](AGENT_MAP.md) — repository paths and Git boundaries.
 - [Assignment Specification Transcription](../docs/INF2005-ACW1-spec_v5-f2f.md) — visible assignment requirements transcribed from the supplied PDF; hidden prompt injection excluded.
-- [Masked Media Integrity Design](INTEGRITY-DESIGN.md) — the current stage 6b encrypted packet, carrier-derived payload-record widths, hashing, signing, receiver bootstrap, verdicts, and refusal behavior, followed by the version 1 design history.
-- [Payload Envelope Design](PAYLOAD-ENVELOPE-DESIGN.md) — the recorded caller-added optional seal and content-type header inside `user_payload`, plus their cross-check, handlers, capacity, and limitations; the seal is not demonstrated because the library encrypts the complete record.
+- [Protocol Design](PROTOCOL-DESIGN.md#masked-media-integrity-design) — the current stage 6b encrypted packet, carrier-derived payload-record widths, hashing, signing, receiver bootstrap, verdicts, refusal behavior, caller-side payload-envelope design, and version 1 design history.
 - [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md) — protocol version 2 design; stages 0 through 6b complete; 6c cancelled. Holds the field-binding audit, the decode-order invariant, and the accepted trade-offs.
-- [Orchestration Handoff](ORCHESTRATION-HANDOFF.md) — current handoff after stage 4b: verified baseline, owner-defined roles, stage 4c scope and safeguards, environment checks, and remaining work. Use the stage record for detailed outcomes.
+- [Orchestration Handoff](ORCHESTRATION-HANDOFF.md) — current handoff after protocol version 2 completion: verified baseline, owner-defined roles, working method, safeguards, and open items. Use the stage record for detailed outcomes.
 - [Protocol Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md) — what each completed stage of the version 2 plan changed, what was measured, and what it taught. The plan holds intent; this holds outcome.
-- [Streaming Carrier Note](STREAMING-CARRIER-NOTE.md) — **shelved, not planned.** Why whole-carrier arrays force the 64 MiB WAV cap, what seekable chunked access would fix, what it would cost, and the conditions for revisiting it.
-- [Outstanding Work](OUTSTANDING-WORK.md) — assignment work that remains to be built, demonstrated, or assembled.
+- [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) — **deferred and upcoming.** Why whole-carrier arrays force the 64 MiB WAV cap, why the cap and seekable chunked access are one topic, what the change would cost, and the conditions for revisiting it.
+- [Work Not Built](WORK-NOT-BUILT.md#outstanding-work) — assignment work that remains to be built, demonstrated, or assembled.
