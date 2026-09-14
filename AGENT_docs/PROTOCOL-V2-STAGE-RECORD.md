@@ -15,8 +15,8 @@ Each entry names a commit, and a commit cannot contain its own hash, so an entry
 | 2b | Reserved region in the mask, the hash, and the fidelity count | `2d7220c` | done |
 | 2c | `keys.py` renamed to `crypto.py` | `4df44c4` | done |
 | 3 | `bootstrap.py` and the envelope primitives | `16ff1d3` | done |
-| 4a | Name the two capacity quantities, thread the span | — | next |
-| 4b | Delete the marker, scan and header; explicit geometry | — | planned |
+| 4a | Name the two capacity quantities, thread the span | `cc72dd3` | done |
+| 4b | Delete the marker, scan and header; explicit geometry | — | next |
 | 4c | Bootstrap carries the geometry; record encrypted | — | planned |
 | 5 | Notebook | — | planned |
 
@@ -136,6 +136,65 @@ That finding matters because of decision 12. `Cannot Decrypt` was chosen over a 
 
 **Where the key size is pinned.** `bootstrap_span` accepts any RSA key size, because the envelope formula is general, while `seal_to_public_key` calls `validate_rsa_public_key`, which pins RSA-2048. The asymmetry is deliberate and was recorded rather than removed: one function is the single gate, so widening support is a one-line change.
 
+## Stage 4a: two capacity quantities, and one owner for the record
+
+Commit `cc72dd3`. 42 tests. No cryptography, no API change, no behaviour change.
+
+| Name | Returns |
+| --- | --- |
+| `max_record_length` | the maximum serialised record length. Same arithmetic as before, honest name |
+| `max_user_payload_length` | the maximum user payload, taking the record overhead as a required argument |
+
+**Measured at 5,000 units, start unit 137, 17 metadata bytes.**
+
+| LSB count | Record maximum | User maximum | Difference |
+| ---: | ---: | ---: | ---: |
+| 1 | 328 B | 210 B | 118 B |
+| 3 | 1,544 B | 1,426 B | 118 B |
+| 8 | 4,584 B | 4,466 B | 118 B |
+
+The difference is the 101-byte fixed overhead plus 17 bytes of metadata, at every depth. The test asserts the relation as well as the literal 101, because two numbers can both be wrong while the gap between them is what must hold.
+
+### The record length was written out three times
+
+This was the real defect of the stage, found on review rather than planned for.
+
+| Place | What it said |
+| --- | --- |
+| `core.py` | computed the length from the **actual** media identifier |
+| `layout.py` | assumed a 36-byte identifier, because `core.py` happens to call `token_hex(16)` |
+| `test_stego.py` | carried a verbatim copy of the `layout.py` expression |
+
+Nothing linked the assumption to the fact. Measured drift: had `core.py` used `token_hex(8)`, the identifier would be 20 bytes, `core.py` would compute 85 and `layout.py` would still report 101. In the other direction capacity is **overstated**, so the check accepts a payload and encode fails afterwards. That is the exact failure this capacity work exists to prevent, reintroduced one layer down.
+
+`packet.py` serialises the record, so it now owns `serialized_record_length`. `MEDIA_ID_SIZE` is pinned by a test against the real generator, which is the link that was missing.
+
+### A function-level import is not a fix
+
+`layout.py` cannot import `packet.py`, because `packet.py` already imports `ceil_unit_count` from `layout.py`. The first attempt used an import inside the function body.
+
+That hides the dependency rather than removing it, and the layered graph is a recorded property of this design in [plan section 3.7](LOCATION-CONFIDENTIALITY-PLAN.md#37-where-encryption-lives). **A property that holds only at import time is not a property.**
+
+The fix inverts the flow: the overhead is passed in, and `core.py` computes it, which is where sequencing belongs. `layout.py` now contains no statement about what a record looks like, so there is nothing there to drift. The dependency graph is unchanged:
+
+```text
+constants -> bits -> layout -> packet -> core
+                       \-> crypto      /
+                       \-> bootstrap
+```
+
+### Three instructions of mine were wrong this stage
+
+Recorded because the review loop is what caught them, not care on my part.
+
+| Error | Caught by |
+| --- | --- |
+| Claimed `packet.py` imports only `bits` and `constants` | the worker, who verified rather than trusting it |
+| Left the user-facing capacity message unspecified | a question raised mid-stage |
+| Asked for a test that rebuilt its own expectation | review of the diff |
+
+The third is the stage 2a mirror-test pattern appearing in a brief that cited the stage 2a lesson. Knowing a rule and applying it are separate acts.
+
 ## Patterns worth keeping
 
 These came out of the stages above and apply to the remaining ones.
@@ -151,4 +210,6 @@ These came out of the stages above and apply to the remaining ones.
 | The repository runs at every stage boundary | a broken intermediate state is breakage, not deferral |
 | An exception type is measured, not assumed | `InvalidTag` is not a `ValueError`, and the verdict that depends on it would have escaped its own handler |
 | A shared number keeps two owners and one test | importing across a layer boundary to remove a duplicate trades a caught error for a confused design |
+| A dependency is removed, not hidden | a function-level import satisfies the interpreter and falsifies the documented layering |
+| A shared fact gets one owner and a test pinning it | the record length lived in three places and nothing linked the assumption to the generator |
 | Judge a version 2 change against version 2 goals | decision 10 and the byte-only payload API were both first judged against version 1 criteria, and both judgements were wrong |
