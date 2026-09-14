@@ -16,12 +16,13 @@ from .bits import (
     validate_payload_length,
 )
 from .constants import (
-    MEDIA_HASH_CONTEXT_FORMAT,
+    MEDIA_HASH_CONTEXT_PREFIX_FORMAT,
     MEDIA_HASH_DOMAIN,
     PACKET_HEADER_SIZE,
+    PROTOCOL_FLAGS,
     PROTOCOL_VERSION,
     RSA_SIGNATURE_SIZE,
-    SIGNING_CONTEXT_FORMAT,
+    SIGNING_CONTEXT_PREFIX_FORMAT,
     SIGNING_DOMAIN,
 )
 
@@ -51,6 +52,12 @@ def max_payload_length(total_units: int, start_unit: int, lsb_count: int) -> int
     lsb_count = _validate_lsb_count(lsb_count)
     available_bytes = ((total_units - start_unit) * lsb_count) // 8
     return max(0, available_bytes - PACKET_HEADER_SIZE - RSA_SIGNATURE_SIZE)
+
+
+def carrier_field_width(total_units: int) -> int:
+    """Calculate the byte width for carrier-bounded fields."""
+    total_units = _validate_non_negative_integer(total_units, "total_units")
+    return max(1, (total_units.bit_length() + 7) // 8)
 
 
 def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, payload_length: int) -> EmbeddingLayout:
@@ -97,9 +104,13 @@ def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_
     masked = carrier_units.copy()
     mask = (~((1 << lsb_count) - 1)) & 0xFF
     masked[start_unit:start_unit + footprint] &= np.uint8(mask)
+    width = carrier_field_width(total_units)
     preimage = (
         MEDIA_HASH_DOMAIN
-        + struct.pack(MEDIA_HASH_CONTEXT_FORMAT, media_code, lsb_count, total_units, start_unit, footprint)
+        + struct.pack(MEDIA_HASH_CONTEXT_PREFIX_FORMAT, media_code, lsb_count)
+        + total_units.to_bytes(width, "big")
+        + start_unit.to_bytes(width, "big")
+        + footprint.to_bytes(width, "big")
         + masked.tobytes()
     )
     return hashlib.sha256(preimage).digest()
@@ -114,18 +125,21 @@ def encode_signing_input(media_code: int, media_context: bytes, layout: Embeddin
     payload_bytes = validate_payload_bytes(payload_bytes)
     if len(payload_bytes) != layout.payload_length:
         raise ValueError("payload length does not match layout")
+    width = carrier_field_width(layout.total_units)
     return (
         SIGNING_DOMAIN
         + struct.pack(
-            SIGNING_CONTEXT_FORMAT,
+            SIGNING_CONTEXT_PREFIX_FORMAT,
+            # Use PROTOCOL_VERSION, never a packet version: reading it looks tidy but removes downgrade protection.
             PROTOCOL_VERSION,
+            PROTOCOL_FLAGS,
             media_code,
             layout.lsb_count,
-            layout.total_units,
-            layout.start_unit,
-            layout.footprint,
-            layout.payload_length,
         )
+        + layout.total_units.to_bytes(width, "big")
+        + layout.start_unit.to_bytes(width, "big")
+        + layout.footprint.to_bytes(width, "big")
+        + layout.payload_length.to_bytes(width, "big")
         + media_context
         + payload_bytes
     )

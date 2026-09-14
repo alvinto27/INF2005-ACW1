@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from stego import *
-from stego.layout import build_embedding_layout
+from stego.layout import build_embedding_layout, carrier_field_width
 
 
 PRIVATE_KEY, PUBLIC_KEY = generate_rsa_keypair()
@@ -82,17 +82,66 @@ class TestMaskedStego(unittest.TestCase):
         expected_masked[1:3] &= np.uint8(0xF8)
         preimage = (
             MEDIA_HASH_DOMAIN
-            + struct.pack(">BBQQQ", IMAGE_MEDIA_CODE, 3, 4, 1, 2)
+            + struct.pack(">BB", IMAGE_MEDIA_CODE, 3)
+            + b"\x04"
+            + b"\x01"
+            + b"\x02"
             + expected_masked.tobytes()
         )
+        self.assertEqual(len(preimage), 33)
         self.assertEqual(calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 3, 1, 2), hashlib.sha256(preimage).digest())
         self.assertTrue(np.array_equal(source, np.array([0xFF, 0xA5, 0x5A, 0x00], dtype=np.uint8)))
 
     def test_signing_input_has_exact_approved_bytes(self):
         layout = EmbeddingLayout(1000, 13, 300, 3, 5, 0)
         payload = b"abcde"
-        expected = SIGNING_DOMAIN + struct.pack(">BBBQQQI", 1, IMAGE_MEDIA_CODE, 3, 1000, 13, 300, 5) + b"context" + payload
+        expected = (
+            SIGNING_DOMAIN
+            + struct.pack(">BBBB", 1, 0, IMAGE_MEDIA_CODE, 3)
+            + b"\x03\xe8"
+            + b"\x00\x0d"
+            + b"\x01\x2c"
+            + b"\x00\x05"
+            + b"context"
+            + payload
+        )
+        self.assertEqual(len(expected), 42)
         self.assertEqual(encode_signing_input(IMAGE_MEDIA_CODE, b"context", layout, payload), expected)
+
+    def test_carrier_field_width_boundaries(self) -> None:
+        expected_widths = {
+            0: 1,
+            1: 1,
+            255: 1,
+            256: 2,
+            65535: 2,
+            65536: 3,
+            16777215: 3,
+            16777216: 4,
+        }
+        for total_units, expected in expected_widths.items():
+            with self.subTest(total_units=total_units):
+                self.assertEqual(carrier_field_width(total_units), expected)
+                self.assertLessEqual(total_units, (1 << (expected * 8)) - 1)
+
+    def test_signing_input_width_transition(self) -> None:
+        payload = b"abcde"
+        narrow = encode_signing_input(
+            IMAGE_MEDIA_CODE,
+            b"context",
+            EmbeddingLayout(255, 13, 3, 3, 5, 0),
+            payload,
+        )
+        wide = encode_signing_input(
+            IMAGE_MEDIA_CODE,
+            b"context",
+            EmbeddingLayout(256, 13, 3, 3, 5, 0),
+            payload,
+        )
+        prefix_length = len(SIGNING_DOMAIN) + 4
+        self.assertEqual(narrow[prefix_length:prefix_length + 4], b"\xff\x0d\x03\x05")
+        self.assertEqual(wide[prefix_length:prefix_length + 8], b"\x01\x00\x00\x0d\x00\x03\x00\x05")
+        self.assertEqual(len(wide) - len(narrow), 4)
 
     def test_all_lsb_counts_and_start_locations_round_trip(self):
         source = carrier(30000)
