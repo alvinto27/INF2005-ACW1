@@ -34,6 +34,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Constants and domain separators | [stego/constants.py](../stego/constants.py) |
 | Validation and LSB primitives | [stego/bits.py](../stego/bits.py) |
 | Layout, masked hash, and signing input | [stego/layout.py](../stego/layout.py) |
+| Bootstrap envelope and authenticated data | [stego/bootstrap.py](../stego/bootstrap.py) |
 | Packet records, framing, and scanning | [stego/packet.py](../stego/packet.py) |
 | RSA-PSS keys, signatures, fingerprints, and PEM | [stego/crypto.py](../stego/crypto.py) |
 | Carrier-derived capacity and field widths | [stego/layout.py](../stego/layout.py) |

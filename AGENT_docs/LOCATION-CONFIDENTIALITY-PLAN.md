@@ -422,6 +422,18 @@ Step 9 runs before anything is written, and the mask clears bits instead of read
 | 11 | Recompute the masked hash over both regions and compare with the recovered value | `Tampered` |
 | 12 | — | `Authentic` |
 
+### `InvalidTag` is not a `ValueError`
+
+Measured during stage 3: every AES-GCM failure, whether from a changed key, nonce, additional-data value or ciphertext byte, raises `cryptography.exceptions.InvalidTag`. Its base class is `Exception`, not `ValueError`.
+
+`decode_carrier` currently catches `ValueError` to convert a failure into `Cannot Verify`. **Step 9 must catch `InvalidTag` explicitly.** If it does not, the one failure this verdict exists for escapes the verdict machinery entirely and surfaces as an uncaught exception instead of a verdict.
+
+### Where the key size is pinned
+
+`bootstrap_span` accepts any RSA key size, because the envelope formula is general. `seal_to_public_key` calls `validate_rsa_public_key`, which pins RSA-2048. The span function is therefore general while sealing is not.
+
+That asymmetry is deliberate. `validate_rsa_public_key` is the single place the key size is pinned, so supporting the RSA-3072 and RSA-4096 rows of section [9](#9-sizes) is a change in one function rather than a search across the package.
+
 ### Ordering invariant
 
 No code may act on `flags` before step 8. A signed field does not help if something interprets it earlier. The check has to sit where it cannot be skipped.

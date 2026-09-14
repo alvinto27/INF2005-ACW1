@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 from PIL import Image
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
@@ -183,6 +184,94 @@ class TestMaskedStego(unittest.TestCase):
         self.assertEqual(narrow[prefix_length:prefix_length + 4], b"\xff\x0d\x03\x05")
         self.assertEqual(wide[prefix_length:prefix_length + 8], b"\x01\x00\x00\x0d\x00\x03\x00\x05")
         self.assertEqual(len(wide) - len(narrow), 4)
+
+    def test_bootstrap_round_trip_and_aad(self) -> None:
+        fields = BootstrapFields(1, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        expected_aad = {
+            255: b"\x01\x00\x03\x0d\x25",
+            256: b"\x01\x00\x03\x00\x0d\x00\x25",
+        }
+        expected_lengths = {255: 49, 256: 51}
+        for total_units in (255, 256):
+            with self.subTest(total_units=total_units):
+                serialized = serialize_bootstrap(fields, total_units)
+                self.assertEqual(len(serialized), expected_lengths[total_units])
+                self.assertEqual(parse_bootstrap(serialized, total_units), fields)
+                self.assertEqual(encode_bootstrap_aad(fields, total_units), expected_aad[total_units])
+
+    def test_bootstrap_span_and_oaep_envelope_limit(self) -> None:
+        fields = BootstrapFields(1, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        serialized = serialize_bootstrap(fields, 255)
+        self.assertEqual(bootstrap_span(PUBLIC_KEY), 2048)  # 256-byte serialised envelope at 1 LSB.
+        oaep_plaintext_limit = PUBLIC_KEY.key_size // 8 - 2 * 32 - 2
+        self.assertEqual(oaep_plaintext_limit, 190)
+        self.assertLess(len(serialized), oaep_plaintext_limit)
+
+    def test_rsa_oaep_seal_open_round_trip(self) -> None:
+        plaintext = b"bootstrap envelope"
+        ciphertext = seal_to_public_key(plaintext, PUBLIC_KEY)
+        self.assertNotEqual(ciphertext, plaintext)
+        self.assertEqual(open_with_private_key(ciphertext, PRIVATE_KEY), plaintext)
+
+    def test_aead_seal_open_and_tampering(self) -> None:
+        key = bytes(range(32))
+        nonce = bytes(range(12))
+        aad = b"bootstrap aad"
+        plaintext = b"record plaintext"
+        ciphertext = aead_seal(key, nonce, aad, plaintext)
+        self.assertEqual(aead_open(key, nonce, aad, ciphertext), plaintext)
+        changed_aad = aad + b"x"
+        changed_nonce = bytes((nonce[0] ^ 1,)) + nonce[1:]
+        changed_key = bytes((key[0] ^ 1,)) + key[1:]
+        changed_ciphertext = ciphertext[:-1] + bytes((ciphertext[-1] ^ 1,))
+        for changed in (
+            (changed_key, nonce, aad, ciphertext),
+            (key, changed_nonce, aad, ciphertext),
+            (key, nonce, changed_aad, ciphertext),
+            (key, nonce, aad, changed_ciphertext),
+        ):
+            with self.subTest(change=changed):
+                with self.assertRaises(InvalidTag):
+                    aead_open(*changed)
+
+    def test_bootstrap_parse_rejects_malformed_inputs(self) -> None:
+        fields = BootstrapFields(1, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        serialized = serialize_bootstrap(fields, 255)
+        malformed = []
+        malformed.append(serialized[:-1])
+        malformed.append(serialized + b"x")
+        version_two = bytearray(serialized)
+        version_two[0] = 2
+        malformed.append(bytes(version_two))
+        flags_one = bytearray(serialized)
+        flags_one[1] = 1
+        malformed.append(bytes(flags_one))
+        lsb_zero = bytearray(serialized)
+        lsb_zero[2] = 0
+        malformed.append(bytes(lsb_zero))
+        lsb_nine = bytearray(serialized)
+        lsb_nine[2] = 9
+        malformed.append(bytes(lsb_nine))
+        wrong_key_size = struct.pack(">BBB", 1, 0, 3) + b"\x0d\x25" + b"x" * 31 + bytes(12)
+        malformed.append(wrong_key_size)
+        for plaintext in malformed:
+            with self.subTest(length=len(plaintext), prefix=plaintext[:3]):
+                with self.assertRaises(ValueError):
+                    parse_bootstrap(plaintext, 255)
+
+    def test_aead_sizes_match_bootstrap_constants(self) -> None:
+        key = bytes(SESSION_KEY_SIZE)
+        nonce = bytes(AEAD_NONCE_SIZE)
+        ciphertext = aead_seal(key, nonce, b"", b"plaintext")
+        self.assertEqual(aead_open(key, nonce, b"", ciphertext), b"plaintext")
+        for key_length in (SESSION_KEY_SIZE - 1, SESSION_KEY_SIZE + 1):
+            with self.subTest(key_length=key_length):
+                with self.assertRaises(ValueError):
+                    aead_seal(b"x" * key_length, nonce, b"", b"")
+        for nonce_length in (AEAD_NONCE_SIZE - 1, AEAD_NONCE_SIZE + 1):
+            with self.subTest(nonce_length=nonce_length):
+                with self.assertRaises(ValueError):
+                    aead_seal(key, b"x" * nonce_length, b"", b"")
 
     def test_all_lsb_counts_and_start_locations_round_trip(self):
         source = carrier(30000)
