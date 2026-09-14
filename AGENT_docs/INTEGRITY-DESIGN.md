@@ -214,6 +214,7 @@ The old single file was deleted only after the new package passed the whole test
 | Keep the 64-candidate scan bound and the ambiguity branch | Cheap; the ambiguity branch is the only thing preventing a silent choice between two valid packets | Removing them with the rest of the hardening |
 | One `VerificationError` carrying a verdict | Three exception classes existed only to route three strings | Three separate exception types |
 | Byte-only payload API | Confidentiality becomes a caller-side concern with no library change | Built-in encryption |
+| — | **Withdrawn by the proposed protocol version 2.** Location confidentiality cannot be reached from outside the library, because the structure that leaks the start location is the record `core.py` builds. See [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#the-byte-only-payload-api-is-withdrawn) | — |
 | Notebook helpers stay in the notebook | The library does not grow to serve a demonstration | Adding display code to `stego/` |
 | Fixed 32-byte PSS salt | Matches the SHA-256 digest and is predictable for other libraries; this reason was recorded after the rewrite, not when the value changed | `PSS.MAX_LENGTH` in `main`, which gives a 222-byte salt |
 

@@ -194,6 +194,24 @@ If the sender used a 3,072-bit receiver key and the receiver tries a 2,048-bit k
 
 This is worth stating because it is easy to break. Reading a fixed number of units instead of a key-derived number would turn a clear `Payload Missing` into a confusing `Tampered`.
 
+### 3.7 Where encryption lives
+
+Version 1 kept all cryptography out of the payload path. The payload was opaque bytes and the caller encrypted them if it wanted to. Version 2 cannot keep that arrangement, because decision 10 encrypts the whole `PayloadRecord` and the caller never sees that record: `core.py` builds it. **Encryption moves inside the library and becomes unconditional.** Section [11](#11-decisions) records this as a deliberate cost of location confidentiality rather than a drift.
+
+Three layers, each with one owner:
+
+| Layer | Module | Knows | Does not know |
+| --- | --- | --- | --- |
+| Primitives | `crypto.py` | RSA-OAEP and AES-GCM | the protocol, its fields, carriers |
+| Format | `bootstrap.py` | the bootstrap field layout, the span, the additional-data encoding | carriers, media |
+| Sequencing | `core.py` | the order of operations and the verdicts | how either cipher works |
+
+Body encryption needs no module of its own. The record bytes already come from `packet.py`, the session key and nonce already come from the bootstrap, and the additional authenticated data is a bootstrap concern. It is one primitive in `crypto.py` and one call in `core.py`.
+
+**Why the additional data forces a single owner.** The GCM tag covers the bootstrap layout fields, which makes the two envelopes one cryptographic unit. If two modules could encode those fields, the sender and the verifier would eventually disagree. `bootstrap.py` owns the encoding, and `crypto.py` takes `aad` as opaque bytes, so a reviewer checks the binding by reading one file.
+
+`keys.py` is renamed to `crypto.py` in the same change, because it gains symmetric operations and a module called `keys` holding AES-GCM describes two thirds of its contents. See decision 15.
+
 ## 4. Field binding audit
 
 Every bootstrap field is attacker-writable, because the receiver's public key is public. Each field must therefore be either signed directly or implied by something already authenticated.
@@ -500,6 +518,16 @@ The bootstrap region is public and unauthenticated, and its bits are masked out 
 | 12b | Bootstrap layout as GCM additional authenticated data | yes | no bytes on the wire, and a second binding on the fields that matter most |
 | 13 | Fixed-width layout fields in the signing input | no | it would reintroduce a ceiling the bootstrap had removed |
 | 14 | `MAX_WAV_FRAME_BYTES` | **deferred** | see [Open decisions](#12-open-decisions) |
+| 15 | Rename `keys.py` to `crypto.py` | yes | it gains AES-GCM, so the old name would describe two thirds of its contents |
+| 16 | The caller-side payload seal in the notebook | delete it | the library now encrypts everything around it, so keeping it is encryption inside encryption, and a reader cannot tell which layer is load-bearing |
+
+### The byte-only payload API is withdrawn
+
+[Masked Media Integrity Design](INTEGRITY-DESIGN.md#decisions-and-what-was-rejected) recorded a byte-only payload API, with confidentiality left to the caller and no library change. Version 2 withdraws it.
+
+The reason is not that the old decision was wrong. It was right for a protocol whose only goal was integrity. Location confidentiality is a goal version 1 never had, and it cannot be reached from outside the library, because the structure that leaks the location is the record that `core.py` builds. Section [1](#1-the-problem) holds the measurement: 0.002 seconds to recover a secret start unit from a plaintext record.
+
+The content-type header stays caller-side and is unaffected. Version 2 encrypts the record; it still does not describe the bytes inside `user_payload`.
 
 ### Reasoning that was rejected, kept on purpose
 
@@ -538,6 +566,9 @@ The decision therefore stays open rather than being settled twice. Documenting t
 | `stego/core.py` | discovery scan deleted. `verify_*` takes a receiver private key. Record encryption and decryption. Carrier-derived capacity check. `Cannot Decrypt` |
 | `stego/layout.py` capacity | `max_payload_length` loses the header term and gains the GCM tag term. Names must distinguish the serialised-record maximum from the user-payload maximum. See section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) |
 | `stego/media.py` | unchanged |
+| `stego/keys.py` | renamed to `stego/crypto.py`, and gains RSA-OAEP seal and open plus AES-GCM seal and open. Mechanical rename first, new functions later, so the two are reviewable apart |
+| `stego/bootstrap.py` | new. Bootstrap field layout, span derivation, additional-data encoding, build, seal, open, parse |
+| Notebook confidentiality cells | the caller-side payload seal is deleted, per decision 16. The content-header cells stay |
 | `test_stego.py` | marker and discovery tests deleted. Added: bootstrap round trip, reserved-region refusal, untrusted-field validation, bootstrap tampering, power-of-two width, capacity boundary at several LSB counts |
 | Notebook | every section. The "verify with only a public key" narrative changes. The tone fixture is lengthened |
 | Existing files | version-1 files become unreadable. No migration is planned, and the repository stores no old artefacts |
@@ -553,6 +584,7 @@ Each stage is one commit and one review.
 | 1 | Carrier-derived capacity, `MAX_PAYLOAD_LENGTH` removed, rejection message names all four numbers | capacity boundary tests at several LSB counts, proving the limit function is the exact inverse of the layout builder |
 | 2a | Derived width function, derived widths in both context formats, `flags` in the signing input | a power-of-two width test, an exact-length and golden-byte test for each format, version-1 round trips still pass |
 | 2b | Two-region masking with a disjointness refusal, corrected `preserved_bit_count`, both taking the span as a required argument | tests for both masked regions, a refusal when the regions overlap, an exact-integer preserved-bit test |
+| 2c | Rename `keys.py` to `crypto.py`. Mechanical only, no new functions | every test passes with no behaviour change, and nothing still imports the old name |
 | 3 | `bootstrap.py`: build, seal, open, parse | round-trip and malformed-input tests |
 | 4 | `core.py`: encode and decode flows, record encryption with additional authenticated data, reserved-region validation, `Cannot Decrypt` | verdict matrix including the bootstrap-tamper case |
 | 5 | Delete the marker, the scan, the candidate limit, and the header format. **Update `max_payload_length` in the same commit**, per section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) | nothing references them, and the capacity boundary tests still prove exactness against the version 2 layout |
@@ -561,5 +593,7 @@ Each stage is one commit and one review.
 Stage 1 is deliberately first and separable. It is useful on its own, because the carrier-derived payload limit fixes a real defect in version 1 independently of anything else in this plan.
 
 The derived width function moved from stage 1 to stage 2. Nothing calls it until the signing and hash formats change, and a function with no caller is a function with no test of its use.
+
+Stage 2c is a rename with no new code. It comes before stage 3 so that the diff introducing the envelope functions is not mixed with import churn across the package.
 
 Stage 2 is split. Stage 2a is byte-layout work that needs no new concept and leaves every function signature unchanged, so it can be reviewed as a format diff. Stage 2b introduces the bootstrap span as an argument, which is a new idea and deserves its own review. Bundling them would put four unrelated changes in one commit.

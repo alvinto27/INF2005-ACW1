@@ -4,6 +4,10 @@ The protocol carries `user_payload` as opaque bytes. It does not encrypt them, a
 
 Both layers are caller-side. The `stego` package does not change for either one. This follows the byte-only payload decision in [Masked Media Integrity Design](INTEGRITY-DESIGN.md).
 
+**The encryption layer does not survive protocol version 2.** That version encrypts the whole payload record inside the library, unconditionally, so the caller-side seal described below becomes encryption inside encryption. The seal and its notebook demonstration are removed when version 2 lands; see decision 16 in the [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#11-decisions).
+
+**The content-type header is unaffected.** Version 2 encrypts the record; it still does not describe the bytes inside `user_payload`, so that layer stays caller-side and stays necessary.
+
 The working demonstration is in the Confidentiality payload and Typed encrypted payloads sections of the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb).
 
 ## 1. Layering
