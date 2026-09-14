@@ -1,8 +1,8 @@
 # Payload Envelope Design
 
-The protocol carries `user_payload` as opaque bytes. It does not encrypt them, and it does not describe them. This record holds the design that the caller puts inside those bytes: a sealed envelope for confidentiality, and a content header that declares what the bytes are.
+Protocol version 2 encrypts the complete payload record inside the library, including `user_payload`. This record describes what the caller places inside those encrypted bytes: an optional sealed envelope for an additional confidentiality layer, and a content header that declares what the bytes are.
 
-Both layers are caller-side. The `stego` package does not change for either one. This follows the byte-only payload decision in [Masked Media Integrity Design](INTEGRITY-DESIGN.md).
+The content header remains caller-side. The caller-side seal is scheduled for deletion in stage 5 under decision 16, while the content-header layer survives. This record therefore documents the caller-added layers, not the library's record encryption. See [Masked Media Integrity Design](INTEGRITY-DESIGN.md).
 
 **The encryption layer does not survive protocol version 2.** That version encrypts the whole payload record inside the library, unconditionally, so the caller-side seal described below becomes encryption inside encryption. The seal and its notebook demonstration are removed when version 2 lands; see decision 16 in the [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#11-decisions).
 
@@ -19,9 +19,7 @@ user_payload
       └─ body           the file bytes
 ```
 
-The content header is inside the seal. Therefore an observer who finds the packet learns the payload length, but not the file type and not the filename.
-
-The header is never in `metadata`. `metadata` is readable to anyone who finds the packet.
+The content header is inside the optional caller-side seal. Protocol version 2 makes the receiver's private key the gate: an observer learns nothing about the packet from protocol structure, and the record length is encrypted in the bootstrap. The header is never in `metadata`; it describes the body bytes, while `metadata` remains a separate team-defined record field.
 
 ## 2. Sealed blob
 
@@ -37,23 +35,13 @@ The fixed prefix is 268 bytes.
 
 Hybrid encryption is required, not preferred. RSA-2048 OAEP with SHA-256 can encrypt at most 190 bytes directly, which is smaller than most payloads.
 
-### What stays readable, and why
+### Record visibility
 
-Only the content header and the body are encrypted. These payload fields stay in the clear:
-
-| Field | Reason |
-| --- | --- |
-| `media_id`, `timestamp`, `nonce` | brief [FR3](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements) requires them in the payload |
-| `media_hash` | brief [FR9](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements) compares it before decryption. If it were encrypted, verification would need a private key |
-| `metadata` | the team defines this field for its own use |
-
-The claim above about FR9 ordering is withdrawn: the brief requires a hash comparison, not a plaintext hash before decryption. See [Location Confidentiality Plan, section 3.5](LOCATION-CONFIDENTIALITY-PLAN.md#35-the-whole-payload-record-is-encrypted). These fields remain readable in the current intermediate format, not because the brief requires that exposure.
-
-Stage 4b verification needs the stego file, the sender's public key, and separately supplied start unit, LSB count, and complete serialised record length. The signature and the media hash are checked before caller-side decryption is attempted.
+Nothing in the payload record stays readable. Protocol version 2 encrypts `media_id`, `timestamp`, both nonces, `media_hash`, `user_payload`, and `metadata` with AES-256-GCM. This still satisfies FR9: the receiver decrypts the record, recomputes the masked media hash, and compares it with the recovered value. The [Location Confidentiality Plan, section 3.5](LOCATION-CONFIDENTIALITY-PLAN.md#35-the-whole-payload-record-is-encrypted) records why FR9 requires the comparison, not plaintext access before decryption.
 
 ### Key handling in the demonstration
 
-The receiver's private key is written to a password-protected PEM file, then loaded again in the receiver phase. The receiver verifies with a public key loaded from a PEM path, not with a live sender object. In stage 4b, the demonstration also retains the three geometry values as a clearly labelled stand-in for a separate transfer. The geometry is not recovered from the file, and this intermediate state does not claim location confidentiality.
+The receiver's private key is written to a password-protected PEM file, then loaded again in the receiver phase. The receiver verifies with a sender public key and the receiver private key. The geometry is recovered from the RSA-OAEP bootstrap; it is not transported as three plaintext values.
 
 ## 3. Content header
 
@@ -115,16 +103,16 @@ The function that writes the file derives its own safe filename. It does not tru
 
 ## 6. Capacity
 
-Stage 4b space for sealed plaintext (content header plus body), at start unit 0 with empty metadata. Deduct 256 signature bytes, 101 record bytes, the 268-byte seal prefix, and the 16-byte GCM tag: 641 bytes in total. There is no packet header. A later start or nonempty metadata reduces these values.
+Capacity for the optional caller-side sealed content, with empty metadata and packet start at the reserved 2,048-unit RSA-2048 bootstrap span. This is measured from the reserved span, not unit 0. Deduct 256 signature bytes, 101 record bytes, the library's 16-byte GCM tag, the 268-byte caller-side seal prefix, and the caller-side 16-byte seal tag: 657 bytes in total. A later start or nonempty metadata reduces these values.
 
-| `k` | Banana PNG, 1280x1568 | Demonstration WAV, 32,000 samples |
+| `k` | Banana PNG, 6,021,120 units | Demonstration WAV, 32,000 samples |
 | ---: | ---: | ---: |
-| 1 | 751,999 | 3,359 |
-| 2 | 1,504,639 | 7,359 |
-| 3 | 2,257,279 | 11,359 |
-| 8 | 6,020,479 | 31,359 |
+| 1 | 751,727 | 3,087 |
+| 2 | 1,504,111 | 6,831 |
+| 3 | 2,256,495 | 10,575 |
+| 8 | 6,018,415 | 29,295 |
 
-The old table understated the fixed overhead by one byte. Removing the 23-byte packet header and correcting that count gives a 22-byte increase over the old published values. Use the capacity helpers with the actual start and record overhead when accepting a user payload.
+Use the capacity helpers with the actual start and record overhead when accepting a user payload. The caller-side seal remains scheduled for deletion in stage 5; these figures document the current demonstration envelope, not a new protocol overhead.
 
 The image carrier holds a small image or a short audio clip at `k=1`. The demonstration audio carrier holds text only. That limit comes from the short 8-bit mono tone the notebook generates, not from the design. Capacity grows in proportion to the sample count, so a longer cover removes the difference.
 

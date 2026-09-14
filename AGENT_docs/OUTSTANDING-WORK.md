@@ -1,16 +1,19 @@
 # Outstanding Work
 
-This record lists assignment work that remains outside the library and notebook. The library is currently at the intermediate stage 4b format: verification requires separately supplied start unit, LSB count, and record length. Automatic recovery through the encrypted bootstrap remains stage 4c work; see the [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md).
+This record lists assignment work that remains outside the library and notebook. The library implements committed protocol version 2 stage 4c: verification recovers geometry through the encrypted bootstrap and is gated by the receiver private key; see the [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md).
 
 ## 1. NOT BUILT, OWNED ELSEWHERE
 
 ### GUI
 
-The GUI is mandatory under brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope). Another team member owns it; this repository does not build it. Criteria 2 and 3 total 19 marks (9 for image and 10 for audio) under brief [§11](../docs/INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks). Those criteria assess the working implementations and their demonstrations. This repository already provides the working encoders and decoders, payload insertion, extraction with supplied geometry, positive verification, and negative or tampered detection for both media. The GUI remains the demonstration surface owed by the team. It must:
+The GUI is mandatory under brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope). Another team member owns it; this repository does not build it. Criteria 2 and 3 total 19 marks (9 for image and 10 for audio) under brief [§11](../docs/INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks). Those criteria assess the working implementations and their demonstrations. This repository already provides the working encoders and decoders, payload insertion, extraction through the encrypted bootstrap, receiver-gated verification, and negative or tampered detection for both media. The GUI remains the demonstration surface owed by the team. It must:
 
 - play or execute the payload (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)). The content header that makes this possible is designed and demonstrated; see [Payload Envelope Design](PAYLOAD-ENVELOPE-DESIGN.md). The GUI must read the declared type to select a handler, and must confirm the declared type against the bytes before it renders anything;
 - display the cover and stego objects side by side before and after encoding and decoding (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope));
-- allow selection of 1 to 8 LSBs (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)).
+- allow selection of 1 to 8 LSBs for encoding (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope));
+- collect the start unit and LSB count for encoding, with the start-unit control bounded below by the receiver's reserved bootstrap span;
+- require the receiver private key as well as the sender public key for verification. Verification no longer collects or transports start unit, LSB count, or record length: the receiver recovers those values from the encrypted bootstrap;
+- not offer public-key-only third-party verification. This is deliberate because location confidentiality makes the receiver private key the verification gate; see the [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#2-the-trade-that-cannot-be-avoided).
 
 ### Individual technical explanation (criterion 6)
 
@@ -30,7 +33,7 @@ The demonstration must show a stego object sent from party A to party B, such as
 
 This team criterion is worth 2 marks (brief [§11](../docs/INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks)). The team still needs an honest reflection on technical limits, responsible use, originality, and how AI was used and checked. The following material is available for that reflection:
 
-- Technical limitations are already written in [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md#limitations): overwritten cover bits cannot be recovered or authenticated; the plaintext record still reveals its location through a predictable prefix; padding validation is only a format check; and authenticity is relative to the public key supplied for verification.
+- Technical limitations are already written in [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md#limitations): overwritten cover bits cannot be recovered or authenticated; the fixed bootstrap span remains observable even though its fields and the record are encrypted; padding validation is only a format check; and authenticity is relative to the sender public key supplied for verification.
 - One further limitation is not yet written down. PNG compression is lossless, so LSB embedding preserves the pixels exactly. However, embedded bits are random and compress poorly, so the stego file is slightly larger than the cover. For `samples/Banana.png`, the cover is 1,673,875 bytes; the stego files are 1,675,090 bytes at `k=1`, 1,675,035 bytes at `k=3`, and 1,674,414 bytes at `k=8`. An observer holding both files sees a size increase of 1,215, 1,160, or 539 bytes at identical dimensions. This is a real detectability signal and an honest limitation to report.
 - The cleanup and demonstration work in this repository was carried out by AI agents under human direction and human review. The team must write and sign its own reflection; this record does not write that reflection for it.
 
