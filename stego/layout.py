@@ -18,7 +18,6 @@ from .bits import (
 from .constants import (
     MEDIA_HASH_CONTEXT_PREFIX_FORMAT,
     MEDIA_HASH_DOMAIN,
-    PACKET_HEADER_SIZE,
     PROTOCOL_FLAGS,
     PROTOCOL_VERSION,
     RSA_SIGNATURE_SIZE,
@@ -57,7 +56,7 @@ def max_record_length(total_units: int, start_unit: int, bootstrap_span: int, ls
             f"lowest legal start_unit is {bootstrap_span}"
         )
     available_bytes = ((total_units - start_unit) * lsb_count) // 8
-    return max(0, available_bytes - PACKET_HEADER_SIZE - RSA_SIGNATURE_SIZE)
+    return max(0, available_bytes - RSA_SIGNATURE_SIZE)
 
 
 def max_user_payload_length(total_units: int, start_unit: int, bootstrap_span: int, lsb_count: int, record_overhead: int) -> int:
@@ -84,12 +83,11 @@ def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, pa
             f"start_unit {start_unit} is below the bootstrap region; "
             f"lowest legal start_unit is {bootstrap_span}"
         )
-    packet_bits = (PACKET_HEADER_SIZE + payload_length + RSA_SIGNATURE_SIZE) * 8
+    packet_bits = (payload_length + RSA_SIGNATURE_SIZE) * 8
     footprint = ceil_unit_count(packet_bits, lsb_count)
     pad_bits = footprint * lsb_count - packet_bits
     if start_unit + footprint > total_units:
         maximum = max_record_length(total_units, start_unit, bootstrap_span, lsb_count)
-        # Keep "does not fit": core.resolve_candidate maps it to Wrong Start Location.
         raise ValueError(
             "embedding footprint does not fit after start_unit: "
             f"total_units={total_units}, start_unit={start_unit}, "

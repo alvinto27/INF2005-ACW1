@@ -2,6 +2,8 @@
 
 ## What the system does
 
+**Current state: the intermediate stage 4b format.** See the [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md). The marker and packet header are removed. The receiver supplies the start unit, LSB count, and complete serialised record length separately. The record is not yet encrypted. This is not the completed version 2 protocol, and it does not read old version 1 files. `PROTOCOL_VERSION` stays at 1 until stage 4c.
+
 The system embeds a signed binary payload in the least-significant bits of a strict RGB PNG image or an uncompressed PCM WAV file. It hashes all carrier bits that the embedding operation preserves. Verification uses a caller-supplied RSA public key to authenticate the payload, media interpretation, and embedding layout.
 
 ## Integrity invariant
@@ -18,11 +20,17 @@ The exact media-hash calculation is:
 
 ```python
 masked = carrier_units.copy()
+masked[0:bootstrap_span] &= np.uint8(0xFE)
 mask = (~((1 << lsb_count) - 1)) & 0xFF
 masked[start_unit:start_unit + footprint] &= np.uint8(mask)
+width = carrier_field_width(total_units)
 preimage = (
     MEDIA_HASH_DOMAIN
-    + struct.pack(">BBQQQ", media_code, lsb_count, total_units, start_unit, footprint)
+    + struct.pack(">BB", media_code, lsb_count)
+    + total_units.to_bytes(width, "big")
+    + start_unit.to_bytes(width, "big")
+    + footprint.to_bytes(width, "big")
+    + bootstrap_span.to_bytes(width, "big")
     + masked.tobytes()
 )
 media_hash = hashlib.sha256(preimage).digest()
@@ -34,27 +42,23 @@ media_hash = hashlib.sha256(preimage).digest()
 b"INF2005-ACW1\x00MEDIA-HASH\x00"
 ```
 
+The shared hash and capacity functions take the reserved bootstrap span as a required argument. Core passes 0 in stage 4b because no bootstrap is embedded. A start unit below the span is rejected. `carrier_field_width(total_units)` is the single width rule: `max(1, (total_units.bit_length() + 7) // 8)`.
+
 ## Module dependencies
 
-Imports flow from `constants` to `bits`, then `layout`, `packet`, and `core`. The `crypto` and `media` modules depend only on `constants` and `bits`; `core` is the only module where protocol, crypto, and media meet.
+`bits` depends on `constants`. `layout` and `packet` each depend on `bits` and `constants`; `packet` no longer needs `layout` after scan removal. `bootstrap` uses `layout` for the field width. `crypto` and `media` depend only on `constants` and `bits`. `core` is the only module where protocol, crypto, and media meet. The bootstrap and encryption primitives have tests but no encode or decode callers yet.
 
 ## Packet format and signing input
 
-The packet header is exactly 23 bytes with this format:
+The packet has no header or marker:
 
-```python
-PACKET_HEADER_FORMAT = ">16sBBBI"
+```text
+serialised payload record || 256-byte RSA-PSS signature
 ```
 
-| Header field | Size | Value |
-| --- | ---: | --- |
-| `magic` | 16 bytes | `d9df721b281169d4335290e30fdb48b1` |
-| `version` | 1 byte | `1` |
-| `lsb_count` | 1 byte | `1` through `8` |
-| `media_code` | 1 byte | `1` for PNG or `2` for WAV |
-| `payload_length` | 4 bytes | Length of the complete payload in bytes |
+The caller supplies `start_unit`, `lsb_count`, and `payload_length` to `decode_carrier`, `verify_png`, or `verify_wav`. All three are required, with no defaults. `payload_length` counts the complete record below, not only `user_payload`. The encoder returns these values in `EmbeddingLayout`.
 
-The payload is exactly:
+The payload record is exactly:
 
 ```text
 media_id_length  u8
@@ -73,7 +77,7 @@ All integers use big-endian byte order. The packet continues with a 256-byte RSA
 The exact layout arithmetic is:
 
 ```python
-packet_bits = (23 + payload_length + 256) * 8
+packet_bits = (payload_length + 256) * 8
 footprint = (packet_bits + lsb_count - 1) // lsb_count
 pad_bits = footprint * lsb_count - packet_bits
 ```
@@ -82,22 +86,20 @@ The exact signing input is:
 
 ```python
 SIGNING_DOMAIN = b"INF2005-ACW1\x00SIGN\x00"
+width = carrier_field_width(total_units)
 signing_input = (
     SIGNING_DOMAIN
-    + struct.pack(
-        ">BBBQQQI",
-        PROTOCOL_VERSION,
-        media_code,
-        lsb_count,
-        total_units,
-        start_unit,
-        footprint,
-        payload_length,
-    )
+    + struct.pack(">BBBB", PROTOCOL_VERSION, PROTOCOL_FLAGS, media_code, lsb_count)
+    + total_units.to_bytes(width, "big")
+    + start_unit.to_bytes(width, "big")
+    + footprint.to_bytes(width, "big")
+    + payload_length.to_bytes(width, "big")
     + media_context
     + payload_bytes
 )
 ```
+
+`PROTOCOL_FLAGS` is 0. The version in this input comes from the protocol constant, not from received data. Stage 4b has no GCM tag cost. `max_record_length` subtracts only the signature; `max_user_payload_length` also subtracts the record overhead supplied by the caller. The generated record costs 101 bytes plus metadata before any user bytes.
 
 The PNG media context is exactly `struct.pack(">II", width, height)`. The WAV media context is exactly `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 
@@ -116,17 +118,21 @@ This keeps the change to a sample within `(1 << k) - 1`, which is what "replace 
 
 Capacity follows from the unit count, so multi-byte PCM holds `1 / sample_width` of what a byte count would suggest. That is the honest figure. The larger number came from counting bytes the encoder must not touch.
 
-At `sample_width == 1` the stride is 1, so 8-bit behaviour is unchanged. Files produced before this rule still verify, and files produced after it still verify under the earlier code.
+At `sample_width == 1` the stride is 1, so the sample-stride correction did not change 8-bit behaviour or compatibility at that time. The later stage 4b packet-format change is separate and does break compatibility with version 1 files.
 
 ## Payload discovery
 
-The decoder scans the carrier for the fixed 16-byte magic under each `k` value from 1 through 8. Each match supplies a candidate start unit and `k`. The decoder then reads the fixed header, checks its declarations, derives the footprint, extracts the packet, and applies the verification stages without moving or resizing the candidate.
+Version 1 scanned for a fixed 16-byte marker at each LSB count from 1 to 8. The marker supplied a candidate start unit; its header supplied the record length. This public discovery path is deleted in stage 4b.
 
-`start_unit` is never declared in the packet. It is discovered from the magic position and then included in the signing input. There is no start field for an attacker to falsify, and relocating a packet causes RSA-PSS verification to fail.
+The current decoder checks exactly the geometry supplied by the caller. It validates the numeric fields, builds a carrier-bounded layout before any bit read, checks alignment padding, parses the record, checks the signature, and then checks the masked media hash. It does not search for another packet after a failure. Relocating a packet still causes RSA-PSS verification to fail because the supplied start unit is signed.
+
+The removed scan had a candidate limit and refused multiple valid candidates. There is no candidate list now, so there is no automatic choice between packets and no ambiguity branch. This does not prove that the carrier holds only one packet.
+
+**Removal of the marker does not provide location confidentiality.** The plaintext record still has a recognisable media-identifier prefix. Stage 4c will encrypt the whole record and move all three geometry values into the receiver bootstrap. See the measured attack in [Location Confidentiality Plan, section 1](LOCATION-CONFIDENTIALITY-PLAN.md#1-the-problem).
 
 ## Signature scope
 
-The RSA-PSS signature authenticates the protocol version, media code, selected LSB count, total carrier-unit count, discovered start unit, derived footprint, payload length, fixed media context, and every payload byte. The payload bytes include the stored media hash, user payload, metadata, media identifier, timestamp, and nonce. RSA-PSS verification validates the received signature bytes against this signing input.
+The RSA-PSS signature authenticates the protocol version, flags, media code, selected LSB count, total carrier-unit count, supplied start unit, derived footprint, payload length, fixed media context, and every payload byte. The payload bytes include the stored media hash, user payload, metadata, media identifier, timestamp, and nonce. RSA-PSS verification validates the received signature bytes against this signing input.
 
 The signature does not authenticate the original values of overwritten cover LSBs. It does not cover file-container metadata outside the decoded carrier units. It does not identify a person, prove freshness, or prevent removal of the embedded packet.
 
@@ -137,11 +143,11 @@ The signature does not authenticate the original values of overwritten cover LSB
 | `Authentic` | The packet parses, its padding is valid, its RSA-PSS signature verifies with the supplied key, and the recomputed masked media hash equals the signed stored hash. |
 | `Tampered` | The signature verifies, but the recomputed masked media hash differs from the signed stored hash. |
 | `Signature Invalid` | RSA-PSS verification fails for the extracted signature and reconstructed signing input. |
-| `Payload Missing` | No start-magic candidate is found for any supported LSB count. |
-| `Wrong Start Location` | Magic is found, but the declared packet length produces an out-of-range or inconsistent footprint at that discovered start. |
-| `Cannot Verify` | The adapter rejects the file, or packet parsing, bounds, header consistency, or padding validation fails. |
+| `Payload Missing` | Not emitted in stage 4b. Without a recognition step, the decoder cannot distinguish absence from a damaged packet or wrong supplied geometry. |
+| `Wrong Start Location` | Numerically valid supplied geometry produces a footprint outside the carrier. |
+| `Cannot Verify` | The adapter rejects the file, a numeric geometry value is invalid, or record parsing or padding validation fails. |
 
-When candidates fail at different stages, the decoder prefers the failure that reached the deepest integrity check: `Tampered`, then `Signature Invalid`, then `Wrong Start Location`, then `Cannot Verify`.
+Version 1 preferred the deepest failure among discovered candidates. Stage 4b checks one supplied layout and reports its failure directly. A caller can supply a wrong location that remains in range; it then receives the parsing, padding, or signature failure reached at that location, not proof that the file has no payload.
 
 ## Limitations
 
@@ -149,7 +155,7 @@ When candidates fail at different stages, the decoder prefers the failure that r
 - The alignment padding zero-check is a format check, not a cryptographic one.
 - RSA-PSS is randomised, so verification proves the signed input is intact, not that the signature bytes are byte-for-byte original.
 - As the footprint grows, the preserved-bit count falls. At `k = 8` with a full-carrier footprint, the media hash witnesses nothing, and the reported `preserved_bits` says so.
-- The magic is public, so anyone can locate and strip the packet. This is concealment, not security.
+- The record remains plaintext in stage 4b. Its predictable prefix can reveal the location even without a public marker. Location confidentiality is not yet provided.
 - Container metadata outside the decoded carrier is not covered.
 - A timestamp and nonce alone do not prevent replay.
 
@@ -161,7 +167,8 @@ This claim says nothing about a real-world identity. The caller must obtain the 
 
 ## What this project does not implement
 
-- Encryption
+- Encryption inside the encode/decode path; standalone encryption primitives are preparation for stage 4c
+- Automatic packet discovery in the stage 4b format
 - Key management or a trust store
 - Public-key infrastructure (PKI)
 - Networking
@@ -171,7 +178,7 @@ This claim says nothing about a real-world identity. The caller must obtain the 
 
 # Design history
 
-Everything above says what the system does. What follows says how it ended up that way: what was tried, what was thrown out, and what still bothers us. It is here because this repository was rebuilt from something much bigger, and none of those reasons survive in the code itself.
+Everything above says what the current intermediate format does. What follows records the version 1 design history: what was tried, what was thrown out, and what still bothers us. Historical line counts and measurements below describe that earlier implementation. It is here because this repository was rebuilt from something much bigger, and none of those reasons survive in the code itself.
 
 ## Where this started
 
@@ -208,10 +215,10 @@ The old single file was deleted only after the new package passed the whole test
 | Decision | Why | What was rejected |
 | --- | --- | --- |
 | Masked-bit hashing | One rule, no boundary cases, identical code on both sides | Three-region hashing |
-| `start_unit` is discovered, never declared | No field for an attacker to falsify; relocation breaks the signature | A start-location header field |
+| Version 1: `start_unit` is discovered, never declared | No field for an attacker to falsify; relocation breaks the signature. Stage 4b replaces discovery with explicit geometry; the signature still binds it | A start-location header field |
 | Signature covers geometry as well as payload | A relocated packet fails even with identical payload bytes | Signing the payload alone |
 | Per-bit Python loops in `bits.py` | Measured: a 1 MB payload encodes in 2.9 s. These are the most readable functions in the package | Vectorised bit packing, faster and unreadable |
-| Keep the 64-candidate scan bound and the ambiguity branch | Cheap; the ambiguity branch is the only thing preventing a silent choice between two valid packets | Removing them with the rest of the hardening |
+| Version 1: keep the 64-candidate scan bound and the ambiguity branch | Cheap; the ambiguity branch prevented a silent choice between two valid packets. Both are removed with the scan in stage 4b, which checks only the supplied geometry | Removing them while retaining discovery |
 | One `VerificationError` carrying a verdict | Three exception classes existed only to route three strings | Three separate exception types |
 | Byte-only payload API | Confidentiality becomes a caller-side concern with no library change | Built-in encryption |
 | — | **Withdrawn by the proposed protocol version 2.** Location confidentiality cannot be reached from outside the library, because the structure that leaks the start location is the record `core.py` builds. See [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#the-byte-only-payload-api-is-withdrawn) | — |
@@ -287,7 +294,7 @@ Someone holding both files sees about a kilobyte of growth at the same image siz
 
 **`encode_png` does not give back the media context.** The notebook has to rebuild it to show the signed bytes. That is a small copy of library logic sitting somewhere it can go stale. It was left alone, because the alternative was changing what the library returns just to make a notebook cell nicer, and that is the worse trade. If the encode functions ever return something richer, this is the reason to do it.
 
-**The order of failure verdicts is a judgement call.** When several candidates fail in different ways, the decoder reports the one that got furthest. That is meant to be the most useful answer for a person reading it. It carries no security meaning. Do not build anything on top of it.
+**The version 1 order of failure verdicts was a judgement call.** When several candidates failed in different ways, that decoder reported the one that got furthest. Stage 4b removes this selection with discovery. The old choice was meant to give the most useful answer to a person reading it. It carries no security meaning. Do not build anything on top of it.
 
 **The bit loops will not scale.** They are fast enough here and easier to read than anything else we tried: a 1 MB payload takes 2.9 seconds. A much larger payload would drag. That choice came from measuring, not guessing, and the measurement is written down so the next person can change their mind with evidence instead of instinct.
 

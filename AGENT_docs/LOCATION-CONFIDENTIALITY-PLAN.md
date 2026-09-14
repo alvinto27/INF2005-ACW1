@@ -1,6 +1,6 @@
 # Location Confidentiality Plan
 
-**Status: proposed. Nothing in this plan is built.** It describes protocol version 2. The repository implements version 1, which is described in [Masked Media Integrity Design](INTEGRITY-DESIGN.md).
+**Status: design for protocol version 2; stages through 4b are implemented.** The repository currently uses an intermediate headerless format with caller-supplied start unit, LSB count, and complete record length. Bootstrap integration and record encryption remain stage 4c work. Location confidentiality is not yet provided. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Masked Media Integrity Design](INTEGRITY-DESIGN.md) for current behaviour.
 
 The goal is to protect the payload start location, length, and LSB depth from everyone except the intended receiver, while the user still chooses all three by hand.
 
@@ -182,7 +182,7 @@ preserved = 8 * (total_units - footprint - BOOTSTRAP_SPAN)
 
 Measured on the 1280x1568 sample carrier with a 1 KiB payload, the uncorrected formula overstates untouched bits by 2,048 at every LSB count. That is 0.004% of the carrier, so no test that compares ratios to two decimal places will catch it. It needs a test that asserts the exact integer.
 
-The notebook currently reports this figure as `preserved_ratio` formatted to two decimal places, which prints `99.99%` both with and without the correction. The reporting cell is therefore unable to show the difference it exists to demonstrate. Stage 6 must print the exact integer beside the ratio.
+The notebook currently reports this figure as `preserved_ratio` formatted to two decimal places, which prints `99.99%` both with and without the correction. The reporting cell is therefore unable to show the difference it exists to demonstrate. Stage 5 must print the exact integer beside the ratio.
 
 ### The two mask regions must be proven disjoint
 
@@ -285,11 +285,12 @@ Three user choices in, one honest answer out. The rejection message must name th
 
 Stage 1 shipped `max_payload_length(total_units, start_unit, lsb_count)` as the exact inverse of the version 1 layout. It subtracts `PACKET_HEADER_SIZE + RSA_SIGNATURE_SIZE`, which is correct only while the packet header exists.
 
-Version 2 deletes the header in stage 5. **The helper must change in the same commit.** Two different errors appear if it does not, and they point in opposite directions.
+Stage 4b deletes the header. **The helper changes in the same commit.** At this intermediate stage the packet is plaintext record plus signature, so capacity increases by 23 bytes. Stage 4c then adds the 16-byte GCM tag, leaving the final 7-byte gain over version 1. The two final-format errors below explain why these changes must follow the actual wire format, not only its planned end state.
 
 | Overhead | Bytes |
 | --- | ---: |
 | Version 1 packet: header 23 + signature 256 | 279 |
+| Stage 4b packet: signature 256 only | 256 |
 | Version 2 packet: GCM tag 16 + signature 256 | 272 |
 | Version 2 user payload: also record overhead 101 | 373 |
 
@@ -607,7 +608,7 @@ Each stage is one commit and one review. A stage is not finished until it has an
 | 2c | Rename `keys.py` to `crypto.py`. Mechanical only, no new functions | every test passes with no behaviour change, and nothing still imports the old name |
 | 3 | `bootstrap.py`: build, seal, open, parse | round-trip and malformed-input tests |
 | 4a | Name the two capacity quantities and thread the span through the capacity path. No cryptography, no API change | boundary tests for both quantities, and a refusal naming the reserved region |
-| 4b | Delete the marker, the scan, the candidate limit and the header format. Decode takes the start unit and LSB count as explicit arguments. **Update the capacity helper in the same commit**, per section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) | round trips still pass with the caller supplying the geometry, nothing references the deleted names, and the capacity boundary tests prove exactness against the new layout |
+| 4b | Delete the marker, the scan, the candidate limit and the header format. Decode and file-verification wrappers take start unit, LSB count, and complete serialised record length as required arguments. **Update the capacity helper in the same commit**, per section [5.2](#52-the-capacity-helper-must-migrate-with-the-header) | round trips pass with all three geometry values supplied; executable sources contain no deleted names; capacity tests prove exactness for the headerless, unencrypted layout |
 | 4c | The bootstrap carries the geometry, the record is encrypted, `verify_*` takes the receiver private key, `Cannot Decrypt` arrives, `PROTOCOL_VERSION` becomes 2 | the full verdict matrix including the bootstrap-tamper case |
 | 5 | Notebook: new narrative, lengthened tone, new verdict matrix, **exact preserved-bit integer alongside the ratio**, caller-side seal deleted per decision 16 | executes end to end with no error outputs, and the reported fidelity figure can show the span correction |
 
@@ -621,7 +622,11 @@ The step that breaks the deadlock is 4b. Geometry moves in three hops: it is in 
 
 That also absorbs the old stage 5. Keeping the header through the encryption switch would mean building a transitional carrier holding two locators, one public and one secret, and then deleting one of them immediately.
 
-The middle state declares the geometry out of band, which looks like a step back from the version 1 rule that the start unit is discovered and never declared. It is not: out of band means the geometry is not in the file at all, which is stronger than either version. It is merely inconvenient, and removing that inconvenience is precisely what the bootstrap is for.
+The middle state supplies geometry separately from the carrier. That needs three values, not two: removing the header also removes the record length needed to locate the signature and bound extraction. Stage 4b therefore adds required `start_unit`, `lsb_count`, and `payload_length` arguments to `decode_carrier`, `verify_png`, and `verify_wav`. A temporary record-prefix reader would add code that stage 4c immediately deletes, so it is not used.
+
+This intermediate state does not provide location confidentiality. Removing explicit locator fields does not remove the predictable plaintext record prefix measured in section [1](#1-the-problem). The earlier claim that out-of-band geometry was stronger than either version ignored that prefix. Stage 4c must both encrypt the record and carry the geometry in the receiver bootstrap.
+
+Stage 4b also removes candidate-limit and ambiguity checks because there is no scan or candidate selection left. It checks only the supplied location; it does not establish that the carrier contains only one packet. Without a recognition step, it no longer emits `Payload Missing`.
 
 Stage 2c is a rename with no new code. It comes before stage 3 so that the diff introducing the envelope functions is not mixed with import churn across the package.
 

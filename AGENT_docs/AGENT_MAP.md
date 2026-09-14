@@ -21,7 +21,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
 | Current masked-media integrity design and design history | [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md) |
 | Caller-side payload encryption and content-type design | [PAYLOAD-ENVELOPE-DESIGN.md](PAYLOAD-ENVELOPE-DESIGN.md) |
-| Proposed protocol version 2 for start-location confidentiality | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
+| Protocol version 2 design and remaining implementation stages | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
 | Handoff brief for the version 2 build | [ORCHESTRATION-HANDOFF.md](ORCHESTRATION-HANDOFF.md) |
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
 | Shelved chunked-carrier architecture note | [STREAMING-CARRIER-NOTE.md](STREAMING-CARRIER-NOTE.md) |
@@ -36,11 +36,11 @@ Use this map before editing an unfamiliar part of the repository.
 | Validation and LSB primitives | [stego/bits.py](../stego/bits.py) |
 | Layout, masked hash, and signing input | [stego/layout.py](../stego/layout.py) |
 | Bootstrap envelope and authenticated data | [stego/bootstrap.py](../stego/bootstrap.py) |
-| Packet records, framing, and scanning | [stego/packet.py](../stego/packet.py) |
+| Payload records and serialisation | [stego/packet.py](../stego/packet.py) |
 | RSA-PSS keys, signatures, fingerprints, and PEM | [stego/crypto.py](../stego/crypto.py) |
 | Carrier-derived capacity and field widths | [stego/layout.py](../stego/layout.py) |
 | PNG and WAV adapters | [stego/media.py](../stego/media.py) |
-| End-to-end encode and verification | [stego/core.py](../stego/core.py) |
+| End-to-end encode and verification with caller-supplied geometry (stage 4b) | [stego/core.py](../stego/core.py) |
 | FR1–FR12 demonstration notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol tests | [test_stego.py](../test_stego.py) |
 | Runtime and test dependencies | [requirements.txt](../requirements.txt) |

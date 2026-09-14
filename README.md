@@ -12,6 +12,32 @@ embedding layout. RSA-PSS verification validates the signature bytes.
 
 Requires Python 3.10+.
 
+## Current development stage
+
+This branch implements stage 4b of the [version 2 plan](AGENT_docs/LOCATION-CONFIDENTIALITY-PLAN.md).
+It is an intermediate format, not the completed version 2 protocol. The public
+marker and packet header are removed. Existing version 1 files are not supported.
+The version constant stays at 1 until the encryption switch in stage 4c.
+
+Verification now requires three values supplied separately from the carrier:
+`start_unit`, `lsb_count`, and `payload_length`. The last value is the complete
+serialised record length, not the user message length. For example:
+
+```python
+layout, payload = encode_png(
+    "cover.png", "stego.png", sender_private_key, 101, 3, b"message", b"{}"
+)
+result = verify_png(
+    "stego.png", sender_public_key,
+    layout.start_unit, layout.lsb_count, layout.payload_length,
+)
+```
+
+`verify_wav` and `decode_carrier` require the same three geometry arguments.
+The receiver needs no original cover file. The record is still plaintext, so
+**start-location confidentiality is not yet provided**. Stage 4c will encrypt the
+record and carry the geometry in the receiver's encrypted bootstrap.
+
 ## Documentation
 
 - [Agent instructions](AGENTS.md)

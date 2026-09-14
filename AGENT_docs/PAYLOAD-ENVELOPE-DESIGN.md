@@ -47,11 +47,13 @@ Only the content header and the body are encrypted. These payload fields stay in
 | `media_hash` | brief [FR9](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements) compares it before decryption. If it were encrypted, verification would need a private key |
 | `metadata` | the team defines this field for its own use |
 
-Verification therefore needs only the stego file and the sender's public key. The signature and the media hash are checked before any decryption is attempted.
+The claim above about FR9 ordering is withdrawn: the brief requires a hash comparison, not a plaintext hash before decryption. See [Location Confidentiality Plan, section 3.5](LOCATION-CONFIDENTIALITY-PLAN.md#35-the-whole-payload-record-is-encrypted). These fields remain readable in the current intermediate format, not because the brief requires that exposure.
+
+Stage 4b verification needs the stego file, the sender's public key, and separately supplied start unit, LSB count, and complete serialised record length. The signature and the media hash are checked before caller-side decryption is attempted.
 
 ### Key handling in the demonstration
 
-The receiver's private key is written to a password-protected PEM file, then loaded again in the receiver phase. The receiver verifies with a public key loaded from a PEM path, not with a live sender object. No secret value travels between the two parties.
+The receiver's private key is written to a password-protected PEM file, then loaded again in the receiver phase. The receiver verifies with a public key loaded from a PEM path, not with a live sender object. In stage 4b, the demonstration also retains the three geometry values as a clearly labelled stand-in for a separate transfer. The geometry is not recovered from the file, and this intermediate state does not claim location confidentiality.
 
 ## 3. Content header
 
@@ -113,14 +115,16 @@ The function that writes the file derives its own safe filename. It does not tru
 
 ## 6. Capacity
 
-Usable payload space, after the packet header, the signature, the payload record fields, and the 268-byte seal prefix:
+Stage 4b space for sealed plaintext (content header plus body), at start unit 0 with empty metadata. Deduct 256 signature bytes, 101 record bytes, the 268-byte seal prefix, and the 16-byte GCM tag: 641 bytes in total. There is no packet header. A later start or nonempty metadata reduces these values.
 
 | `k` | Banana PNG, 1280x1568 | Demonstration WAV, 32,000 samples |
 | ---: | ---: | ---: |
-| 1 | 751,977 | 3,337 |
-| 2 | 1,504,617 | 7,337 |
-| 3 | 2,257,257 | 11,337 |
-| 8 | 6,020,457 | 31,337 |
+| 1 | 751,999 | 3,359 |
+| 2 | 1,504,639 | 7,359 |
+| 3 | 2,257,279 | 11,359 |
+| 8 | 6,020,479 | 31,359 |
+
+The old table understated the fixed overhead by one byte. Removing the 23-byte packet header and correcting that count gives a 22-byte increase over the old published values. Use the capacity helpers with the actual start and record overhead when accepting a user payload.
 
 The image carrier holds a small image or a short audio clip at `k=1`. The demonstration audio carrier holds text only. That limit comes from the short 8-bit mono tone the notebook generates, not from the design. Capacity grows in proportion to the sample count, so a longer cover removes the difference.
 

@@ -1,5 +1,7 @@
 # Orchestration Handoff
 
+**Historical snapshot: written before stage 4b.** That stage is now complete; stage 4c is next. Use the [Protocol Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for current results and the three required out-of-band geometry arguments. The baseline and next-action sections below are retained as the original handoff, not current checkout claims.
+
 Written for the next orchestrator taking over the protocol version 2 build. It orients you and points at the records; it does not repeat them. Every number and every decision already lives in a record named below.
 
 ## 1. What you are inheriting
