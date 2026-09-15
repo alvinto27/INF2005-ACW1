@@ -15,11 +15,17 @@ def _validate_non_negative_integer(value: int, name: str) -> int:
     return value
 
 
-def encode_protocol_field(value: int, name: str) -> bytes:
-    """Encode a non-negative protocol integer as a big-endian unsigned u64."""
+def _validate_protocol_field_value(value: int, name: str) -> int:
+    """Check that value fits in a non-negative unsigned protocol field."""
     value = _validate_non_negative_integer(value, name)
     if value >= 1 << (8 * PROTOCOL_FIELD_WIDTH):
         raise ValueError(f"{name} must fit in {PROTOCOL_FIELD_WIDTH} bytes")
+    return value
+
+
+def encode_protocol_field(value: int, name: str) -> bytes:
+    """Encode a non-negative protocol integer as a big-endian unsigned u64."""
+    value = _validate_protocol_field_value(value, name)
     return value.to_bytes(PROTOCOL_FIELD_WIDTH, "big")
 
 

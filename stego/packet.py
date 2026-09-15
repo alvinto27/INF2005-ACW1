@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .bits import (
     _require_bytes,
     _validate_non_negative_integer,
+    _validate_protocol_field_value,
     encode_protocol_field,
     validate_payload_bytes,
 )
@@ -19,8 +20,10 @@ from .constants import (
 def serialized_record_length(media_id_length: int, user_payload_length: int, metadata_length: int) -> int:
     """Calculate the fixed-width serialised record length from its field lengths."""
     media_id_length = _validate_non_negative_integer(media_id_length, "media_id_length")
-    user_payload_length = _validate_non_negative_integer(user_payload_length, "user_payload_length")
-    metadata_length = _validate_non_negative_integer(metadata_length, "metadata_length")
+    if not 1 <= media_id_length <= MAX_MEDIA_ID_BYTES:
+        raise ValueError("media_id UTF-8 length must be between 1 and 255 bytes")
+    user_payload_length = _validate_protocol_field_value(user_payload_length, "user_payload_length")
+    metadata_length = _validate_protocol_field_value(metadata_length, "metadata_length")
     return (
         1
         + media_id_length
@@ -51,7 +54,7 @@ class PayloadRecord:
         media_id_bytes = self.media_id.encode("utf-8")
         if not media_id_bytes or len(media_id_bytes) > MAX_MEDIA_ID_BYTES:
             raise ValueError("media_id UTF-8 length must be between 1 and 255 bytes")
-        timestamp = _validate_non_negative_integer(self.timestamp, "timestamp")
+        timestamp = _validate_protocol_field_value(self.timestamp, "timestamp")
         nonce = _require_bytes(self.nonce, "nonce")
         media_hash = _require_bytes(self.media_hash, "media_hash")
         user_payload = _require_bytes(self.user_payload, "user_payload")

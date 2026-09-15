@@ -149,6 +149,24 @@ class TestMaskedStego(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "truncated in metadata"):
             parse_payload(declared_metadata)
 
+    def test_serialized_record_length_field_boundaries(self) -> None:
+        with self.assertRaisesRegex(ValueError, "media_id UTF-8 length must be between 1 and 255 bytes"):
+            serialized_record_length(256, 0, 0)
+        self.assertEqual(
+            serialized_record_length(255, 0, 0),
+            73 + 255,
+        )
+        for user_payload_length, metadata_length in ((2**64, 0), (0, 2**64)):
+            with self.subTest(user_payload_length=user_payload_length, metadata_length=metadata_length):
+                with self.assertRaisesRegex(ValueError, "must fit in 8 bytes"):
+                    serialized_record_length(MEDIA_ID_SIZE, user_payload_length, metadata_length)
+
+    def test_payload_record_timestamp_u64_boundaries(self) -> None:
+        with self.assertRaisesRegex(ValueError, "timestamp must fit in 8 bytes"):
+            PayloadRecord("IMG-test", 2**64, bytes(16), bytes(32), b"", b"")
+        record = PayloadRecord("IMG-test", 2**64 - 1, bytes(16), bytes(32), b"", b"")
+        self.assertEqual(parse_payload(serialize_payload(record)), record)
+
     def test_power_of_two_carrier_round_trip(self) -> None:
         source = carrier(65536)
         context = struct.pack(">II", source.size, 1)
