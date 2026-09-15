@@ -11,7 +11,7 @@ of the larger design; this record is the current format and outcome.
 The protocol keeps receiver-gated encryption, the RSA-OAEP bootstrap, AES-256-GCM,
 RSA-PSS signatures, masked-media integrity, and PNG/WAV adapters. It removes
 carrier-dependent integer widths, the unused `flags` field, and the separate
-caller-side typed-content header. The test suite has **54 passing tests**.
+caller-side typed-content header. The test suite has **55 passing tests**.
 
 ## Phases
 
@@ -153,6 +153,38 @@ Notebook outputs were refreshed through the registered kernel; they were not
 edited by hand. `nbconvert==7.17.1` is now listed for reproducible notebook
 execution.
 
+## Post-review fixes
+
+Five small post-review commits corrected documentation, diagnostics, tests, and
+notebook robustness without changing the protocol design:
+
+- **`d667444` — alignment and field wording.** The preserved-bit claim now says
+  `k * footprint` is the packet bit count plus up to `k - 1` pad bits, not exactly
+  the packet bit count. The earlier wording generalised a measured coincidence:
+  `k=1` and `k=8` divide the byte-aligned 448-byte demonstration packet cleanly,
+  so their preserved-bit counts match; `k=3`, `k=5`, and `k=6` carry 1, 1, and 4
+  pad bits. The u64 wording was narrowed to general lengths, positions, counters,
+  and timestamps, with enumeration and prefix fields remaining u8. Stale figures
+  in notebook markdown cell 42 were corrected to 3384, 3384, and 423.
+- **`5b854df` — named packet sizes.** `serialized_record_length` now uses
+  `NONCE_SIZE` and `SHA256_DIGEST_SIZE` instead of literals.
+- **`29a3f58` — corrected a false capacity diagnostic.** Oversized metadata was
+  reported as `carrier is too small for the protocol`. That phrase is now reserved
+  for the structural guard in `core.encode_carrier`, which uses empty metadata;
+  `max_user_payload_length` reports `record overhead exceeds record capacity` and
+  includes both compared values. The refusal still precedes embedding, so no
+  unsafe operation occurred; only the message blamed the wrong thing.
+- **`7c1152e` — named regression coverage.** The oversized-metadata test now names
+  the property it defends and derives both capacity values from the helpers. The
+  suite is now 55 tests.
+- **`a86de7b` — verified before interpretation.** The notebook previously read
+  `result.payload` before checking `result.valid`, so failed verification could
+  raise `AttributeError` instead of rejecting deliberately. It now exits early
+  with the label, verdict, and detail. The GCM claim was also narrowed: GCM
+  authenticates ciphertext and additional data under the supplied key and nonce;
+  a substituted key or nonce gives `Cannot Decrypt`, and the protocol makes no
+  key-commitment claim.
+
 ## Audit of related records
 
 ### Work Not Built
@@ -172,7 +204,7 @@ was no next stage were true for that snapshot. They are not current baseline
 claims, but changing them would damage the handoff's historical meaning.
 
 If a fresh handoff is needed, replace those values with the reduced-format
-status, **54 passing tests**, the current branch tip, and the current notebook
+status, **55 passing tests**, the current branch tip, and the current notebook
 dependency state. No edit to the historical handoff is required for this record.
 
 ## Lessons
@@ -186,12 +218,15 @@ dependency state. No edit to the historical handoff is required for this record.
   wire format.
 - A refreshed notebook output does not refresh nearby prose automatically.
   Capacity figures, headings, links, and status text need a separate audit.
+- A measured coincidence is not a rule. Equal preserved-bit counts at `k=1` and
+  `k=8` were true for the demonstration, but the notebook prose had stated the
+  alignment nuance correctly all along.
 
 ## Verification
 
 ```text
 cyber_venv/bin/python -m unittest -q
-54 tests passed
+55 tests passed
 
 python3 scripts/check-docs.py
 0 errors across 14 Markdown files and 159 links
