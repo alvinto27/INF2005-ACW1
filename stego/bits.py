@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from .constants import SUPPORTED_LSB_COUNTS, SUPPORTED_MEDIA_CODES
+from .constants import PROTOCOL_FIELD_WIDTH, SUPPORTED_LSB_COUNTS, SUPPORTED_MEDIA_CODES
 
 
 def _validate_non_negative_integer(value: int, name: str) -> int:
@@ -13,6 +13,14 @@ def _validate_non_negative_integer(value: int, name: str) -> int:
     if value < 0:
         raise ValueError(f"{name} must be non-negative")
     return value
+
+
+def encode_protocol_field(value: int, name: str) -> bytes:
+    """Encode a non-negative protocol integer as a big-endian unsigned u64."""
+    value = _validate_non_negative_integer(value, name)
+    if value >= 1 << (8 * PROTOCOL_FIELD_WIDTH):
+        raise ValueError(f"{name} must fit in {PROTOCOL_FIELD_WIDTH} bytes")
+    return value.to_bytes(PROTOCOL_FIELD_WIDTH, "big")
 
 
 def _validate_positive_integer(value: int, name: str) -> int:

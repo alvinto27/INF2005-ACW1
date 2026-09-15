@@ -12,6 +12,7 @@ from .bits import (
     _validate_lsb_count,
     _validate_media_code,
     _validate_non_negative_integer,
+    encode_protocol_field,
     validate_payload_bytes,
     validate_payload_length,
 )
@@ -92,8 +93,7 @@ def max_user_payload_length(total_units: int, start_unit: int, bootstrap_span: i
 def minimum_carrier_units(bootstrap_span: int, lsb_count: int, minimum_record_length: int) -> int:
     """Return minimum units for a known minimum record length.
 
-    The caller must derive minimum_record_length from an actual carrier unit count;
-    deriving both values independently would create a width-dependent fixed point.
+    The caller supplies the fixed-width protocol record length.
     """
     bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
     lsb_count = _validate_lsb_count(lsb_count)
@@ -104,12 +104,6 @@ def minimum_carrier_units(bootstrap_span: int, lsb_count: int, minimum_record_le
         (minimum_record_length + RSA_SIGNATURE_SIZE + GCM_TAG_SIZE) * 8,
         lsb_count,
     )
-
-
-def carrier_field_width(total_units: int) -> int:
-    """Calculate the byte width for carrier-bounded fields."""
-    total_units = _validate_non_negative_integer(total_units, "total_units")
-    return max(1, (total_units.bit_length() + 7) // 8)
 
 
 def build_embedding_layout(total_units: int, start_unit: int, lsb_count: int, ciphertext_length: int, bootstrap_span: int) -> EmbeddingLayout:
@@ -170,14 +164,13 @@ def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_
     masked[0:bootstrap_span] &= np.uint8(0xFE)
     mask = (~((1 << lsb_count) - 1)) & 0xFF
     masked[start_unit:start_unit + footprint] &= np.uint8(mask)
-    width = carrier_field_width(total_units)
     preimage = (
         MEDIA_HASH_DOMAIN
         + struct.pack(MEDIA_HASH_CONTEXT_PREFIX_FORMAT, media_code, lsb_count)
-        + total_units.to_bytes(width, "big")
-        + start_unit.to_bytes(width, "big")
-        + footprint.to_bytes(width, "big")
-        + bootstrap_span.to_bytes(width, "big")
+        + encode_protocol_field(total_units, "total_units")
+        + encode_protocol_field(start_unit, "start_unit")
+        + encode_protocol_field(footprint, "footprint")
+        + encode_protocol_field(bootstrap_span, "bootstrap_span")
         + masked.tobytes()
     )
     return hashlib.sha256(preimage).digest()
@@ -190,26 +183,24 @@ def encode_signing_input(media_code: int, media_context: bytes, layout: Embeddin
     if not isinstance(layout, EmbeddingLayout):
         raise TypeError("layout must be an EmbeddingLayout")
     flags = _validate_non_negative_integer(flags, "flags")
-    if flags > 255:
-        raise ValueError("flags must fit in one byte")
+    if flags != 0:
+        raise ValueError("flags must be zero")
     ciphertext = validate_payload_bytes(ciphertext)
     if len(ciphertext) != layout.ciphertext_length:
         raise ValueError("ciphertext length does not match layout")
-    width = carrier_field_width(layout.total_units)
     return (
         SIGNING_DOMAIN
         + struct.pack(
             SIGNING_CONTEXT_PREFIX_FORMAT,
             # Use PROTOCOL_VERSION, never a packet version: reading it looks tidy but removes downgrade protection.
             PROTOCOL_VERSION,
-            flags,
             media_code,
             layout.lsb_count,
         )
-        + layout.total_units.to_bytes(width, "big")
-        + layout.start_unit.to_bytes(width, "big")
-        + layout.footprint.to_bytes(width, "big")
-        + layout.ciphertext_length.to_bytes(width, "big")
+        + encode_protocol_field(layout.total_units, "total_units")
+        + encode_protocol_field(layout.start_unit, "start_unit")
+        + encode_protocol_field(layout.footprint, "footprint")
+        + encode_protocol_field(layout.ciphertext_length, "ciphertext_length")
         + media_context
         + ciphertext
     )

@@ -1,28 +1,37 @@
 """Serialise and parse payload records."""
 
-import struct
 from dataclasses import dataclass
 
 from .bits import (
     _require_bytes,
     _validate_non_negative_integer,
+    encode_protocol_field,
     validate_payload_bytes,
 )
 from .constants import (
     MAX_MEDIA_ID_BYTES,
     NONCE_SIZE,
+    PROTOCOL_FIELD_WIDTH,
     SHA256_DIGEST_SIZE,
 )
-from .layout import carrier_field_width
 
 
-def serialized_record_length(media_id_length: int, user_payload_length: int, metadata_length: int, total_units: int) -> int:
-    """Calculate the serialised record length from its field lengths and carrier width."""
+def serialized_record_length(media_id_length: int, user_payload_length: int, metadata_length: int) -> int:
+    """Calculate the fixed-width serialised record length from its field lengths."""
     media_id_length = _validate_non_negative_integer(media_id_length, "media_id_length")
     user_payload_length = _validate_non_negative_integer(user_payload_length, "user_payload_length")
     metadata_length = _validate_non_negative_integer(metadata_length, "metadata_length")
-    width = carrier_field_width(total_units)
-    return 1 + media_id_length + 8 + 16 + 32 + width + user_payload_length + width + metadata_length
+    return (
+        1
+        + media_id_length
+        + PROTOCOL_FIELD_WIDTH
+        + 16
+        + 32
+        + PROTOCOL_FIELD_WIDTH
+        + user_payload_length
+        + PROTOCOL_FIELD_WIDTH
+        + metadata_length
+    )
 
 
 @dataclass(frozen=True)
@@ -58,21 +67,20 @@ class PayloadRecord:
         object.__setattr__(self, "timestamp", timestamp)
 
 
-def serialize_payload(record: PayloadRecord, total_units: int) -> bytes:
+def serialize_payload(record: PayloadRecord) -> bytes:
     """Turn a payload record into checked packet payload bytes."""
     if not isinstance(record, PayloadRecord):
         raise TypeError("record must be a PayloadRecord")
-    width = carrier_field_width(total_units)
     media_id = record.media_id.encode("utf-8")
     payload = (
         bytes((len(media_id),))
         + media_id
-        + struct.pack(">Q", record.timestamp)
+        + encode_protocol_field(record.timestamp, "timestamp")
         + record.nonce
         + record.media_hash
-        + len(record.user_payload).to_bytes(width, "big")
+        + encode_protocol_field(len(record.user_payload), "user_payload_length")
         + record.user_payload
-        + len(record.metadata).to_bytes(width, "big")
+        + encode_protocol_field(len(record.metadata), "metadata_length")
         + record.metadata
     )
     return validate_payload_bytes(payload)
@@ -86,23 +94,31 @@ def _take_payload_field(payload_bytes: bytes, offset: int, length: int, name: st
     return payload_bytes[offset:end], end
 
 
-def parse_payload(payload_bytes: bytes, total_units: int) -> PayloadRecord:
+def parse_payload(payload_bytes: bytes) -> PayloadRecord:
     """Read checked payload bytes into a payload record."""
     payload_bytes = validate_payload_bytes(payload_bytes)
-    width = carrier_field_width(total_units)
     if not payload_bytes:
         raise ValueError("payload is truncated before media_id length")
     media_id_length = payload_bytes[0]
     offset = 1
     media_id_bytes, offset = _take_payload_field(payload_bytes, offset, media_id_length, "media_id")
-    fixed, offset = _take_payload_field(payload_bytes, offset, 8 + NONCE_SIZE + SHA256_DIGEST_SIZE, "fixed fields")
-    timestamp = struct.unpack(">Q", fixed[:8])[0]
-    nonce = fixed[8:24]
-    media_hash = fixed[24:56]
-    user_length_bytes, offset = _take_payload_field(payload_bytes, offset, width, "user length")
+    fixed, offset = _take_payload_field(
+        payload_bytes,
+        offset,
+        PROTOCOL_FIELD_WIDTH + NONCE_SIZE + SHA256_DIGEST_SIZE,
+        "fixed fields",
+    )
+    timestamp = int.from_bytes(fixed[:PROTOCOL_FIELD_WIDTH], "big")
+    nonce = fixed[PROTOCOL_FIELD_WIDTH:PROTOCOL_FIELD_WIDTH + NONCE_SIZE]
+    media_hash = fixed[PROTOCOL_FIELD_WIDTH + NONCE_SIZE:]
+    user_length_bytes, offset = _take_payload_field(
+        payload_bytes, offset, PROTOCOL_FIELD_WIDTH, "user length"
+    )
     user_length = int.from_bytes(user_length_bytes, "big")
     user_payload, offset = _take_payload_field(payload_bytes, offset, user_length, "user payload")
-    metadata_length_bytes, offset = _take_payload_field(payload_bytes, offset, width, "metadata length")
+    metadata_length_bytes, offset = _take_payload_field(
+        payload_bytes, offset, PROTOCOL_FIELD_WIDTH, "metadata length"
+    )
     metadata_length = int.from_bytes(metadata_length_bytes, "big")
     metadata, offset = _take_payload_field(payload_bytes, offset, metadata_length, "metadata")
     if offset != len(payload_bytes):

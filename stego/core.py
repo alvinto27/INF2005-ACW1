@@ -39,7 +39,6 @@ from .constants import (
     MEDIA_ID_SIZE,
     MEDIA_PREFIXES,
     NONCE_SIZE,
-    PROTOCOL_FLAGS,
     PROTOCOL_VERSION,
     RSA_SIGNATURE_SIZE,
     SESSION_KEY_SIZE,
@@ -116,7 +115,7 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
 
     total_units = carrier_units.size
     span = bootstrap_span(receiver_public_key)
-    minimum_record_length = serialized_record_length(MEDIA_ID_SIZE, 0, 0, total_units)
+    minimum_record_length = serialized_record_length(MEDIA_ID_SIZE, 0, 0)
     minimum_units = minimum_carrier_units(span, lsb_count, minimum_record_length)
     if total_units < minimum_units:
         raise ValueError(
@@ -135,7 +134,7 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
     timestamp = int(datetime.now(timezone.utc).timestamp())
     nonce = secrets.token_bytes(NONCE_SIZE)
     record_overhead = serialized_record_length(
-        len(media_id.encode("utf-8")), 0, len(metadata), total_units
+        len(media_id.encode("utf-8")), 0, len(metadata)
     )
     maximum_user_payload = max_user_payload_length(
         total_units, start_unit, span, lsb_count, record_overhead
@@ -147,7 +146,7 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
             f"start_unit={start_unit}, lsb_count={lsb_count}"
         )
     record_length = serialized_record_length(
-        len(media_id.encode("utf-8")), len(user_payload), len(metadata), total_units
+        len(media_id.encode("utf-8")), len(user_payload), len(metadata)
     )
     ciphertext_length = record_length + GCM_TAG_SIZE
     layout = build_embedding_layout(
@@ -157,12 +156,12 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
         carrier_units, media_code, lsb_count, start_unit, layout.footprint, span
     )
     payload = PayloadRecord(media_id, timestamp, nonce, media_hash, user_payload, metadata)
-    record_bytes = serialize_payload(payload, total_units)
+    record_bytes = serialize_payload(payload)
     session_key = secrets.token_bytes(SESSION_KEY_SIZE)
     aead_nonce = secrets.token_bytes(AEAD_NONCE_SIZE)
     fields = BootstrapFields(
         PROTOCOL_VERSION,
-        PROTOCOL_FLAGS,
+        0,
         lsb_count,
         start_unit,
         ciphertext_length,
@@ -172,7 +171,7 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
     ciphertext = aead_seal(
         session_key,
         aead_nonce,
-        encode_bootstrap_aad(fields, total_units),
+        encode_bootstrap_aad(fields),
         record_bytes,
     )
     if len(ciphertext) != ciphertext_length:
@@ -181,7 +180,7 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
         encode_signing_input(media_code, media_context, layout, fields.flags, ciphertext),
         signing_private_key,
     )
-    envelope = seal_to_public_key(serialize_bootstrap(fields, total_units), receiver_public_key)
+    envelope = seal_to_public_key(serialize_bootstrap(fields), receiver_public_key)
     if len(envelope) * 8 != span:
         raise ValueError("bootstrap envelope has an unexpected span")
     encoded = _embed_packet(carrier_units, layout, ciphertext + signature)
@@ -238,7 +237,7 @@ def decode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
             "nothing was readable with the supplied receiver private key",
         )
     try:
-        fields = parse_bootstrap(bootstrap_plaintext, carrier_units.size)
+        fields = parse_bootstrap(bootstrap_plaintext)
     except ValueError as error:
         return _failure_result("Cannot Verify", str(error))
     if fields.ciphertext_length < GCM_TAG_SIZE:
@@ -287,7 +286,7 @@ def decode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
         record_bytes = aead_open(
             fields.session_key,
             fields.aead_nonce,
-            encode_bootstrap_aad(fields, carrier_units.size),
+            encode_bootstrap_aad(fields),
             ciphertext,
         )
     except InvalidTag:
@@ -296,7 +295,7 @@ def decode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
             "signature verified but the AES-GCM tag rejected the body",
         )
     try:
-        payload = parse_payload(record_bytes, carrier_units.size)
+        payload = parse_payload(record_bytes)
     except ValueError as error:
         return _failure_result("Cannot Verify", str(error))
     calculated_hash = calculate_masked_media_hash(
