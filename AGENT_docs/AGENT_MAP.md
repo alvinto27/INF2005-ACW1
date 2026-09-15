@@ -2,13 +2,6 @@
 
 Use this map before editing an unfamiliar part of the repository.
 
-## Map chain
-
-| Scope | Map or rule |
-| --- | --- |
-| Current repository | This file: `AGENT_docs/AGENT_MAP.md` |
-| Parent workspace checkout | [School Repos map](../../../docs/AGENT_MAP.md); this repository is a tracked submodule there. |
-
 ## Documentation locations
 
 | Content | Location |
@@ -21,7 +14,6 @@ Use this map before editing an unfamiliar part of the repository.
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
 | Current protocol, fixed-width fields, typed-payload metadata, and design history | [PROTOCOL-DESIGN.md](PROTOCOL-DESIGN.md#protocol-design) |
 | Historical protocol version 2 design; stages 0 through 6b complete; 6c cancelled | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
-| Historical handoff after protocol version 2 completion | [ORCHESTRATION-HANDOFF.md](ORCHESTRATION-HANDOFF.md) |
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
 | Deferred and upcoming chunked-carrier plan, including the 64 MiB WAV cover cap | [STREAMING-CARRIER-PLAN.md](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) |
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
@@ -52,5 +44,4 @@ Use this map before editing an unfamiliar part of the repository.
 
 | Boundary | Rule |
 | --- | --- |
-| This repository | Independent Git repository on branch `yx`; commit and push its work from this directory. |
-| Parent `School-Repos` checkout | It tracks this directory as a submodule or gitlink. Do not treat changes here as parent-repository changes unless its owner explicitly requests them. |
+| This repository | This is an independent Git repository. Commit and push work from this directory. |

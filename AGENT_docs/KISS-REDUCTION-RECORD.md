@@ -213,14 +213,12 @@ submission package remain outside this repository as stated there.
 
 ### Orchestration Handoff
 
-The handoff is a historical snapshot at child tip `e920382`. Its 55-test count,
+The handoff was a historical snapshot at child tip `e920382`. Its 55-test count,
 stage 6b status, old hashes, old notebook environment, and statement that there
-was no next stage were true for that snapshot. They are not current baseline
-claims, but changing them would damage the handoff's historical meaning.
-
-If a fresh handoff is needed, replace those values with the reduced-format
-status, **57 passing tests**, the current branch tip, and the current notebook
-dependency state. No edit to the historical handoff is required for this record.
+was no next stage were true for that snapshot. It is not a current baseline
+claim, and changing those facts would damage the historical meaning. The
+standalone repository does not carry workspace-orchestration instructions; use
+this reduction record for current status.
 
 ## Lessons
 
