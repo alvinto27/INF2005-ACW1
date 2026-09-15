@@ -41,7 +41,7 @@ media_hash = hashlib.sha256(preimage).digest()
 b"INF2005-ACW1\x00MEDIA-HASH\x00"
 ```
 
-The shared hash and capacity functions take the reserved bootstrap span as a required argument. Core derives the span from the RSA key and masks the one-LSB bootstrap region as well as the packet region. A start unit below the span is rejected. Every serialised protocol integer uses the single fixed u64 rule: 8-byte unsigned big-endian encoding through `encode_protocol_field`.
+The shared hash and capacity functions take the reserved bootstrap span as a required argument. Core derives the span from the RSA key and masks the one-LSB bootstrap region as well as the packet region. A start unit below the span is rejected. General lengths, positions, counters, and timestamps use fixed unsigned 64-bit big-endian fields through `encode_protocol_field`; bounded enumeration and prefix fields remain u8. The fixed media-context structs use their own formats.
 
 ## Module dependencies
 
@@ -153,7 +153,7 @@ Version 1 preferred the deepest failure among discovered candidates. Stage 4b ch
 - Overwritten cover LSBs are destroyed and cannot be recovered or authenticated.
 - The alignment padding zero-check is a format check, not a cryptographic one.
 - RSA-PSS is randomised, so verification proves the signed input is intact, not that the signature bytes are byte-for-byte original.
-- Preserved bits depend on packet size, not LSB depth: `preserved_bits = 8*total_units - bootstrap_span - k*footprint`, and `k*footprint` is exactly the packet bit count. For the same packet, `k = 1` and `k = 8` therefore preserve the same 48,163,528 bits in the refreshed demonstration. At `k = 8` with a full-carrier footprint, packet bits equal all carrier bits and the media hash witnesses nothing; the reported `preserved_bits` says so.
+- Preserved bits depend mainly on packet size, with LSB depth able to shift the count through alignment: `preserved_bits = 8*total_units - bootstrap_span - k*footprint`, and `k*footprint` equals the packet bit count plus up to `k - 1` alignment bits. The refreshed demonstration's `k = 1` and `k = 8` cases have no alignment bits and therefore preserve the same 48,163,528 bits. At `k = 8` with a full-carrier footprint, packet bits equal all carrier bits and the media hash witnesses nothing; the reported `preserved_bits` says so.
 - The bootstrap field values and record are encrypted or authenticated for the receiver; the fixed bootstrap span still reveals the envelope footprint.
 - Container metadata outside the decoded carrier is not covered.
 - A timestamp and nonce alone do not prevent replay.

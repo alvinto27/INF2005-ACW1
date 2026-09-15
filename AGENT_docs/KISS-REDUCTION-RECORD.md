@@ -119,9 +119,10 @@ metadata, start unit **2,048**, and a **2,048-unit** bootstrap span.
 | 3 | 2,256,771 | 10,851 |
 | 8 | 6,018,691 | 29,571 |
 
-The preserved-bit count depends on packet size, not directly on `k`, because the
-packet writes `k * footprint` bits. The refreshed demonstration reports the same
-preserved-bit count for its `k=1` and `k=8` cases.
+The preserved-bit count depends mainly on packet size, with LSB depth able to
+shift it slightly through alignment: `k * footprint` equals the packet bit count
+plus up to `k - 1` pad bits. The refreshed demonstration reports the same
+preserved-bit count for its `k=1` and `k=8` cases because both divide cleanly.
 
 ## Decisions and reasons
 
