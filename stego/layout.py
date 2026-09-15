@@ -176,15 +176,12 @@ def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_
     return hashlib.sha256(preimage).digest()
 
 
-def encode_signing_input(media_code: int, media_context: bytes, layout: EmbeddingLayout, flags: int, ciphertext: bytes) -> bytes:
+def encode_signing_input(media_code: int, media_context: bytes, layout: EmbeddingLayout, ciphertext: bytes) -> bytes:
     """Build signed bytes covering recovered geometry and ciphertext."""
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
     if not isinstance(layout, EmbeddingLayout):
         raise TypeError("layout must be an EmbeddingLayout")
-    flags = _validate_non_negative_integer(flags, "flags")
-    if flags != 0:
-        raise ValueError("flags must be zero")
     ciphertext = validate_payload_bytes(ciphertext)
     if len(ciphertext) != layout.ciphertext_length:
         raise ValueError("ciphertext length does not match layout")

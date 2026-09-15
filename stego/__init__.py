@@ -11,7 +11,6 @@ from .bootstrap import (
     bootstrap_span,
     encode_bootstrap_aad,
     parse_bootstrap,
-    require_supported_flags,
     serialize_bootstrap,
 )
 from .constants import (
@@ -131,7 +130,6 @@ __all__ = [
     "open_with_private_key",
     "parse_bootstrap",
     "parse_payload",
-    "require_supported_flags",
     "preserved_bit_count",
     "read_lsb_bits",
     "rgb_array_to_carrier",

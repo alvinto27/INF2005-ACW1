@@ -24,7 +24,6 @@ from .constants import (
 class BootstrapFields:
     """Hold the fields carried by the receiver bootstrap envelope."""
     version: int
-    flags: int
     lsb_count: int
     start_unit: int
     ciphertext_length: int
@@ -48,7 +47,6 @@ def _validate_bootstrap_fields(fields: BootstrapFields) -> BootstrapFields:
     version = _validate_non_negative_integer(fields.version, "version")
     if version != PROTOCOL_VERSION:
         raise ValueError("unsupported bootstrap version")
-    flags = _validate_non_negative_integer(fields.flags, "flags")
     lsb_count = _validate_lsb_count(fields.lsb_count)
     start_unit = _validate_non_negative_integer(fields.start_unit, "start_unit")
     ciphertext_length = _validate_non_negative_integer(fields.ciphertext_length, "ciphertext_length")
@@ -60,7 +58,6 @@ def _validate_bootstrap_fields(fields: BootstrapFields) -> BootstrapFields:
         raise ValueError("aead_nonce must contain exactly 12 bytes")
     return BootstrapFields(
         version,
-        flags,
         lsb_count,
         start_unit,
         ciphertext_length,
@@ -69,17 +66,9 @@ def _validate_bootstrap_fields(fields: BootstrapFields) -> BootstrapFields:
     )
 
 
-def require_supported_flags(flags: int) -> None:
-    """Reject bootstrap flags that this protocol does not support."""
-    flags = _validate_non_negative_integer(flags, "flags")
-    if flags != 0:
-        raise ValueError("bootstrap flags must be zero")
-
-
 def serialize_bootstrap(fields: BootstrapFields) -> bytes:
     """Serialise bootstrap fields using fixed-width protocol integers."""
     fields = _validate_bootstrap_fields(fields)
-    require_supported_flags(fields.flags)
     return (
         struct.pack(BOOTSTRAP_PREFIX_FORMAT, fields.version, fields.lsb_count)
         + encode_protocol_field(fields.start_unit, "start_unit")
@@ -117,7 +106,6 @@ def parse_bootstrap(plaintext: bytes) -> BootstrapFields:
     return _validate_bootstrap_fields(
         BootstrapFields(
             version,
-            0,
             lsb_count,
             start_unit,
             ciphertext_length,
@@ -130,7 +118,6 @@ def parse_bootstrap(plaintext: bytes) -> BootstrapFields:
 def encode_bootstrap_aad(fields: BootstrapFields) -> bytes:
     """Encode bootstrap fields authenticated as additional data."""
     fields = _validate_bootstrap_fields(fields)
-    require_supported_flags(fields.flags)
     return (
         struct.pack(BOOTSTRAP_PREFIX_FORMAT, fields.version, fields.lsb_count)
         + encode_protocol_field(fields.start_unit, "start_unit")

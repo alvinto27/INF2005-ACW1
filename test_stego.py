@@ -43,7 +43,7 @@ def encode_image_carrier(source=None, start=2048, k=3, user_payload=b"hello", me
     return encode_carrier(source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, start, k, user_payload, metadata), context
 
 
-def raw_bootstrap(version: int, flags: int, lsb_count: int, start_unit: int, ciphertext_length: int, session_key: bytes, aead_nonce: bytes, extra: bytes = b"") -> bytes:
+def raw_bootstrap(version: int, lsb_count: int, start_unit: int, ciphertext_length: int, session_key: bytes, aead_nonce: bytes, extra: bytes = b"") -> bytes:
     plaintext = (
         struct.pack(">BB", version, lsb_count)
         + start_unit.to_bytes(8, "big")
@@ -62,10 +62,9 @@ def bootstrap_fields_from_carrier(encoded: np.ndarray) -> BootstrapFields:
     return parse_bootstrap(open_with_private_key(envelope, RECEIVER_PRIVATE_KEY))
 
 
-def reseal_bootstrap(fields: BootstrapFields, version: int | None = None, flags: int | None = None, lsb_count: int | None = None, start_unit: int | None = None, ciphertext_length: int | None = None) -> bytes:
+def reseal_bootstrap(fields: BootstrapFields, version: int | None = None, lsb_count: int | None = None, start_unit: int | None = None, ciphertext_length: int | None = None) -> bytes:
     return raw_bootstrap(
         fields.version if version is None else version,
-        fields.flags if flags is None else flags,
         fields.lsb_count if lsb_count is None else lsb_count,
         fields.start_unit if start_unit is None else start_unit,
         fields.ciphertext_length if ciphertext_length is None else ciphertext_length,
@@ -190,7 +189,7 @@ class TestMaskedStego(unittest.TestCase):
             + payload
         )
         self.assertEqual(len(expected), 65)
-        self.assertEqual(encode_signing_input(IMAGE_MEDIA_CODE, b"context", layout, 0, payload), expected)
+        self.assertEqual(encode_signing_input(IMAGE_MEDIA_CODE, b"context", layout, payload), expected)
 
     def test_preserved_bit_count_accounts_for_bootstrap(self) -> None:
         self.assertEqual(preserved_bit_count(10000, 500, 3, 0), 78500)
@@ -242,14 +241,12 @@ class TestMaskedStego(unittest.TestCase):
             IMAGE_MEDIA_CODE,
             b"context",
             EmbeddingLayout(255, 13, 3, 3, 5, 0, 0),
-            0,
             payload,
         )
         wide = encode_signing_input(
             IMAGE_MEDIA_CODE,
             b"context",
             EmbeddingLayout(256, 13, 3, 3, 5, 0, 0),
-            0,
             payload,
         )
         prefix_length = len(SIGNING_DOMAIN) + 3
@@ -258,7 +255,7 @@ class TestMaskedStego(unittest.TestCase):
         self.assertEqual(len(wide) - len(narrow), 0)
 
     def test_bootstrap_round_trip_and_aad(self) -> None:
-        fields = BootstrapFields(2, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        fields = BootstrapFields(2, 3, 13, 37, bytes(range(32)), bytes(range(12)))
         expected_aad = b"\x02\x03" + (13).to_bytes(8, "big") + (37).to_bytes(8, "big")
         serialized = serialize_bootstrap(fields)
         self.assertEqual(len(serialized), 62)
@@ -266,7 +263,7 @@ class TestMaskedStego(unittest.TestCase):
         self.assertEqual(encode_bootstrap_aad(fields), expected_aad)
 
     def test_bootstrap_span_and_oaep_envelope_limit(self) -> None:
-        fields = BootstrapFields(2, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        fields = BootstrapFields(2, 3, 13, 37, bytes(range(32)), bytes(range(12)))
         serialized = serialize_bootstrap(fields)
         self.assertEqual(bootstrap_span(PUBLIC_KEY), 2048)  # 256-byte serialised envelope at 1 LSB.
         oaep_plaintext_limit = PUBLIC_KEY.key_size // 8 - 2 * 32 - 2
@@ -301,7 +298,7 @@ class TestMaskedStego(unittest.TestCase):
                     aead_open(*changed)
 
     def test_bootstrap_parse_rejects_malformed_inputs(self) -> None:
-        fields = BootstrapFields(2, 0, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        fields = BootstrapFields(2, 3, 13, 37, bytes(range(32)), bytes(range(12)))
         serialized = serialize_bootstrap(fields)
         malformed = []
         malformed.append(serialized[:-1])
@@ -393,7 +390,7 @@ class TestMaskedStego(unittest.TestCase):
         changed_bootstrap[0] ^= np.uint8(1)
         self.assertEqual(decode_carrier(changed_bootstrap, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Payload Missing")
 
-    def test_bootstrap_authenticated_decryption_and_flags_binding(self) -> None:
+    def test_bootstrap_authenticated_decryption_rejects_changed_session_material(self) -> None:
         source = carrier(30000)
         (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
         fields = bootstrap_fields_from_carrier(encoded)
@@ -406,7 +403,7 @@ class TestMaskedStego(unittest.TestCase):
                 else:
                     aead_nonce = bytes((aead_nonce[0] ^ 1,)) + aead_nonce[1:]
                 envelope = raw_bootstrap(
-                    fields.version, fields.flags, fields.lsb_count,
+                    fields.version, fields.lsb_count,
                     fields.start_unit, fields.ciphertext_length, session_key, aead_nonce,
                 )
                 changed = write_lsb_bits(encoded.copy(), bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT)
@@ -436,10 +433,6 @@ class TestMaskedStego(unittest.TestCase):
                     decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict,
                     "Authentic",
                 )
-
-    def test_nonzero_flags_remain_rejected_until_phase_two(self) -> None:
-        with self.assertRaisesRegex(ValueError, "flags must be zero"):
-            require_supported_flags(1)
 
     def test_media_interpretation_changes_invalidate_signature(self) -> None:
         (encoded, layout, _), context = encode_image_carrier(start=2048, k=3)
@@ -478,7 +471,7 @@ class TestMaskedStego(unittest.TestCase):
         self.assertFalse(ciphertext.startswith(b"\x24IMG-"))
         self.assertTrue(
             verify_signature(
-                encode_signing_input(IMAGE_MEDIA_CODE, context, layout, 0, ciphertext),
+                encode_signing_input(IMAGE_MEDIA_CODE, context, layout, ciphertext),
                 signature,
                 PUBLIC_KEY,
             )
@@ -535,7 +528,7 @@ class TestMaskedStego(unittest.TestCase):
         for changes in cases:
             with self.subTest(changes=changes):
                 if "extra" in changes:
-                    envelope = raw_bootstrap(fields.version, fields.flags, fields.lsb_count, fields.start_unit, fields.ciphertext_length, fields.session_key, fields.aead_nonce, changes["extra"])
+                    envelope = raw_bootstrap(fields.version, fields.lsb_count, fields.start_unit, fields.ciphertext_length, fields.session_key, fields.aead_nonce, changes["extra"])
                 else:
                     envelope = reseal_bootstrap(fields, **changes)
                 changed = write_lsb_bits(encoded.copy(), bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT)

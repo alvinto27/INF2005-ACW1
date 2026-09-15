@@ -15,7 +15,6 @@ from .bootstrap import (
     bootstrap_span,
     encode_bootstrap_aad,
     parse_bootstrap,
-    require_supported_flags,
     serialize_bootstrap,
 )
 from .bits import (
@@ -161,7 +160,6 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
     aead_nonce = secrets.token_bytes(AEAD_NONCE_SIZE)
     fields = BootstrapFields(
         PROTOCOL_VERSION,
-        0,
         lsb_count,
         start_unit,
         ciphertext_length,
@@ -177,7 +175,7 @@ def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
     if len(ciphertext) != ciphertext_length:
         raise ValueError("AES-GCM ciphertext has an unexpected length")
     signature = sign_bytes(
-        encode_signing_input(media_code, media_context, layout, fields.flags, ciphertext),
+        encode_signing_input(media_code, media_context, layout, ciphertext),
         signing_private_key,
     )
     envelope = seal_to_public_key(serialize_bootstrap(fields), receiver_public_key)
@@ -274,14 +272,10 @@ def decode_carrier(carrier_units: np.ndarray, media_code: int, media_context: by
     except ValueError as error:
         return _failure_result("Cannot Verify", str(error))
     signing_input = encode_signing_input(
-        media_code, media_context, layout, fields.flags, ciphertext
+        media_code, media_context, layout, ciphertext
     )
     if not verify_signature(signing_input, signature, sender_public_key):
         return _failure_result("Signature Invalid", "RSA-PSS signature verification failed")
-    try:
-        require_supported_flags(fields.flags)
-    except ValueError as error:
-        return _failure_result("Cannot Verify", str(error))
     try:
         record_bytes = aead_open(
             fields.session_key,
