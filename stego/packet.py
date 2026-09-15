@@ -25,8 +25,8 @@ def serialized_record_length(media_id_length: int, user_payload_length: int, met
         1
         + media_id_length
         + PROTOCOL_FIELD_WIDTH
-        + 16
-        + 32
+        + NONCE_SIZE
+        + SHA256_DIGEST_SIZE
         + PROTOCOL_FIELD_WIDTH
         + user_payload_length
         + PROTOCOL_FIELD_WIDTH
