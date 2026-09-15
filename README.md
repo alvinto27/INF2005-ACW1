@@ -8,7 +8,7 @@ single LSB embedding footprint with AES-256-GCM and authenticates them with RSA-
 Every carrier bit that embedding intentionally preserves is represented in the
 masked media hash. The encrypted record contains that hash and the user content.
 The RSA-OAEP bootstrap gives only the receiver the packet geometry and AES-GCM
-session material. The signature authenticates the ciphertext, flags, media
+session material. The signature authenticates the ciphertext, media
 interpretation, and embedding layout.
 
 Requires Python 3.10+.

@@ -23,14 +23,13 @@ masked = carrier_units.copy()
 masked[0:bootstrap_span] &= np.uint8(0xFE)
 mask = (~((1 << lsb_count) - 1)) & 0xFF
 masked[start_unit:start_unit + footprint] &= np.uint8(mask)
-width = carrier_field_width(total_units)
 preimage = (
     MEDIA_HASH_DOMAIN
     + struct.pack(">BB", media_code, lsb_count)
-    + total_units.to_bytes(width, "big")
-    + start_unit.to_bytes(width, "big")
-    + footprint.to_bytes(width, "big")
-    + bootstrap_span.to_bytes(width, "big")
+    + encode_protocol_field(total_units, "total_units")
+    + encode_protocol_field(start_unit, "start_unit")
+    + encode_protocol_field(footprint, "footprint")
+    + encode_protocol_field(bootstrap_span, "bootstrap_span")
     + masked.tobytes()
 )
 media_hash = hashlib.sha256(preimage).digest()
@@ -42,11 +41,11 @@ media_hash = hashlib.sha256(preimage).digest()
 b"INF2005-ACW1\x00MEDIA-HASH\x00"
 ```
 
-The shared hash and capacity functions take the reserved bootstrap span as a required argument. Core derives the span from the RSA key and masks the one-LSB bootstrap region as well as the packet region. A start unit below the span is rejected. `carrier_field_width(total_units)` is the single width rule: `max(1, (total_units.bit_length() + 7) // 8)`.
+The shared hash and capacity functions take the reserved bootstrap span as a required argument. Core derives the span from the RSA key and masks the one-LSB bootstrap region as well as the packet region. A start unit below the span is rejected. Every serialised protocol integer uses the single fixed u64 rule: 8-byte unsigned big-endian encoding through `encode_protocol_field`.
 
 ## Module dependencies
 
-`bits` depends on `constants`. `layout` and `packet` each depend on `bits` and `constants`; `packet` no longer needs `layout` after scan removal. `bootstrap` uses `layout` for the field width. `crypto` and `media` depend only on `constants` and `bits`. `core` is the only module where protocol, crypto, and media meet. The bootstrap and encryption primitives have tests but no encode or decode callers yet.
+`bits` depends on `constants` and provides `encode_protocol_field`. `layout`, `packet`, and `bootstrap` depend on `bits` and `constants`; none of them imports `layout` for field widths. `crypto` and `media` depend only on `constants` and `bits`. `core` is the only module where protocol, crypto, and media meet, and it calls the bootstrap and encryption primitives for encoding and decoding.
 
 ## Packet format and signing input
 
@@ -66,9 +65,9 @@ media_id         media_id_length bytes of UTF-8
 timestamp        u64, Unix seconds in UTC
 nonce            16 bytes
 media_hash       32 bytes
-user_length      W-byte unsigned length, where W = carrier_field_width(total_units)
+user_length      u64 unsigned length
 user_payload     user_length arbitrary bytes
-metadata_length  W-byte unsigned length
+metadata_length  u64 unsigned length
 metadata         metadata_length UTF-8 bytes
 ```
 
@@ -86,20 +85,19 @@ The exact signing input is:
 
 ```python
 SIGNING_DOMAIN = b"INF2005-ACW1\x00SIGN\x00"
-width = carrier_field_width(total_units)
 signing_input = (
     SIGNING_DOMAIN
-    + struct.pack(">BBBB", PROTOCOL_VERSION, flags, media_code, lsb_count)
-    + total_units.to_bytes(width, "big")
-    + start_unit.to_bytes(width, "big")
-    + footprint.to_bytes(width, "big")
-    + ciphertext_length.to_bytes(width, "big")
+    + struct.pack(">BBB", PROTOCOL_VERSION, media_code, lsb_count)
+    + encode_protocol_field(total_units, "total_units")
+    + encode_protocol_field(start_unit, "start_unit")
+    + encode_protocol_field(footprint, "footprint")
+    + encode_protocol_field(ciphertext_length, "ciphertext_length")
     + media_context
     + ciphertext
 )
 ```
 
-`PROTOCOL_FLAGS` is 0. The version in this input comes from the protocol constant, not from received data. The ciphertext length includes the 16-byte GCM tag. `max_record_length` accounts for the signature and tag; `max_user_payload_length` also subtracts the record overhead supplied by the caller. The generated record costs `93 + 2W` bytes plus metadata before any user bytes, where W is derived from the carrier unit count. Capacity helpers refuse a carrier that cannot hold the mandatory packet or record instead of clamping that case to zero. A returned user capacity of zero therefore means the complete protocol object fits exactly and leaves no user bytes.
+The version in this input comes from the protocol constant, not from received data. The ciphertext length includes the 16-byte GCM tag. `max_record_length` accounts for the signature and tag; `max_user_payload_length` also subtracts the record overhead supplied by the caller. The generated 36-byte media id gives a flat 109-byte record overhead before user payload or metadata bytes; user payload and metadata add their own lengths. Capacity helpers refuse a carrier that cannot hold the mandatory packet or record instead of clamping that case to zero. A returned user capacity of zero therefore means the complete protocol object fits exactly and leaves no user bytes.
 
 The PNG media context is exactly `struct.pack(">II", width, height)`. The WAV media context is exactly `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 
@@ -124,7 +122,7 @@ At `sample_width == 1` the stride is 1, so the sample-stride correction did not 
 
 Version 1 scanned for a fixed 16-byte marker at each LSB count from 1 to 8. The marker supplied a candidate start unit; its header supplied the record length. This public discovery path is deleted in stage 4b.
 
-The current decoder reads one bootstrap, opens it with the receiver private key, validates its structure, checks geometry bounds, extracts the packet, verifies RSA-PSS over flags and ciphertext, applies the flags policy, opens AES-GCM, parses the record, and then checks the masked media hash. It does not search for another packet after a failure. Relocating a packet still causes RSA-PSS verification to fail because the recovered start unit is signed.
+The current decoder reads one bootstrap, opens it with the receiver private key, validates its structure, checks geometry bounds, extracts the packet, verifies RSA-PSS over the geometry and ciphertext, opens AES-GCM, parses the record, and then checks the masked media hash. It does not search for another packet after a failure. Relocating a packet still causes RSA-PSS verification to fail because the recovered start unit is signed.
 
 The removed scan had a candidate limit and refused multiple valid candidates. There is no candidate list now, so there is no automatic choice between packets and no ambiguity branch. This does not prove that the carrier holds only one packet.
 
@@ -132,7 +130,7 @@ The removed scan had a candidate limit and refused multiple valid candidates. Th
 
 ## Signature scope
 
-The RSA-PSS signature authenticates the protocol version, flags, media code, selected LSB count, total carrier-unit count, recovered start unit, derived footprint, ciphertext length, fixed media context, and every ciphertext byte. AES-GCM authenticates the recovered session key, nonce, and plaintext record. The record includes the stored media hash, user payload, metadata, media identifier, timestamp, and nonce.
+The RSA-PSS signature authenticates the protocol version, media code, selected LSB count, total carrier-unit count, recovered start unit, derived footprint, ciphertext length, fixed media context, and every ciphertext byte. AES-GCM authenticates the recovered session key, nonce, and plaintext record. The record includes the stored media hash, user payload, metadata, media identifier, timestamp, and nonce.
 
 The signature does not authenticate the original values of overwritten cover LSBs. It does not cover file-container metadata outside the decoded carrier units. It does not identify a person, prove freshness, or prevent removal of the embedded packet.
 
@@ -146,7 +144,7 @@ The signature does not authenticate the original values of overwritten cover LSB
 | `Payload Missing` | The bootstrap cannot be opened with the supplied receiver private key, including a pristine carrier or wrong receiver key. |
 | `Wrong Start Location` | Numerically valid geometry recovered from the opened bootstrap produces a footprint outside the carrier or overlaps the reserved bootstrap span. |
 | `Cannot Decrypt` | The signed ciphertext fails its AES-GCM authentication tag. |
-| `Cannot Verify` | The adapter rejects the file, the bootstrap is structurally malformed, flags policy fails after signature verification, or packet parsing or padding validation fails. |
+| `Cannot Verify` | The adapter rejects the file, the bootstrap is structurally malformed, or packet parsing or padding validation fails. |
 
 Version 1 preferred the deepest failure among discovered candidates. Stage 4b checks one supplied layout and reports its failure directly. A caller can supply a wrong location that remains in range; it then receives the parsing, padding, or signature failure reached at that location, not proof that the file has no payload.
 
@@ -155,7 +153,7 @@ Version 1 preferred the deepest failure among discovered candidates. Stage 4b ch
 - Overwritten cover LSBs are destroyed and cannot be recovered or authenticated.
 - The alignment padding zero-check is a format check, not a cryptographic one.
 - RSA-PSS is randomised, so verification proves the signed input is intact, not that the signature bytes are byte-for-byte original.
-- As the footprint grows, the preserved-bit count falls. At `k = 8` with a full-carrier footprint, the media hash witnesses nothing, and the reported `preserved_bits` says so.
+- Preserved bits depend on packet size, not LSB depth: `preserved_bits = 8*total_units - bootstrap_span - k*footprint`, and `k*footprint` is exactly the packet bit count. For the same packet, `k = 1` and `k = 8` therefore preserve the same 48,163,528 bits in the refreshed demonstration. At `k = 8` with a full-carrier footprint, packet bits equal all carrier bits and the media hash witnesses nothing; the reported `preserved_bits` says so.
 - The bootstrap field values and record are encrypted or authenticated for the receiver; the fixed bootstrap span still reveals the envelope footprint.
 - Container metadata outside the decoded carrier is not covered.
 - A timestamp and nonce alone do not prevent replay.
@@ -179,83 +177,27 @@ This claim says nothing about a real-world identity. The caller must obtain the 
 
 ## Payload Envelope Design
 
-Protocol version 2 encrypts the complete payload record inside the library, including `user_payload`. This section describes what the caller places inside those encrypted bytes: an optional sealed envelope for an additional confidentiality layer, and a content header that declares what the bytes are.
-
-The content header remains caller-side. The caller-side seal was removed from the stage 5 demonstration under decision 16, while the content-header layer survives. This section therefore documents the caller-added layers, not the library's record encryption. See [What the system does](PROTOCOL-DESIGN.md#what-the-system-does).
-
-**The encryption layer does not survive protocol version 2.** That version encrypts the whole payload record inside the library, unconditionally, so the caller-side seal described below becomes encryption inside encryption. The seal and its notebook demonstration are removed when version 2 lands; see decision 16 in the [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#11-decisions).
-
-**The content-type header is unaffected.** Version 2 encrypts the record; it still does not describe the bytes inside `user_payload`, so that layer stays caller-side and stays necessary.
+Protocol version 2 encrypts the complete payload record inside the library, including `user_payload`. The notebook's typed-payload demonstration uses the existing `metadata` field for the MIME claim and original filename; the file bytes remain raw in `user_payload`. No caller-side seal or nested content header remains.
 
 The working demonstration is in the Confidentiality from the protocol and Typed payloads sections of the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb).
 
-### 1. Layering
+### 1. Record and metadata
+
+Nothing in the payload record stays readable. AES-256-GCM protects the complete record, including the media id, timestamp, record nonce, media hash, user payload, and metadata. RSA-OAEP protects the bootstrap fields, session key, and packet geometry. The receiver decrypts the record, recomputes the masked media hash, and compares it with the recovered value. The [Location Confidentiality Plan, section 3.5](LOCATION-CONFIDENTIALITY-PLAN.md#35-the-whole-payload-record-is-encrypted) records why FR9 requires the comparison.
+
+The notebook uses this metadata convention for typed payloads:
 
 ```text
-user_payload
-└─ sealed blob          wrapped key · caller seal nonce · ciphertext with tag
-   └─ content header    version · mime · name        (plaintext, inside the seal)
-      └─ body           the file bytes
+kind=png;flow=typed-content;mime=image/png;name=generated.png
 ```
 
-The content header is inside the optional caller-side seal. Protocol version 2 makes the receiver's private key the gate: an observer learns nothing about the packet from protocol structure, and the record length is encrypted in the bootstrap. The header is never in `metadata`; it describes the body bytes, while `metadata` remains a separate team-defined record field.
-
-### 2. Sealed blob
-
-This caller-side layer is designed and recorded but is no longer shown in the notebook. Stage 5 removes it because protocol version 2 already encrypts and signs the complete record inside the library; adding this seal would encrypt the content twice. Decision 16 in the [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#11-decisions) records that choice.
-
-A random AES-256-GCM key encrypts the content header and the body together. RSA-OAEP with SHA-256 wraps that key with the receiver's public key.
-
-| Field | Size | Notes |
-| --- | --- | --- |
-| Wrapped AES key | 256 bytes | RSA-2048, OAEP, SHA-256, MGF1-SHA-256, no label |
-| Nonce | 12 bytes | fresh random value for every payload |
-| Ciphertext with tag | remainder | 16-byte GCM tag included |
-
-The fixed prefix is 268 bytes.
-
-Hybrid encryption is required, not preferred. RSA-2048 OAEP with SHA-256 can encrypt at most 190 bytes directly, which is smaller than most payloads.
-
-#### Record visibility
-
-Nothing in the payload record stays readable. Two protections carry separate fields:
-
-```text
-record     AES-256-GCM   media_id, timestamp, record nonce,
-                          media_hash, user_payload, metadata
-bootstrap  RSA-OAEP      version, flags, lsb_count, start_unit,
-                          ciphertext_length, session_key, aead nonce
-```
-
-The receiver decrypts the record, recomputes the masked media hash, and compares it with the recovered value. The [Location Confidentiality Plan, section 3.5](LOCATION-CONFIDENTIALITY-PLAN.md#35-the-whole-payload-record-is-encrypted) records why FR9 requires the comparison, not plaintext access before decryption.
+Entries are separated by `;` and each key is separated from its value by `=`. The sender refuses `;` and `=` in the MIME and filename values because the convention has no escaping layer. The receiver reads the fields by splitting the metadata string. There is no version byte, length prefix, JSON object, or replacement envelope.
 
 #### Key handling in the demonstration
 
 The receiver's private key is written to a password-protected PEM file, then loaded again in the receiver phase. The receiver verifies with a sender public key and the receiver private key. The geometry is recovered from the RSA-OAEP bootstrap; it is not transported as three plaintext values.
 
-### 3. Content header
-
-```text
-version    u8, value 1
-mime_len   u8
-mime       UTF-8, lowercase ASCII
-name_len   u8
-name       UTF-8, can be empty
-body       the remaining bytes
-```
-
-Rules and the reason for each:
-
-| Rule | Reason |
-| --- | --- |
-| Big-endian, length-prefixed | agrees with the packet format. There are no delimiters to escape |
-| Version byte first | a later change does not need a new packet format |
-| Body length implicit | removes one field that can disagree with the data |
-| Empty `mime` means `application/octet-stream` | an unknown type is a permitted answer |
-| `mime` and `name` limited to 255 bytes | one-byte length fields |
-| `name` must be a bare filename | the reader refuses `/`, `\`, and `..` |
-
-### 4. The declared type is a claim, not a fact
+### 2. The declared type is a claim, not a fact
 
 A signature proves that the sender said the bytes were a PNG. It does not prove that the bytes are a PNG. A signature can make a false claim look trustworthy, which is worse than no signature if the receiver relaxes because of it.
 
@@ -279,7 +221,7 @@ The check is inside the function that renders. It is not at the call site. A che
 
 Types recognised by magic bytes: `image/png`, `image/jpeg`, `audio/wav`, `application/pdf`.
 
-### 5. Handler table
+### 3. Handler table
 
 | Declared type | Action |
 | --- | --- |
@@ -289,30 +231,31 @@ Types recognised by magic bytes: `image/png`, `image/jpeg`, `audio/wav`, `applic
 | anything else, or empty | save and report the path |
 | declared type disagrees with the bytes | save and report the path. Do not render |
 
-The function that writes the file derives its own safe filename. It does not trust the name it was given, even after the reader validated it. The function that writes is the function that must be safe.
+The function that writes the file derives its own safe filename. It does not trust the name it was given, even after the receiver validates it. The function that writes is the function that must be safe.
 
-### 6. Capacity
+### 4. Capacity
 
-Capacity if a caller adds the recorded optional seal on top of the library's encryption, with empty metadata and packet start at the reserved 2,048-unit RSA-2048 bootstrap span. This is measured from the reserved span, not unit 0. The notebook no longer demonstrates this layer; decision 16 records its removal. The total hypothetical overhead is per carrier: current record overhead (`93 + 2W`) + 16-byte library GCM tag + 256-byte RSA-PSS signature + 268-byte caller-side seal prefix + 16-byte caller-side seal tag, giving 655 bytes for Banana (W=3) and 653 bytes for the WAV (W=2). A later start or nonempty metadata reduces these values.
+Capacity uses the library's actual encrypted record, with empty metadata and packet start at the reserved 2,048-unit RSA-2048 bootstrap span. The generated 36-byte media id gives 109 bytes of record overhead. Adding the 16-byte GCM tag and 256-byte RSA-PSS signature gives 381 bytes before user payload. These values come from the capacity helpers; a later start or nonempty metadata reduces the user capacity.
 
 | `k` | Banana PNG, 6,021,120 units | Demonstration WAV, 32,000 samples |
 | ---: | ---: | ---: |
-| 1 | 751,729 | 3,091 |
-| 2 | 1,504,113 | 6,835 |
-| 3 | 2,256,497 | 10,579 |
-| 8 | 6,018,417 | 29,299 |
+| 1 | 752,003 | 3,363 |
+| 2 | 1,504,387 | 7,107 |
+| 3 | 2,256,771 | 10,851 |
+| 8 | 6,018,691 | 29,571 |
 
-Use the capacity helpers with the actual start and record overhead when accepting a user payload. These figures are hypothetical caller-side sealing overhead, not a new protocol overhead; the seal was removed from the Stage 5 demonstration.
+Use `max_user_payload_length` with the actual start and record overhead when accepting a user payload. The table is capacity for the current library protocol, not for a caller-side seal.
 
 The image carrier holds a small image or a short audio clip at `k=1`. The demonstration audio carrier holds text only. That limit comes from the short 8-bit mono tone the notebook generates, not from the design. Capacity grows in proportion to the sample count, so a longer cover removes the difference.
 
 For an audio cover, one carrier unit is one PCM sample, not one byte. See [Carrier units](PROTOCOL-DESIGN.md#carrier-units). Therefore a multi-byte cover holds `1 / sample_width` of what its file size suggests: a 16-bit cover holds half, a 24-bit cover a third, and a 32-bit cover a quarter. Longer audio buys capacity; deeper samples do not.
 
-### 7. Limitations
+### 5. Limitations
 
 - The type declaration protects an honest receiver from a mistake. It does not protect anyone from a sender who signs a hostile file. Software that renders the payload must still validate the file itself.
 - Compression must happen before encryption, because encrypted bytes do not compress. Compression before encryption leaks information about the plaintext through the ciphertext length. Nothing in this design lets an attacker inject chosen data into the plaintext, so the risk is theoretical here, but it is real in designs that do.
-- The header describes one file. Several files need an archive as the body, with `mime` set to the archive type. The header needs no change for that.
+- The metadata convention describes one file. Several files need an archive as the user payload, with `mime` set to the archive type. The convention needs no new wrapper for that.
+- The metadata convention separates entries with `;` and keys from values with `=`. The sender refuses those characters in MIME and filename values because it has no escaping layer.
 - The demonstration sends the message content as a placeholder string. The team still chooses the message it demonstrates.
 
 # Design history

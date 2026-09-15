@@ -53,7 +53,7 @@ PNG gains less than WAV. Pillow decodes a whole image regardless, so the honest 
 
 ## Order when it is revisited
 
-Protocol version 2 is complete, so this work is now unblocked. Its stage 1 introduced the carrier-derived width and capacity functions, which take the unit count as a plain integer and do not care how the carrier is stored. That part survives a move to chunked access unchanged.
+Protocol version 2 is complete, so this work is now unblocked. Its stage 1 introduced the capacity functions, which take the unit count as a plain integer and do not care how the carrier is stored. That part survives a move to chunked access unchanged.
 
 The parts that need rework are the masked hash and the read and write primitives, and version 2 has already rewritten them. Doing streaming first would have meant writing them twice.
 
