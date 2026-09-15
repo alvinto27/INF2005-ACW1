@@ -31,7 +31,7 @@ def carrier(size=24000):
     return np.arange(size, dtype=np.uint8)
 
 
-def payload_length(total_units, user_payload=b"hello", metadata=b"{}"):
+def payload_length(user_payload=b"hello", metadata=b"{}"):
     media_id_length = len("IMG-" + "0" * 32)
     return serialized_record_length(media_id_length, len(user_payload), len(metadata))
 
@@ -139,6 +139,15 @@ class TestMaskedStego(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "truncated in user payload"):
             parse_payload(declared)
+        declared_metadata = (
+            bytes((len(media_id),))
+            + media_id
+            + bytes(8 + 16 + 32)
+            + (0).to_bytes(8, "big")
+            + (1).to_bytes(8, "big")
+        )
+        with self.assertRaisesRegex(ValueError, "truncated in metadata"):
+            parse_payload(declared_metadata)
 
     def test_power_of_two_carrier_round_trip(self) -> None:
         source = carrier(65536)
@@ -231,9 +240,10 @@ class TestMaskedStego(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "start_unit must be at least bootstrap_span"):
             calculate_masked_media_hash(carrier(8), IMAGE_MEDIA_CODE, 3, 1, 2, 2)
 
-    def test_protocol_field_rejects_values_above_u64(self) -> None:
+    def test_protocol_field_boundaries(self) -> None:
+        self.assertEqual(encode_protocol_field(2**64 - 1, "field"), b"\xff" * 8)
         with self.assertRaisesRegex(ValueError, "must fit in 8 bytes"):
-            encode_protocol_field(1 << 64, "field")
+            encode_protocol_field(2**64, "field")
 
     def test_signing_input_uses_fixed_width_fields(self) -> None:
         payload = b"abcde"
@@ -339,7 +349,7 @@ class TestMaskedStego(unittest.TestCase):
         cases = []
         for k in SUPPORTED_LSB_COUNTS:
             for start_kind in ("zero", "middle", "boundary"):
-                footprint = ceil_unit_count((payload_length(source.size) + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE) * 8, k)
+                footprint = ceil_unit_count((payload_length() + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE) * 8, k)
                 start = {"zero": bootstrap_span(RECEIVER_PUBLIC_KEY), "middle": bootstrap_span(RECEIVER_PUBLIC_KEY) + 211, "boundary": source.size - footprint}[start_kind]
                 encoded, layout, payload = encode_carrier(source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, start, k, b"hello", b"{}")
                 result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
@@ -629,7 +639,7 @@ class TestMaskedStego(unittest.TestCase):
             calculate_masked_media_hash(outside_changed, IMAGE_MEDIA_CODE, 8, layout.start_unit, layout.footprint, layout.bootstrap_span),
         )
 
-        packet_bytes = payload_length(source.size, b"", b"") + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE
+        packet_bytes = payload_length(b"", b"") + GCM_TAG_SIZE + RSA_SIGNATURE_SIZE
         exact_footprint = ceil_unit_count(packet_bytes * 8, 8)
         exact_size = bootstrap_span(RECEIVER_PUBLIC_KEY) + exact_footprint
         exact_source = carrier(exact_size)
