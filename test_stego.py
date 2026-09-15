@@ -390,6 +390,27 @@ class TestMaskedStego(unittest.TestCase):
         changed_bootstrap[0] ^= np.uint8(1)
         self.assertEqual(decode_carrier(changed_bootstrap, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Payload Missing")
 
+    def test_signature_verification_precedes_decryption(self) -> None:
+        source = carrier(30000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
+        signature_invalid = embedded_bit_flip(encoded, layout.start_unit, layout.lsb_count, 0)
+        with patch("stego.core.aead_open", wraps=aead_open) as decrypt_mock:
+            authentic = decode_carrier(
+                encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+            )
+            self.assertEqual(authentic.verdict, "Authentic")
+            decrypt_mock.assert_called_once()
+            decrypt_mock.reset_mock()
+            invalid = decode_carrier(
+                signature_invalid,
+                IMAGE_MEDIA_CODE,
+                context,
+                PUBLIC_KEY,
+                RECEIVER_PRIVATE_KEY,
+            )
+            self.assertEqual(invalid.verdict, "Signature Invalid")
+            decrypt_mock.assert_not_called()
+
     def test_bootstrap_authenticated_decryption_rejects_changed_session_material(self) -> None:
         source = carrier(30000)
         (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
