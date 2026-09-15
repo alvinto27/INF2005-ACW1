@@ -130,7 +130,7 @@ The removed scan had a candidate limit and refused multiple valid candidates. Th
 
 ## Signature scope
 
-The RSA-PSS signature authenticates the protocol version, media code, selected LSB count, total carrier-unit count, recovered start unit, derived footprint, ciphertext length, fixed media context, and every ciphertext byte. AES-GCM authenticates the recovered session key, nonce, and plaintext record. The record includes the stored media hash, user payload, metadata, media identifier, timestamp, and nonce.
+The RSA-PSS signature authenticates the protocol version, media code, selected LSB count, total carrier-unit count, recovered start unit, derived footprint, ciphertext length, fixed media context, and every ciphertext byte. AES-GCM authenticates the ciphertext and the additional authenticated data under the supplied session key and nonce. In this flow, a substituted session key or nonce produces the `Cannot Decrypt` verdict; the protocol makes no key-commitment claim. The record includes the stored media hash, user payload, metadata, media identifier, timestamp, and nonce.
 
 The signature does not authenticate the original values of overwritten cover LSBs. It does not cover file-container metadata outside the decoded carrier units. It does not identify a person, prove freshness, or prevent removal of the embedded packet.
 
