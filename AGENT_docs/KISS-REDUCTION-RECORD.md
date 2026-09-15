@@ -17,7 +17,7 @@ headlessly; the dependency was added and the outputs were refreshed later.
 The protocol keeps receiver-gated encryption, the RSA-OAEP bootstrap, AES-256-GCM,
 RSA-PSS signatures, masked-media integrity, and PNG/WAV adapters. It removes
 carrier-dependent integer widths, the unused `flags` field, and the separate
-caller-side typed-content header. The test suite has **55 passing tests**.
+caller-side typed-content header. The test suite has **57 passing tests**.
 
 ## Phases
 
@@ -190,6 +190,15 @@ notebook robustness without changing the protocol design:
   authenticates ciphertext and additional data under the supplied key and nonce;
   a substituted key or nonce gives `Cannot Decrypt`, and the protocol makes no
   key-commitment claim.
+- **`f65515e` — closed an impossible-record measurement hole.**
+  `encode_protocol_field` enforced the u64 bound, but `serialized_record_length`
+  checked only non-negativity, so the capacity helper could measure a record the
+  serialiser cannot produce, such as a 256-byte media-id prefix or a `2^64`
+  payload length. No live defect existed: `encode_carrier` always supplies a
+  36-byte media ID and real byte strings do not approach the bound. It was closed
+  anyway because capacity must be an exact inverse of the wire format. The bound
+  now lives in one shared validator, `PayloadRecord` rejects an out-of-range
+  timestamp at construction, and the suite is now 57 tests.
 
 ## Audit of related records
 
@@ -210,7 +219,7 @@ was no next stage were true for that snapshot. They are not current baseline
 claims, but changing them would damage the handoff's historical meaning.
 
 If a fresh handoff is needed, replace those values with the reduced-format
-status, **55 passing tests**, the current branch tip, and the current notebook
+status, **57 passing tests**, the current branch tip, and the current notebook
 dependency state. No edit to the historical handoff is required for this record.
 
 ## Lessons
@@ -232,7 +241,7 @@ dependency state. No edit to the historical handoff is required for this record.
 
 ```text
 cyber_venv/bin/python -m unittest -q
-55 tests passed
+57 tests passed
 
 python3 scripts/check-docs.py
 0 errors across 14 Markdown files and 159 links
