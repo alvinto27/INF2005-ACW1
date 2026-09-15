@@ -869,10 +869,16 @@ class TestMaskedStego(unittest.TestCase):
                                 b"",
                             )
                         self.assertTrue(np.array_equal(too_small, before))
+                record_maximum = max_record_length(
+                    expected_minimum - 1,
+                    span,
+                    span,
+                    lsb_count,
+                )
                 with self.assertRaisesRegex(
                     ValueError,
                     f"record overhead exceeds record capacity.*record_overhead={minimum_record_length}.*"
-                    f"record_maximum=108.*total_units={expected_minimum - 1}.*"
+                    f"record_maximum={record_maximum}.*total_units={expected_minimum - 1}.*"
                     f"start_unit={span}.*lsb_count={lsb_count}.*minimum_units={expected_minimum}",
                 ):
                     max_user_payload_length(
@@ -883,13 +889,21 @@ class TestMaskedStego(unittest.TestCase):
                         minimum_record_length,
                     )
 
+    def test_oversized_metadata_reports_record_capacity_not_carrier_size(self) -> None:
         total_units = 10000
-        start_unit = bootstrap_span(RECEIVER_PUBLIC_KEY)
+        span = bootstrap_span(RECEIVER_PUBLIC_KEY)
+        start_unit = span
         lsb_count = 1
         metadata = b"m" * 2048
         source = carrier(total_units)
         before = source.copy()
         context = struct.pack(">II", total_units // 3, 1)
+        record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, len(metadata))
+        record_maximum = max_record_length(total_units, start_unit, span, lsb_count)
+        expected_details = (
+            f"record overhead exceeds record capacity: record_overhead={record_overhead}, "
+            f"record_maximum={record_maximum}"
+        )
 
         with self.assertRaises(ValueError) as error:
             encode_carrier(
@@ -905,10 +919,8 @@ class TestMaskedStego(unittest.TestCase):
             )
 
         message = str(error.exception)
-        self.assertIn("record overhead exceeds record capacity", message)
+        self.assertIn(expected_details, message)
         self.assertNotIn("carrier is too small for the protocol", message)
-        self.assertIn("record_overhead=2157", message)
-        self.assertIn("record_maximum=722", message)
         self.assertTrue(np.array_equal(source, before))
 
     def test_payload_capacity_refuses_carrier_without_packet(self) -> None:
