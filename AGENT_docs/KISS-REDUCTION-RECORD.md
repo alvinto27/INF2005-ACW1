@@ -1,10 +1,16 @@
 # KISS Reduction Record
 
 This record describes the completed reduction of the version 2 protocol. The
-[Reduction Specification](REDUCTION-SPEC.md) states the goal, and the
-[Reduction Task Brief](REDUCTION-TASK-BRIEF.md) fixes the implementation details.
-The older [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md) remains a history
-of the larger design; this record is the current format and outcome.
+[Reduction Specification](REDUCTION-SPEC.md) states the goal and scope. The former
+implementation work order has been folded into this record, which states the
+outcome and measurements. The older [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md)
+remains a history of the larger design; this record is the current format and outcome.
+
+## Baseline before the reduction
+
+Before the reduction phases, branch `yx` was clean at `51fb9e8` with 54 passing
+tests. `nbconvert` was not installed, so the notebook could not be re-run
+headlessly; the dependency was added and the outputs were refreshed later.
 
 ## Outcome
 

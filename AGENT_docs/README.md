@@ -24,5 +24,4 @@ For repository structure and implementation entry points, see [Agent Navigation 
 - [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) — **deferred and upcoming.** Why whole-carrier arrays force the 64 MiB WAV cap, why the cap and seekable chunked access are one topic, what the change would cost, and the conditions for revisiting it.
 - [Work Not Built](WORK-NOT-BUILT.md#work-not-built) — assignment work that remains to be built, demonstrated, or assembled.
 - [KISS Reduction Specification](REDUCTION-SPEC.md) — the approved reduction goals and constraints.
-- [Reduction Task Brief](REDUCTION-TASK-BRIEF.md) — the implementer brief for the reduction phases.
 - [KISS Reduction Record](KISS-REDUCTION-RECORD.md) — the committed reduction outcome, measurements, decisions, and lessons.

@@ -25,7 +25,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
 | Deferred and upcoming chunked-carrier plan, including the 64 MiB WAV cover cap | [STREAMING-CARRIER-PLAN.md](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) |
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
-| Reduction specification, brief, and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [REDUCTION-TASK-BRIEF.md](REDUCTION-TASK-BRIEF.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
+| Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
 
 ## Implementation locations
 
