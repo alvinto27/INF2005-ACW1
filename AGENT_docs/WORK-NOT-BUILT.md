@@ -1,6 +1,6 @@
 # Work Not Built
 
-This record lists assignment work that remains outside the library and notebook. The library implements committed protocol version 2 stage 6b: verification recovers geometry through the encrypted bootstrap and is gated by the receiver private key; see the [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md).
+This record lists assignment work that remains outside the library and notebook. The library implements the reduced protocol version 2 format: verification recovers geometry through the encrypted bootstrap and is gated by the receiver private key; see the [KISS Reduction Record](KISS-REDUCTION-RECORD.md).
 
 ## 1. NOT BUILT, OWNED ELSEWHERE
 
@@ -8,7 +8,7 @@ This record lists assignment work that remains outside the library and notebook.
 
 The GUI is mandatory under brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope). Another team member owns it; this repository does not build it. Criteria 2 and 3 total 19 marks (9 for image and 10 for audio) under brief [§11](../docs/INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks). Those criteria assess the working implementations and their demonstrations. This repository already provides the working encoders and decoders, payload insertion, extraction through the encrypted bootstrap, receiver-gated verification, and negative or tampered detection for both media. The GUI remains the demonstration surface owed by the team. It must:
 
-- play or execute the payload (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)). The content header that makes this possible is designed and demonstrated; see [Payload Envelope Design](PROTOCOL-DESIGN.md#payload-envelope-design). The GUI must read the declared type to select a handler, and must confirm the declared type against the bytes before it renders anything;
+- play or execute the payload (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)). The typed-payload metadata convention that supports this is demonstrated; see [Typed Payload Metadata](PROTOCOL-DESIGN.md#typed-payload-metadata). The GUI must read the declared type to select a handler, and must confirm the declared type against the bytes before it renders anything;
 - display the cover and stego objects side by side before and after encoding and decoding (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope));
 - allow selection of 1 to 8 LSBs for encoding (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope));
 - collect the start unit and LSB count for encoding, with the start-unit control bounded below by the receiver's reserved bootstrap span;
@@ -43,9 +43,9 @@ The brief names the exact test payload categories, but the notebook currently us
 
 - **Short message:** Use one Learning Outcome from brief [§3](../docs/INF2005-ACW1-spec_v5-f2f.md#3-learning-outcomes). The recorded choice is outcome 6, about designing and securing the start location. It is 138 bytes and is the outcome this implementation answers most directly.
 - **Large message:** Use the Project Overview paragraphs from brief [§2](../docs/INF2005-ACW1-spec_v5-f2f.md#2-project-overview). They are 673 bytes.
-- **Custom confidential payload:** Library-level encryption and integrity, plus the content-type mechanism, are **built and demonstrated** in the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb). Only the **message content is undecided**. The notebook uses a placeholder string, and the team must choose the message it demonstrates.
+- **Custom confidential payload:** Library-level encryption and integrity, plus the typed-payload metadata convention, are **built and demonstrated** in the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb). Only the **message content is undecided**. The notebook uses a placeholder string, and the team must choose the message it demonstrates.
 - **Typed payload files:** The typed-payload demonstration generates its own payload files, a 64x64 image and a short tone. A supplied audio file replaces the generated tone later. The swap point is one variable in the typed-payload cell. A supplied file must stay below about 700,000 bytes to fit the image carrier at `k=1`, and should be plain PCM WAV or MP3 so that the notebook can play it.
-- **Capacity reference:** Measured from start unit 2,048 with empty metadata, the current library gives 752,013 bytes at `k=1` and 6,018,701 bytes at `k=8` in the 6,021,120-unit Banana cover; it gives 3,375 bytes at `k=1` and 29,583 bytes at `k=8` in the 32,000-sample WAV. Therefore, the 673-byte large message fits both. The large message is large only relative to the short message; it is not a capacity test. The separate capacity case embeds the cover image inside itself (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)).
+- **Capacity reference:** Measured from start unit 2,048 with empty metadata, the current library gives 752,003 bytes at `k=1` and 6,018,691 bytes at `k=8` in the 6,021,120-unit Banana cover; it gives 3,363 bytes at `k=1` and 29,571 bytes at `k=8` in the 32,000-sample WAV. Therefore, the 673-byte large message fits both. The large message is large only relative to the short message; it is not a capacity test. The separate capacity case embeds the cover image inside itself (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)).
 
 ## 4. SUBMISSION PACKAGE, NOT ASSEMBLED
 

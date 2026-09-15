@@ -15,9 +15,13 @@ Requires Python 3.10+.
 
 ## Current development stage
 
-This branch implements stage 6b of the [version 2 plan](AGENT_docs/LOCATION-CONFIDENTIALITY-PLAN.md).
+This branch implements the reduced version 2 format recorded in
+[KISS Reduction Record](AGENT_docs/KISS-REDUCTION-RECORD.md), superseding the stage 6b
+wire format described in the [version 2 plan](AGENT_docs/LOCATION-CONFIDENTIALITY-PLAN.md).
 The public marker and packet header are removed. Existing version 1 files are not supported.
 The receiver recovers packet geometry from an RSA-OAEP bootstrap.
+All serialised protocol integers use unsigned 64-bit big-endian fields; protocol `flags`
+are not present. Typed payload MIME and filename claims use the encrypted metadata string.
 
 Verification requires the sender public key and receiver private key. For example:
 

@@ -1,6 +1,6 @@
 # Location Confidentiality Plan
 
-**Status: protocol version 2 stage 6b is implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. Payload-record lengths use the carrier-derived field width, and unusable carriers are refused before encoding. See the [Stage Record](PROTOCOL-V2-STAGE-RECORD.md) for outcomes and [Protocol Design](PROTOCOL-DESIGN.md#protocol-design) for current behaviour.
+**Historical status: protocol version 2 stage 6b was implemented.** The headerless packet is encrypted, and an RSA-OAEP bootstrap carries its geometry and AES-GCM session material to the receiver. The receiver verifies with the sender public key and its private key. The KISS reduction later superseded the stage 6b wire-format details: current fields are fixed unsigned 64-bit values, `flags` are removed, and typed payload claims use metadata. See the [KISS Reduction Specification](REDUCTION-SPEC.md), [KISS Reduction Record](KISS-REDUCTION-RECORD.md), and [Protocol Design](PROTOCOL-DESIGN.md#protocol-design) for current behaviour.
 
 The goal is to protect the payload start location, length, and LSB depth from everyone except the intended receiver, while the user still chooses all three by hand.
 
@@ -599,7 +599,7 @@ The decision therefore stays open rather than being settled twice. Documenting t
 | `test_stego.py` | marker and discovery tests deleted. Added: bootstrap round trip, reserved-region refusal, untrusted-field validation, bootstrap tampering, power-of-two width, capacity boundary at several LSB counts |
 | Notebook | every section. The "verify with only a public key" narrative changes. The 4,000-sample typed tone is clarified without lengthening it |
 | Existing files | version-1 files become unreadable. No migration is planned, and the repository stores no old artefacts |
-| [Payload Envelope Design](PROTOCOL-DESIGN.md#payload-envelope-design) | the sealed blob is replaced by the bootstrap. The FR9 claim about a readable `media_hash` is withdrawn. `metadata` is no longer readable. Capacity loses the bootstrap span |
+| [Typed Payload Metadata](PROTOCOL-DESIGN.md#typed-payload-metadata) | the sealed blob is replaced by the bootstrap. The FR9 claim about a readable `media_hash` is withdrawn. `metadata` is no longer readable. Capacity loses the bootstrap span |
 
 ## 14. Staging
 

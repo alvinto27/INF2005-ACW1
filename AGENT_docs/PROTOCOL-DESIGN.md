@@ -2,7 +2,7 @@
 
 ## What the system does
 
-**Current state: protocol version 2 stage 6b.** See the [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md). The packet has no public marker or header. An RSA-OAEP bootstrap carries the packet geometry and AES-256-GCM session material for the intended receiver. The encrypted record is authenticated by RSA-PSS and the masked media hash. Version 1 files are not readable under this scheme.
+**Current state: reduced protocol version 2.** See the [KISS Reduction Record](KISS-REDUCTION-RECORD.md) and the historical [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md). The packet has no public marker or header. An RSA-OAEP bootstrap carries the packet geometry and AES-256-GCM session material for the intended receiver. The encrypted record is authenticated by RSA-PSS and the masked media hash. Version 1 files are not readable under this scheme. Serialised protocol integers use fixed unsigned 64-bit big-endian fields, and typed payload claims use encrypted metadata.
 
 The system embeds an encrypted signed payload in the least-significant bits of a strict RGB PNG image or an uncompressed PCM WAV file. It hashes all carrier bits that the embedding operation preserves. Verification requires the sender public key and receiver private key.
 
@@ -175,7 +175,7 @@ This claim says nothing about a real-world identity. The caller must obtain the 
 
 ---
 
-## Payload Envelope Design
+## Typed Payload Metadata
 
 Protocol version 2 encrypts the complete payload record inside the library, including `user_payload`. The notebook's typed-payload demonstration uses the existing `metadata` field for the MIME claim and original filename; the file bytes remain raw in `user_payload`. No caller-side seal or nested content header remains.
 

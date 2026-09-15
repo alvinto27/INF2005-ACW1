@@ -10,6 +10,8 @@ Entries describe the state at their own commit and are never retro-fitted; later
 
 For stage 4b, the owner clarified the working method: the worker makes all file changes, executes the notebook, and performs approved commits; the orchestrator decides, reviews, and checks. This supersedes the historical handoff role split.
 
+**Historical record note:** The stage outcomes below retain the formats and measurements true at their commits. The later KISS reduction supersedes their current-format claims: protocol integers are now fixed unsigned 64-bit fields, `flags` are removed, and typed payload claims use metadata. See the [KISS Reduction Specification](REDUCTION-SPEC.md) and [KISS Reduction Record](KISS-REDUCTION-RECORD.md).
+
 ## Status
 
 | Stage | Scope | Commit | State |
@@ -26,7 +28,7 @@ For stage 4b, the owner clarified the working method: the worker makes all file 
 | 6a | Carrier-derived payload-record length fields | `56fbae7` | done |
 | 6b | Reject unusable carriers and reserve zero for exact fits | `02e90d7` | done |
 
-Stages 1 through 4a were preparation and preserved version 1 behaviour. Stage 4b intentionally changed the packet format and verification API. Stage 4c changes it again to receiver-gated encrypted verification; stage 6a removes the inner record's fixed uint32 ceiling; stage 6b rejects unusable carriers. The current suite has 55 tests.
+Stages 1 through 4a were preparation and preserved version 1 behaviour. Stage 4b intentionally changed the packet format and verification API. Stage 4c changes it again to receiver-gated encrypted verification; stage 6a removes the inner record's fixed uint32 ceiling; stage 6b rejects unusable carriers. The suite at that stage had 55 tests.
 
 ## Stage 1: carrier-derived payload capacity
 
