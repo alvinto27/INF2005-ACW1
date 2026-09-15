@@ -45,7 +45,7 @@ The shared hash and capacity functions take the reserved bootstrap span as a req
 
 ## Module dependencies
 
-`bits` depends on `constants` and provides `encode_protocol_field`. `layout`, `packet`, and `bootstrap` depend on `bits` and `constants`; none of them imports `layout` for field widths. `crypto` and `media` depend only on `constants` and `bits`. `core` is the only module where protocol, crypto, and media meet, and it calls the bootstrap and encryption primitives for encoding and decoding.
+`bits` depends on `constants` and provides `encode_protocol_field`. `layout` depends on `bits` and `constants`; `packet` and `bootstrap` also depend on `bits` and `constants` and no longer import `layout`. `crypto` and `media` depend only on `constants` and `bits`. `core` is the only module where protocol, crypto, and media meet, and it calls the bootstrap and encryption primitives for encoding and decoding.
 
 ## Packet format and signing input
 

@@ -24,7 +24,9 @@ caller-side typed-content header. The test suite has **54 passing tests**.
 | Notebook | Refreshed committed outputs and recorded `nbconvert` | `602b7b4` |
 | Tests | Audited the reduced wire format and security coverage | `829c53e` |
 | 5a | Updated current protocol, README, and streaming-plan prose | `7445538` |
-| 5b | Updated records, indexes, maps, and this outcome record | this record's commit |
+| 5b | Updated records, indexes, maps, and this outcome record | `4b69a3d` |
+
+Later documentation corrections follow in subsequent commits, so this table does not have to chase its own hash.
 
 ## Current wire formats
 
@@ -35,15 +37,15 @@ one-byte fields.
 ### Payload record
 
 ```text
-media_id_length   u8
-media_id          media_id_length bytes of UTF-8
-timestamp         u64
+media_id_length    u8
+media_id           media_id_length bytes of UTF-8
+timestamp          u64
 nonce              16 bytes
-media_hash        32 bytes
-user_length       u64
-user_payload      user_length bytes
-metadata_length   u64
-metadata          metadata_length bytes of UTF-8
+media_hash         32 bytes
+user_length        u64
+user_payload       user_length bytes
+metadata_length    u64
+metadata           metadata_length bytes of UTF-8
 ```
 
 The generated 36-byte media ID gives a record overhead of **109 bytes** before
@@ -53,12 +55,12 @@ user payload and metadata. The payload record is encrypted as a whole.
 
 ```text
 bootstrap plaintext:
-version            u8
-lsb_count          u8
-start_unit         u64
-ciphertext_length  u64
-session_key       32 bytes
-aead_nonce         12 bytes
+version             u8
+lsb_count           u8
+start_unit          u64
+ciphertext_length   u64
+session_key         32 bytes
+aead_nonce          12 bytes
 
 GCM additional data:
 version || lsb_count || start_unit(u64) || ciphertext_length(u64)
