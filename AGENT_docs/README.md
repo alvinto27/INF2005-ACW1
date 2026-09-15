@@ -4,7 +4,7 @@ This index lists durable documentation for the signed payload protocol repositor
 
 ## Navigation
 
-For repository structure and implementation entry points, see [Agent Navigation Map](AGENT_MAP.md).
+For repository structure and implementation entry points, see [Agent Navigation Map](AGENT_MAP.md). The documentation checker rejects local links whose resolved targets leave this repository root.
 
 ## Repository entry points
 
