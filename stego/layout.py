@@ -83,7 +83,8 @@ def max_user_payload_length(total_units: int, start_unit: int, bootstrap_span: i
             lsb_count,
         )
         raise ValueError(
-            "carrier is too small for the protocol: "
+            "record overhead exceeds record capacity: "
+            f"record_overhead={record_overhead}, record_maximum={record_maximum}, "
             f"total_units={total_units}, start_unit={start_unit}, "
             f"lsb_count={lsb_count}, minimum_units={minimum_units}"
         )
