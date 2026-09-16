@@ -79,6 +79,11 @@ def main() -> int:
                 continue
             link_count += 1
             target = source if not target_text else (source.parent / target_text).resolve()
+            try:
+                target.relative_to(ROOT)
+            except ValueError:
+                errors.append(f"{source.relative_to(ROOT)}: link target escapes repository root: {match.group(1)}")
+                continue
             if not target.exists():
                 errors.append(f"{source.relative_to(ROOT)}: missing link target: {match.group(1)}")
                 continue

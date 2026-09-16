@@ -12,8 +12,12 @@ Use this map before editing an unfamiliar part of the repository.
 | Repository instructions | [AGENTS.md](../AGENTS.md) |
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
-| Current masked-media integrity design and design history | [INTEGRITY-DESIGN.md](INTEGRITY-DESIGN.md) |
-| Outstanding assignment work | [OUTSTANDING-WORK.md](OUTSTANDING-WORK.md) |
+| Current protocol, fixed-width fields, typed-payload metadata, and design history | [PROTOCOL-DESIGN.md](PROTOCOL-DESIGN.md#protocol-design) |
+| Historical protocol version 2 design; stages 0 through 6b complete; 6c cancelled | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
+| Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
+| Deferred and upcoming chunked-carrier plan, including the 64 MiB WAV cover cap | [STREAMING-CARRIER-PLAN.md](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) |
+| Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
+| Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
 
 ## Implementation locations
 
@@ -23,11 +27,13 @@ Use this map before editing an unfamiliar part of the repository.
 | Constants and domain separators | [stego/constants.py](../stego/constants.py) |
 | Validation and LSB primitives | [stego/bits.py](../stego/bits.py) |
 | Layout, masked hash, and signing input | [stego/layout.py](../stego/layout.py) |
-| Packet records, framing, and scanning | [stego/packet.py](../stego/packet.py) |
-| RSA-PSS keys, signatures, fingerprints, and PEM | [stego/keys.py](../stego/keys.py) |
+| Bootstrap envelope and authenticated data | [stego/bootstrap.py](../stego/bootstrap.py) |
+| Payload records and serialisation | [stego/packet.py](../stego/packet.py) |
+| RSA-PSS keys, signatures, fingerprints, and PEM | [stego/crypto.py](../stego/crypto.py) |
+| Carrier capacity and fixed-width protocol fields | [stego/layout.py](../stego/layout.py) |
 | PNG and WAV adapters | [stego/media.py](../stego/media.py) |
-| End-to-end encode and verification | [stego/core.py](../stego/core.py) |
-| FR1–FR12 demonstration notebook | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
+| End-to-end encrypted encode, receiver-gated verification, and reduced protocol format | [stego/core.py](../stego/core.py) |
+| FR1–FR12 demonstration notebook and Stage 5 verdict/fidelity evidence | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol tests | [test_stego.py](../test_stego.py) |
 | Runtime and test dependencies | [requirements.txt](../requirements.txt) |
 | Optional demonstration-notebook dependency | [requirements-notebook.txt](../requirements-notebook.txt) |
