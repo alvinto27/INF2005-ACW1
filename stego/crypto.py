@@ -1,4 +1,4 @@
-"""Sign and verify with RSA-PSS, and handle key fingerprints and PEM files."""
+"""Provide RSA-PSS, RSA-OAEP, and AES-GCM primitives plus key fingerprints and PEM files."""
 
 import base64
 import hashlib
@@ -7,6 +7,7 @@ from os import PathLike
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .bits import _require_bytes
 from .constants import (
@@ -64,9 +65,60 @@ def display_rsa_public_key_fingerprint(public_key: rsa.RSAPublicKey) -> str:
     return FINGERPRINT_DISPLAY_PREFIX + encoded
 
 
+def rsa_oaep_padding() -> padding.OAEP:
+    """Make RSA-OAEP padding with SHA-256 for encryption and MGF1."""
+    return padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+
+
 def rsa_pss_padding() -> padding.PSS:
     """Make the RSA-PSS padding used by this protocol."""
     return padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=RSA_PSS_SALT_LENGTH)
+
+
+def seal_to_public_key(plaintext: bytes, public_key: rsa.RSAPublicKey) -> bytes:
+    """Encrypt plaintext with RSA-OAEP to an RSA public key."""
+    plaintext = _require_bytes(plaintext, "plaintext")
+    return validate_rsa_public_key(public_key).encrypt(plaintext, rsa_oaep_padding())
+
+
+def open_with_private_key(ciphertext: bytes, private_key: rsa.RSAPrivateKey) -> bytes:
+    """Decrypt RSA-OAEP ciphertext with an RSA private key."""
+    ciphertext = _require_bytes(ciphertext, "ciphertext")
+    return validate_rsa_private_key(private_key).decrypt(ciphertext, rsa_oaep_padding())
+
+
+def _validate_aead_key(key: bytes) -> bytes:
+    """Check that an AES-GCM key has exactly 32 bytes."""
+    key = _require_bytes(key, "key")
+    if len(key) != 32:
+        raise ValueError("key must contain exactly 32 bytes")
+    return key
+
+
+def _validate_aead_nonce(nonce: bytes) -> bytes:
+    """Check that an AES-GCM nonce has exactly 12 bytes."""
+    nonce = _require_bytes(nonce, "nonce")
+    if len(nonce) != 12:
+        raise ValueError("nonce must contain exactly 12 bytes")
+    return nonce
+
+
+def aead_seal(key: bytes, nonce: bytes, aad: bytes, plaintext: bytes) -> bytes:
+    """Encrypt plaintext with AES-GCM and return ciphertext with its tag."""
+    key = _validate_aead_key(key)
+    nonce = _validate_aead_nonce(nonce)
+    aad = _require_bytes(aad, "aad")
+    plaintext = _require_bytes(plaintext, "plaintext")
+    return AESGCM(key).encrypt(nonce, plaintext, aad)
+
+
+def aead_open(key: bytes, nonce: bytes, aad: bytes, ciphertext: bytes) -> bytes:
+    """Decrypt and authenticate AES-GCM ciphertext."""
+    key = _validate_aead_key(key)
+    nonce = _validate_aead_nonce(nonce)
+    aad = _require_bytes(aad, "aad")
+    ciphertext = _require_bytes(ciphertext, "ciphertext")
+    return AESGCM(key).decrypt(nonce, ciphertext, aad)
 
 
 def sign_bytes(signing_input: bytes, private_key: rsa.RSAPrivateKey) -> bytes:
