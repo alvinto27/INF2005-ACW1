@@ -1,79 +1,44 @@
 # INF2005-ACW1
 
-A localhost web application for protecting and verifying PNG images and
-uncompressed PCM/WAV audio using LSB steganography, SHA-256, and RSA-PSS digital
-signatures. The merge retains both protocol implementations already developed
-in the repository.
+The `stego` package provides the steganography implementation for strict
+RGB PNG and uncompressed PCM WAV carriers. It encrypts arbitrary user bytes in a
+single LSB embedding footprint with AES-256-GCM and authenticates them with RSA-PSS.
+
+Every carrier bit that embedding intentionally preserves is represented in the
+masked media hash. The encrypted record contains that hash and the user content.
+The RSA-OAEP bootstrap gives only the receiver the packet geometry and AES-GCM
+session material. The signature authenticates the ciphertext, media
+interpretation, and embedding layout.
 
 Requires Python 3.10+.
 
-## Setup and run
+## Current development stage
 
-```sh
-python -m pip install -r requirements.txt
-python run.py
+This branch implements the reduced version 2 format recorded in
+[KISS Reduction Record](AGENT_docs/KISS-REDUCTION-RECORD.md), superseding the stage 6b
+wire format described in the [version 2 plan](AGENT_docs/LOCATION-CONFIDENTIALITY-PLAN.md).
+The public marker and packet header are removed. Existing version 1 files are not supported.
+The receiver recovers packet geometry from an RSA-OAEP bootstrap.
+All serialised protocol integers use unsigned 64-bit big-endian fields; protocol `flags`
+are not present. Typed payload MIME and filename claims use the encrypted metadata string.
+
+Verification requires the sender public key and receiver private key. For example:
+
+```python
+layout, payload = encode_png(
+    "cover.png", "stego.png", sender_private_key, receiver_public_key,
+    2048, 3, b"message", b"{}"
+)
+result = verify_png("stego.png", sender_public_key, receiver_private_key)
 ```
 
-Open `http://127.0.0.1:5000`. The interface supports the seven-step encoding
-workflow and a Verify / Decode workflow. It accepts 1-8 LSBs, previews image or
-audio media, and uses GSAP 3.15 progressively for animation. The workflows still
-work without the CDN or when reduced motion is requested.
-
-Run all protocol and web tests with:
-
-```sh
-python -m unittest -v
-python scripts/check-docs.py
-```
-
-The optional demonstration notebook additionally needs:
-
-```sh
-python -m pip install -r requirements-notebook.txt
-```
-
-## Flask application protocol
-
-[`stego_web/`](stego_web/) provides `/encode`, `/decode`, `/location/derive`,
-and `/keys/generate`. It uses [`payload_protocol.py`](payload_protocol.py) for
-canonical JSON payloads and RSA-PSS signatures, and its own registered PNG/WAV
-LSB engines for media operations.
-
-The payload contains a media ID, media type, UTC timestamp, SHA-256 hash of the
-exact original file bytes, nonce, team ID, sender, and custom metadata. A
-PBKDF2-HMAC secret derives a repeatable non-zero embedding position. Full
-integrity verification needs the exact original cover: the verifier checks its
-signed hash, reconstructs the expected embedding, and compares the received
-decoded pixels or PCM bytes. Without the original, a valid signature returns
-`Cannot Verify` rather than making a full media-integrity claim.
-
-See [Decoding and Verification](AGENT_docs/DECODING-VERIFICATION.md).
-
-## Masked-media protocol
-
-The incoming [`stego/`](stego/) package provides a separate byte-oriented
-packet format plus strict RGB PNG and PCM/WAV adapters. It hashes the carrier
-after clearing the LSB positions occupied by the packet. The signature covers
-the payload, media interpretation, and embedding layout. This lets it verify
-preserved carrier bits directly from the stego object without receiving the
-original cover.
-
-Its public API includes `encode_carrier`, `decode_carrier`, `encode_png`,
-`verify_png`, `encode_wav`, and `verify_wav`. See the complete
-[Masked Media Integrity Design](AGENT_docs/INTEGRITY-DESIGN.md).
-
-## Compatibility boundary
-
-The two implementations intentionally remain separate after this merge. Their
-packet framing, location recovery, signing inputs, and integrity hashes differ,
-so a file encoded by one must be decoded by the same implementation. The Flask
-application continues using its established protocol; the masked-media package
-and notebook remain available with their original API and tests.
-
-See [Protocol Compatibility](AGENT_docs/PROTOCOL-COMPATIBILITY.md) before
-integrating the masked-media package into the web application.
+`verify_wav` and `decode_carrier` use the same sender and receiver key roles.
+The fixed RSA-2048 bootstrap span is 2,048 carrier units; the selected packet
+start must be at or after that span.
 
 ## Documentation
+
+Records are grouped by the question a reader arrives with.
 
 - [Agent instructions](AGENTS.md)
 - [Documentation index](AGENT_docs/README.md)

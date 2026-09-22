@@ -46,5 +46,5 @@ bash scripts/install-hooks.sh
 ## Map freshness
 
 - Update `AGENT_docs/AGENT_MAP.md` in the same commit as any change that affects paths, entry points, documentation locations, or repository boundaries it describes.
-- Before committing documentation or map changes, verify every map path and link. Run `python3 scripts/check-docs.py`; it checks mechanical link and anchor validity, but cannot judge whether a map description is semantically current.
+- Before committing documentation or map changes, verify every map path and link. Run `python3 scripts/check-docs.py`; it checks mechanical link and anchor validity, rejects local links that resolve outside this repository so the repository stays self-contained for anyone who clones it alone, but cannot judge whether a map description is semantically current.
 - Run `bash scripts/install-hooks.sh` after a fresh clone and after adding a repository boundary that needs the shared hook.
