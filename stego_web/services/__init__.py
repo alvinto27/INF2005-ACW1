@@ -1,6 +1,7 @@
 """Decoupled cryptography, location, and media-processing services."""
 
 from .cover_media import CoverMediaHandler, ValidatedCover
+from .current_protocol import CurrentProtocolService, WebEncodingResult, infer_payload_claim
 from .crypto_service import CryptoManager, CryptographyService, GeneratedKeyPair
 from .encoding_pipeline import EncodingPipeline, EncodingResult
 from .payload_builder import PayloadBuilder
@@ -16,6 +17,7 @@ from .steganography import (
 __all__ = [
     "AudioLsbSteganography",
     "CoverMediaHandler",
+    "CurrentProtocolService",
     "CryptoManager",
     "CryptographyService",
     "EncodingPipeline",
@@ -29,4 +31,6 @@ __all__ = [
     "SteganographyEngine",
     "SteganographyRegistry",
     "ValidatedCover",
+    "WebEncodingResult",
+    "infer_payload_claim",
 ]

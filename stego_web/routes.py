@@ -1,154 +1,115 @@
-"""HTTP boundary: input validation and JSON serialization only."""
-
-from __future__ import annotations
+"""HTTP boundary for the current masked-media protocol and existing web UI."""
 
 import base64
-import json
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, Response, jsonify, render_template, request
 
-from .exceptions import (
-    CapacityError,
-    InvalidMediaError,
-)
-from .models import Verdict
-from .services import (
-    AudioLsbSteganography,
-    CoverMediaHandler,
-    CryptoManager,
-    EncodingPipeline,
-    HmacStartLocation,
-    ImageLsbSteganography,
-    PayloadBuilder,
-    SteganographyRegistry,
-)
-from .services.verification_pipeline import VerificationPipeline
+from .services.current_protocol import CurrentProtocolService, infer_payload_claim
+
 
 web = Blueprint("web", __name__)
-
-location_strategy = HmacStartLocation()
-crypto_manager = CryptoManager()
-stego_registry = SteganographyRegistry(
-    [
-        ImageLsbSteganography(location_strategy),
-        AudioLsbSteganography(location_strategy),
-    ]
-)
-cover_handler = CoverMediaHandler(stego_registry)
-verification_pipeline = VerificationPipeline(cover_handler, crypto_manager)
-encoding_pipeline = EncodingPipeline(
-    cover_handler,
-    crypto_manager,
-    PayloadBuilder(),
-    location_strategy,
-)
+protocol_service = CurrentProtocolService()
 
 
 @web.get("/")
-def index():
+def index() -> str:
+    """Render the retained encoding and verification layout."""
     return render_template("index.html")
 
 
 @web.post("/encode")
-def encode():
+def encode() -> Response | tuple[Response, int]:
+    """Encrypt, sign, and embed a payload using protocol version 2."""
     try:
-        lsb_bits = _lsb_bits()
-        result = encoding_pipeline.encode(
+        user_payload, payload_mime, payload_name = _payload_input()
+        result = protocol_service.encode(
             _required_upload("cover"),
-            _required_upload("private_key"),
-            _required_form_value("key_password"),
+            _required_upload("sender_private_key"),
+            _required_form_value("sender_key_password"),
+            _required_upload("receiver_public_key"),
+            _integer_form_value("start_unit", minimum=0),
+            _lsb_bits(),
+            user_payload,
+            payload_mime,
+            payload_name,
             _required_form_value("team_id"),
             _required_form_value("sender"),
-            _team_metadata(),
-            _required_form_value("start_secret"),
-            lsb_bits,
+            request.form.get("metadata", "").strip(),
         )
-    except (CapacityError, InvalidMediaError, TypeError, ValueError) as error:
+    except (OSError, TypeError, ValueError) as error:
         return _error(str(error), 400)
 
     extension = "png" if result.media_type == "image" else "wav"
     return jsonify(
         ok=True,
+        protocol_version=2,
         media_type=result.media_type,
         filename=f"stego.{extension}",
         mime_type="image/png" if result.media_type == "image" else "audio/wav",
-        lsb_bits=lsb_bits,
-        start_location=result.embedded.start_location,
-        capacity_bytes=result.embedded.capacity_bytes,
-        payload=result.payload,
-        media_hash=result.media_hash,
-        stego_base64=base64.b64encode(result.embedded.media_bytes).decode("ascii"),
-        public_key_pem=result.public_key_pem.decode("ascii"),
+        lsb_bits=result.layout.lsb_count,
+        start_location=result.layout.start_unit,
+        bootstrap_span=result.layout.bootstrap_span,
+        footprint=result.layout.footprint,
+        capacity_bytes=result.payload_capacity,
+        preserved_bits=result.preserved_bits,
+        preserved_ratio=result.preserved_ratio,
+        payload=protocol_service.payload_record(result.payload),
+        media_hash=result.payload.media_hash.hex(),
+        stego_base64=base64.b64encode(result.media_bytes).decode("ascii"),
+        sender_public_key_pem=result.sender_public_key_pem.decode("ascii"),
         pipeline_steps=[
-            "validated",
-            "hashed",
-            "payload-built",
-            "signed-with-existing-key",
-            "location-derived",
-            "lsb-embedded",
+            "media-and-payload-validated",
+            "sender-and-receiver-keys-loaded",
+            "embedding-geometry-validated",
+            "masked-media-hash-created",
+            "payload-encrypted-and-signed",
+            "receiver-bootstrap-and-packet-embedded",
             "media-exported",
         ],
     )
 
 
 @web.post("/keys/generate")
-def generate_keys():
-    """Create initial demo keys; encoding itself never generates a key."""
+def generate_keys() -> Response | tuple[Response, int]:
+    """Generate a sender or receiver RSA pair as an explicit setup action."""
     try:
-        keys = crypto_manager.generate_key_pair(_required_form_value("key_password"))
+        role = request.form.get("role", "key").strip().lower()
+        if role not in {"sender", "receiver", "key"}:
+            raise ValueError("role must be sender or receiver")
+        keys = protocol_service.generate_key_pair(
+            _required_form_value("key_password")
+        )
     except (TypeError, ValueError) as error:
         return _error(str(error), 400)
     return jsonify(
         ok=True,
+        role=role,
         private_key_pem=keys.private_key_pem.decode("ascii"),
         public_key_pem=keys.public_key_pem.decode("ascii"),
     )
 
 
-@web.post("/location/derive")
-def derive_location():
-    """Validate a cover and expose the authoritative HMAC-derived location."""
-    try:
-        cover = cover_handler.validate(_required_upload("cover"))
-        lsb_bits = _lsb_bits()
-        start = location_strategy.derive(
-            _required_form_value("start_secret"),
-            cover.media_type,
-            cover.carrier_units,
-            lsb_bits,
-        )
-    except (InvalidMediaError, TypeError, ValueError) as error:
-        return _error(str(error), 400)
-
-    return jsonify(
-        ok=True,
-        algorithm="PBKDF2-HMAC-SHA256",
-        media_type=cover.media_type,
-        carrier_units=cover.carrier_units,
-        start_location=start,
-        non_default=start > 0,
-    )
-
-
 @web.post("/decode")
-def decode():
+def decode() -> Response | tuple[Response, int]:
+    """Recover geometry, verify integrity, and decrypt an authenticated payload."""
     try:
         stego = _required_upload("stego")
-        public_key = _required_upload("public_key")
-        original_cover = _optional_upload("original_cover")
-        lsb_bits = None if request.form.get("lsb_bits", "auto") == "auto" else _lsb_bits()
-        result = verification_pipeline.verify(
-            stego, public_key, request.form.get("start_secret", ""), lsb_bits,
-            original_cover, request.form.get("media_type", "auto"),
+        result = protocol_service.verify(
+            stego,
+            _required_upload("sender_public_key"),
+            _required_upload("receiver_private_key"),
+            _required_form_value("receiver_key_password"),
         )
-    except (InvalidMediaError, TypeError, ValueError) as error:
-        return _error(str(error), 400, Verdict.CANNOT_VERIFY)
+    except (OSError, TypeError, ValueError) as error:
+        return _error(str(error), 400, "Cannot Verify")
 
     result["filename"] = request.files["stego"].filename
-    return jsonify(result), (422 if result["verdict"] == Verdict.PAYLOAD_MISSING else 200)
+    status = 422 if result["verdict"] == "Payload Missing" else 200
+    return jsonify(result), status
 
 
 def _required_upload(name: str) -> bytes:
+    """Read one required non-empty multipart upload."""
     upload = request.files.get(name)
     if upload is None or not upload.filename:
         raise ValueError(f"missing required upload: {name}")
@@ -158,51 +119,63 @@ def _required_upload(name: str) -> bytes:
     return data
 
 
-def _optional_upload(name: str) -> bytes | None:
-    upload = request.files.get(name)
-    if upload is None or not upload.filename:
-        return None
-    data = upload.read()
-    return data or None
-
-
 def _required_form_value(name: str) -> str:
+    """Read one required non-empty form value."""
     value = request.form.get(name, "").strip()
     if not value:
         raise ValueError(f"missing required field: {name}")
     return value
 
 
-def _lsb_bits() -> int:
+def _integer_form_value(name: str, minimum: int) -> int:
+    """Read a bounded integer form field."""
     try:
-        value = int(request.form.get("lsb_bits", "1"))
+        value = int(request.form.get(name, ""))
     except ValueError as error:
-        raise ValueError("lsb_bits must be an integer") from error
+        raise ValueError(f"{name} must be an integer") from error
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
+    return value
+
+
+def _lsb_bits() -> int:
+    """Read the protocol's supported LSB count."""
+    value = _integer_form_value("lsb_bits", minimum=1)
     if value not in range(1, 9):
         raise ValueError("lsb_bits must be between 1 and 8")
     return value
 
 
-def _team_metadata() -> dict[str, object] | None:
-    """Parse optional wizard metadata and message into signed metadata."""
-    metadata_text = request.form.get("metadata", "").strip()
-    message = request.form.get("secret_message", "").strip()
-    metadata: dict[str, object] = {}
-    if metadata_text:
-        try:
-            parsed = json.loads(metadata_text)
-        except json.JSONDecodeError as error:
-            raise ValueError("metadata must be valid JSON") from error
-        if not isinstance(parsed, dict):
-            raise ValueError("metadata must be a JSON object")
-        metadata.update(parsed)
-    if message:
-        metadata["secret_message"] = message
-    return metadata or None
+def _payload_input() -> tuple[bytes, str, str]:
+    """Choose either uploaded payload bytes or a UTF-8 message and its claims."""
+    upload = request.files.get("payload_file")
+    message = request.form.get("secret_message", "")
+    has_upload = upload is not None and bool(upload.filename)
+    has_message = bool(message.strip())
+    if has_upload and has_message:
+        raise ValueError("choose either a payload file or a secret message, not both")
+    if not has_upload and not has_message:
+        raise ValueError("a payload file or secret message is required")
+    if has_upload:
+        payload = upload.read()
+        if not payload:
+            raise ValueError("payload file is empty")
+        default_mime, default_name = infer_payload_claim(
+            upload.filename, upload.mimetype, False
+        )
+    else:
+        payload = message.encode("utf-8")
+        default_mime, default_name = infer_payload_claim(None, None, True)
+    mime = request.form.get("payload_mime", "").strip() or default_mime
+    name = request.form.get("payload_name", "").strip() or default_name
+    return payload, mime, name
 
 
-def _error(message: str, status: int, verdict: Verdict | None = None):
-    body = {"ok": False, "error": message}
+def _error(
+    message: str, status: int, verdict: str | None = None
+) -> tuple[Response, int]:
+    """Return a consistent JSON error response."""
+    body: dict[str, object] = {"ok": False, "error": message}
     if verdict is not None:
-        body["verdict"] = verdict.value
+        body["verdict"] = verdict
     return jsonify(body), status

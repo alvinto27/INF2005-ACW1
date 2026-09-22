@@ -1,11 +1,11 @@
 ---
 name: inf2005-acw1
-description: Flask steganography application with legacy and masked-media integrity protocols.
+description: Flask steganography application on the masked-media protocol, with a retained legacy protocol module.
 ---
 
 # INF2005-ACW1
 
-This repository provides a localhost Flask steganography application and two retained signed LSB protocol implementations for PNG and PCM WAV carriers. Read the [Agent Navigation Map](AGENT_docs/AGENT_MAP.md), [documentation index](AGENT_docs/README.md), and [protocol compatibility record](AGENT_docs/PROTOCOL-COMPATIBILITY.md) before changing files.
+This repository provides a localhost Flask steganography application on the reduced masked-media protocol and retains the earlier `STG1` protocol as a tested legacy module. Read the [Agent Navigation Map](AGENT_docs/AGENT_MAP.md), [documentation index](AGENT_docs/README.md), and [protocol compatibility record](AGENT_docs/PROTOCOL-COMPATIBILITY.md) before changing files.
 
 ## Read first
 
@@ -29,14 +29,15 @@ bash scripts/install-hooks.sh
 
 - This is a standalone Python module repository with no package build configuration or CI workflow.
 - The `stego/` package requires Python 3.10+ and uses `cryptography`, NumPy, and Pillow.
-- The Flask application in `stego_web/` currently uses `payload_protocol.py` and its own PNG/WAV carrier engines.
+- The Flask application in `stego_web/` uses the current `stego/` protocol through `stego_web/services/current_protocol.py`.
+- `payload_protocol.py` and the earlier web service modules remain as legacy, test-covered code; they are not used by the active Flask routes.
 - `test_stego.py`, `test_payload_protocol.py`, and `test_webapp.py` are all active test entry points.
 
 ## Conventions
 
-- Keep `payload_protocol.py` byte-only; the Flask media operations belong in `stego_web/`.
+- Keep `payload_protocol.py` byte-only and legacy-compatible; do not route new Flask media operations through it.
 - Keep the masked-media protocol media-neutral and use its fixed `stego/` PNG and WAV adapters for file I/O.
-- Preserve both documented packet formats and verification verdicts. Do not pass packets between the implementations or claim they are interoperable.
+- Preserve both documented packet formats and verification verdicts. The active Flask routes accept only protocol version 2; do not present legacy `STG1` files as interoperable.
 - Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in the existing three test modules unless the repository adopts a different layout.
 - Annotate every function and method parameter and return type, including private helpers; use `-> None` when nothing is returned.
 - Use plain built-in types and `|` unions, write `X | None` instead of `Optional`, and write `str | bytes | PathLike[str]` inline at each site rather than defining an alias. Annotate carrier arrays as `np.ndarray` without dtype or shape; let docstrings carry that detail, and do not import from `typing` unless there is no other way.

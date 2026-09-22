@@ -18,6 +18,8 @@ Use this map before editing an unfamiliar part of the repository.
 | Deferred and upcoming chunked-carrier plan, including the 64 MiB WAV cover cap | [STREAMING-CARRIER-PLAN.md](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) |
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
 | Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
+| Active web integration status and verification flow | [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md), [DECODING-VERIFICATION.md](DECODING-VERIFICATION.md) |
+| Current and legacy protocol boundary | [PROTOCOL-COMPATIBILITY.md](PROTOCOL-COMPATIBILITY.md) |
 
 ## Implementation locations
 
@@ -33,9 +35,13 @@ Use this map before editing an unfamiliar part of the repository.
 | Carrier capacity and fixed-width protocol fields | [stego/layout.py](../stego/layout.py) |
 | PNG and WAV adapters | [stego/media.py](../stego/media.py) |
 | End-to-end encrypted encode, receiver-gated verification, and reduced protocol format | [stego/core.py](../stego/core.py) |
+| Flask application factory and HTTP routes | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
+| Flask-to-protocol-v2 byte/file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
+| Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
+| Retained legacy web protocol | [payload_protocol.py](../payload_protocol.py) and legacy modules under [stego_web/services/](../stego_web/services/) |
 | FR1–FR12 demonstration notebook and Stage 5 verdict/fidelity evidence | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol tests | [test_stego.py](../test_stego.py) |
-| Flask protocol and integration tests | [test_payload_protocol.py](../test_payload_protocol.py) and [test_webapp.py](../test_webapp.py) |
+| Flask integration and legacy-protocol tests | [test_webapp.py](../test_webapp.py) and [test_payload_protocol.py](../test_payload_protocol.py) |
 | Runtime and test dependencies | [requirements.txt](../requirements.txt) |
 | Optional demonstration-notebook dependency | [requirements-notebook.txt](../requirements-notebook.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |

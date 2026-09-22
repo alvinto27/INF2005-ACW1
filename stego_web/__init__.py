@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from flask import Flask, jsonify
+from flask import Flask, Response, jsonify
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 
@@ -23,11 +23,15 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.errorhandler(RequestEntityTooLarge)
     @app.errorhandler(BadRequest)
-    def invalid_upload(error):
+    def invalid_upload(
+        error: BadRequest | RequestEntityTooLarge,
+    ) -> tuple[Response, int]:
+        """Keep malformed and oversized request errors JSON-readable."""
         return jsonify(ok=False, verdict="Cannot Verify", message=error.description), error.code
 
     @app.after_request
-    def no_store(response):
+    def no_store(response: Response) -> Response:
+        """Prevent browsers from caching uploaded or recovered payload data."""
         response.headers["Cache-Control"] = "no-store"
         return response
     return app

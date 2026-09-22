@@ -195,6 +195,11 @@ figcaption { margin-bottom: .5rem; color: var(--muted); font: 700 .72rem ui-mono
 .verification-fields dd { margin: 0; overflow-wrap: anywhere; }
 .verification-result details { margin-top: 1rem; border-top: 1px solid var(--line); padding-top: .8rem; }
 .verification-result summary { color: var(--accent); cursor: pointer; font-weight: 750; }
+.decoded-payload { display: grid; gap: .8rem; margin-top: 1rem; padding: 1rem; border: 1px solid rgb(98 239 184 / 28%); border-radius: 12px; background: #071214; }
+.decoded-payload h4, .decoded-payload p { margin: 0; }
+.decoded-payload a { width: fit-content; color: var(--accent); font-weight: 750; }
+.decoded-payload img { width: min(100%, 560px); max-height: 360px; object-fit: contain; border-radius: 10px; }
+.decoded-payload audio { width: min(100%, 560px); }
 .verdict-tampered, .verdict-signature-invalid, .verdict-error { color: var(--danger); }
 pre { max-height: 280px; overflow: auto; padding: .9rem; border: 1px solid var(--line); border-radius: 10px; background: #061012; text-align: left; }
 footer { display: flex; justify-content: space-between; gap: 1rem; padding: 2rem 0 3rem; color: var(--muted); font-size: .78rem; }

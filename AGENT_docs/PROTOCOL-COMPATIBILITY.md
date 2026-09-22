@@ -1,42 +1,40 @@
-# Protocol compatibility after the merge
+# Current and legacy protocol compatibility
 
-## Resolution
+## Active web format
 
-The merge retains both integrity implementations because each side has active
-callers and tests. The Flask application continues to use the current web
-protocol; the incoming masked-media implementation remains available as the
-independent `stego` package. Neither implementation was made to parse the
-other's packets during conflict resolution.
+The Flask routes now use the reduced masked-media protocol version 2 from the
+`stego` package through `stego_web/services/current_protocol.py`. The retained
+browser layout was adapted to its actual key and geometry flow:
 
-## Differences that prevent interoperability
+- encoding uses the sender private key and receiver public key;
+- the sender explicitly selects a start unit at or after the bootstrap span and
+  an LSB count from 1 through 8;
+- verification uses the sender public key and receiver private key/password; and
+- verification recovers geometry from the RSA-OAEP bootstrap and does not need
+  the original cover or a shared start-location secret.
 
-| Property | Flask application | `stego` package |
+`test_webapp.py` exercises this active path for PNG and WAV carriers.
+
+## Retained legacy format
+
+`payload_protocol.py` and the earlier services under `stego_web/services/`
+retain the legacy `STG1` implementation for its existing unit tests and design
+history. They are not called by `stego_web/routes.py`.
+
+| Property | Active web protocol v2 | Retained legacy `STG1` |
 | --- | --- | --- |
-| Entry point | `run.py` and `stego_web/` | `stego/__init__.py` |
-| Packet | `STG1` frame containing canonical JSON and RSA signature | Binary header, binary payload record, RSA signature, and alignment bits |
-| Start location | Derived from a shared secret with PBKDF2-HMAC | Supplied for encoding and discovered from packet magic for verification |
-| Signed media hash | SHA-256 of exact original file bytes | SHA-256 of masked carrier units and layout context |
-| Full verification input | Stego file, public key, shared secret, and exact original cover | Stego file and public key |
-| Tests | `test_payload_protocol.py`, `test_webapp.py` | `test_stego.py` |
+| Packet | Encrypted binary payload record, RSA-PSS signature, and encrypted receiver bootstrap | Public `STG1` frame containing canonical JSON and an RSA signature |
+| Start location | Selected during encoding; encrypted in the receiver bootstrap | Derived from a shared secret with PBKDF2-HMAC |
+| Integrity hash | SHA-256 over masked carrier units and layout context | SHA-256 over exact original cover-file bytes |
+| Encode keys | Sender private and receiver public | Sender private only |
+| Verify inputs | Stego file, sender public, receiver private/password | Stego file, sender public, shared secret, and exact original cover for full integrity |
+| Active tests | `test_stego.py`, `test_webapp.py` | `test_payload_protocol.py` |
 
-An encoder and decoder must therefore come from the same column. RSA-PSS keys
-may have the same PEM representation, but that does not make signatures or
-packets compatible: the signed byte sequences and PSS salt policies differ.
+## Compatibility rule
 
-## Integrity retained from each side
-
-The Flask path retains its exact-original-file hash, canonical payload schema,
-secret-derived location, bounded `STG1` extraction, signature verification, and
-expected-versus-received decoded-media comparison.
-
-The `stego` path retains its masked-media invariant, geometry-bound signing
-input, packet discovery, preserved-bit reporting, strict media adapters, and
-standalone notebook demonstration.
-
-## Future integration rule
-
-If the web application adopts `stego`, introduce an explicit protocol selector
-or a versioned migration. Do not replace its backend while presenting old
-`STG1` files as compatible. Add cross-boundary rejection tests and update the
-GUI's required inputs, because masked-media verification does not need the
-original cover or the current start-location secret.
+The formats are not interoperable. The active `/decode` route intentionally
+rejects legacy `STG1` media instead of guessing a format or weakening the
+receiver-private-key gate. RSA keys can share a PEM representation, but their
+packet structures, signing inputs, PSS policies, hashes, and discovery rules
+differ. A future legacy importer must be explicitly versioned and isolated from
+the protocol-v2 verdict path.

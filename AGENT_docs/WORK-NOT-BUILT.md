@@ -2,18 +2,13 @@
 
 This record lists assignment work that remains outside the library and notebook. The library implements the reduced protocol version 2 format: verification recovers geometry through the encrypted bootstrap and is gated by the receiver private key; see the [KISS Reduction Record](KISS-REDUCTION-RECORD.md).
 
-## 1. IMPLEMENTED INTERFACE AND REMAINING INTEGRATION
+## 1. IMPLEMENTED INTERFACE AND REMAINING DEMONSTRATION
 
 ### GUI
 
-The GUI is mandatory under brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope). Another team member owns it; this repository does not build it. Criteria 2 and 3 total 19 marks (9 for image and 10 for audio) under brief [§11](../docs/INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks). Those criteria assess the working implementations and their demonstrations. This repository already provides the working encoders and decoders, payload insertion, extraction through the encrypted bootstrap, receiver-gated verification, and negative or tampered detection for both media. The GUI remains the demonstration surface owed by the team. It must:
+The mandatory GUI from brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) is implemented in `stego_web/` and now uses the reduced protocol version 2. It accepts message or file payloads, keeps the previous seven-step presentation, shows cover and stego media side by side, supports 1-8 LSBs and an explicit bounded start unit, separates sender and receiver key roles, recovers geometry from the encrypted bootstrap, and previews authenticated supported payloads only after MIME checking. Automated PNG and WAV web tests cover the active flow.
 
-- play or execute the payload (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)). The typed-payload metadata convention that supports this is demonstrated; see [Typed Payload Metadata](PROTOCOL-DESIGN.md#typed-payload-metadata). The GUI must read the declared type to select a handler, and must confirm the declared type against the bytes before it renders anything;
-- display the cover and stego objects side by side before and after encoding and decoding (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope));
-- allow selection of 1 to 8 LSBs for encoding (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope));
-- collect the start unit and LSB count for encoding, with the start-unit control bounded below by the receiver's reserved bootstrap span;
-- require the receiver private key as well as the sender public key for verification. Verification no longer collects or transports start unit, LSB count, or record length: the receiver recovers those values from the encrypted bootstrap;
-- not offer public-key-only third-party verification. This is deliberate because location confidentiality makes the receiver private key the verification gate; see the [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md#2-the-trade-that-cannot-be-avoided).
+What remains is demonstration and submission evidence rather than protocol integration: the team must show both media workflows live, play or display representative recovered payloads, explain why receiver-private-key verification replaces the old shared-secret/original-cover inputs, and capture the evidence selected for criteria 2 and 3 under brief [§11](../docs/INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks).
 
 ### Individual technical explanation (criterion 6)
 
@@ -43,8 +38,8 @@ The brief names the exact test payload categories, but the notebook currently us
 
 - **Short message:** Use one Learning Outcome from brief [§3](../docs/INF2005-ACW1-spec_v5-f2f.md#3-learning-outcomes). The recorded choice is outcome 6, about designing and securing the start location. It is 138 bytes and is the outcome this implementation answers most directly.
 - **Large message:** Use the Project Overview paragraphs from brief [§2](../docs/INF2005-ACW1-spec_v5-f2f.md#2-project-overview). They are 673 bytes.
-- **Custom confidential payload:** Library-level encryption and integrity, plus the typed-payload metadata convention, are **built and demonstrated** in the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb). Only the **message content is undecided**. The notebook uses a placeholder string, and the team must choose the message it demonstrates.
-- **Typed payload files:** The typed-payload demonstration generates its own payload files, a 64x64 image and a short tone. A supplied audio file replaces the generated tone later. The swap point is one variable in the typed-payload cell. A supplied file must stay below about 700,000 bytes to fit the image carrier at `k=1`, and should be plain PCM WAV or MP3 so that the notebook can play it.
+- **Custom confidential payload:** Library-level encryption, integrity, and the typed-payload metadata convention are **built in both the notebook and GUI**. Only the **message content is undecided**. The team must choose the message or file it demonstrates.
+- **Typed payload files:** The notebook generates a 64x64 image and a short tone; the GUI can instead upload the final supplied payload directly. A supplied file must fit the chosen carrier geometry and should use a supported preview type such as PNG, JPEG, PCM WAV, or MP3. Other authenticated types remain downloadable without inline rendering.
 - **Capacity reference:** Measured from start unit 2,048 with empty metadata, the current library gives 752,003 bytes at `k=1` and 6,018,691 bytes at `k=8` in the 6,021,120-unit Banana cover; it gives 3,363 bytes at `k=1` and 29,571 bytes at `k=8` in the 32,000-sample WAV. Therefore, the 673-byte large message fits both. The large message is large only relative to the short message; it is not a capacity test. The separate capacity case embeds the cover image inside itself (brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope)).
 
 ## 4. SUBMISSION PACKAGE, NOT ASSEMBLED

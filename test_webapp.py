@@ -1,448 +1,319 @@
-"""Integration tests for the Flask routes and PNG LSB service."""
-
-from __future__ import annotations
+"""Integration tests for the Flask UI on the current masked-media protocol."""
 
 import base64
 import io
-import json
-import struct
 import unittest
 import wave
 
+import numpy as np
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from PIL import Image
 
-from payload_protocol import (
-    build_verification_packet, export_private_key_pem, export_public_key_pem,
-    generate_rsa_keypair, sign_payload,
-)
+from stego import generate_rsa_keypair
 from stego_web import create_app
-from stego_web.routes import stego_registry
-from stego_web.services.steganography import FRAME_HEADER, FRAME_MAGIC
+
+
+PASSWORD = "test-password"
 
 
 def sample_png() -> bytes:
+    """Return a strict RGB PNG with enough carrier units for protocol v2."""
     output = io.BytesIO()
     Image.new("RGB", (96, 96), (46, 112, 99)).save(output, format="PNG")
     return output.getvalue()
 
 
 def sample_wav() -> bytes:
+    """Return a mono 16-bit PCM WAV with enough samples for protocol v2."""
     output = io.BytesIO()
-    with wave.open(output, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(8000)
-        wav.writeframes((b"\x00\x00" * 8000))
+    with wave.open(output, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(8000)
+        wav_file.writeframes(b"\x00\x00" * 8000)
     return output.getvalue()
 
 
-class WebApplicationTests(unittest.TestCase):
-    def setUp(self):
-        self.client = create_app({"TESTING": True}).test_client()
-        private_key, _ = generate_rsa_keypair()
-        self.private_key_pem = export_private_key_pem(private_key, "test-password")
+def private_pem(private_key: rsa.RSAPrivateKey) -> bytes:
+    """Serialize a test private key with the shared test password."""
+    return private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.BestAvailableEncryption(PASSWORD.encode("utf-8")),
+    )
 
-    def test_index_contains_both_workflows(self):
+
+def public_pem(public_key: rsa.RSAPublicKey) -> bytes:
+    """Serialize a test public key."""
+    return public_key.public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+
+class WebApplicationTests(unittest.TestCase):
+    """Exercise the changed sender/receiver web contract end to end."""
+
+    def setUp(self) -> None:
+        """Create an isolated app and independent sender/receiver key pairs."""
+        self.client = create_app({"TESTING": True}).test_client()
+        self.sender_private, self.sender_public = generate_rsa_keypair()
+        self.receiver_private, self.receiver_public = generate_rsa_keypair()
+        self.sender_private_pem = private_pem(self.sender_private)
+        self.sender_public_pem = public_pem(self.sender_public)
+        self.receiver_private_pem = private_pem(self.receiver_private)
+        self.receiver_public_pem = public_pem(self.receiver_public)
+
+    def encode(
+        self,
+        cover: bytes,
+        filename: str,
+        lsb_bits: int = 1,
+        message: str = "authenticated message",
+        payload: tuple[bytes, str] | None = None,
+        payload_mime: str = "",
+    ) -> object:
+        """Post one valid encoding request and return its Flask response."""
+        data: dict[str, object] = {
+            "cover": (io.BytesIO(cover), filename),
+            "sender_private_key": (
+                io.BytesIO(self.sender_private_pem),
+                "sender-private.pem",
+            ),
+            "sender_key_password": PASSWORD,
+            "receiver_public_key": (
+                io.BytesIO(self.receiver_public_pem),
+                "receiver-public.pem",
+            ),
+            "team_id": "P1-4",
+            "sender": "Test User",
+            "secret_message": message,
+            "metadata": "project=verification;sequence=1",
+            "start_unit": "2048",
+            "lsb_bits": str(lsb_bits),
+        }
+        if payload is not None:
+            data["secret_message"] = ""
+            data["payload_file"] = (io.BytesIO(payload[0]), payload[1])
+        if payload_mime:
+            data["payload_mime"] = payload_mime
+        return self.client.post(
+            "/encode", data=data, content_type="multipart/form-data"
+        )
+
+    def decode(
+        self,
+        encoded: dict[str, object],
+        filename: str,
+        sender_public: bytes | None = None,
+        receiver_private: bytes | None = None,
+    ) -> object:
+        """Post one verification request with independently selectable keys."""
+        return self.client.post(
+            "/decode",
+            data={
+                "stego": (
+                    io.BytesIO(base64.b64decode(str(encoded["stego_base64"]))),
+                    filename,
+                ),
+                "sender_public_key": (
+                    io.BytesIO(sender_public or self.sender_public_pem),
+                    "sender-public.pem",
+                ),
+                "receiver_private_key": (
+                    io.BytesIO(receiver_private or self.receiver_private_pem),
+                    "receiver-private.pem",
+                ),
+                "receiver_key_password": PASSWORD,
+            },
+            content_type="multipart/form-data",
+        )
+
+    def test_index_uses_current_protocol_inputs_and_retains_layout(self) -> None:
+        """The original wizard remains while obsolete inputs are absent."""
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Encode", response.data)
         self.assertIn(b"Decode and verify", response.data)
+        self.assertIn(b"sender_private_key", response.data)
+        self.assertIn(b"receiver_public_key", response.data)
+        self.assertIn(b"receiver_private_key", response.data)
+        self.assertIn(b"payload_file", response.data)
+        self.assertNotIn(b"start_secret", response.data)
+        self.assertNotIn(b"original_cover", response.data)
         self.assertIn(b"gsap@3.15", response.data)
-        self.assertIn(b"motion.js", response.data)
 
-    def test_png_encode_and_authentic_decode(self):
-        cover = sample_png()
-        encoded = self.client.post(
-            "/encode",
-            data={
-                "cover": (io.BytesIO(cover), "cover.png"),
-                "team_id": "P1-4",
-                "sender": "Test User",
-                "start_secret": "correct horse battery staple",
-                "key_password": "test-password",
-                "private_key": (io.BytesIO(self.private_key_pem), "private-key.pem"),
-                "lsb_bits": "3",
-            },
-            content_type="multipart/form-data",
+    def test_png_message_round_trip_recovers_geometry_and_metadata(self) -> None:
+        """PNG encoding and receiver-gated decoding expose authenticated data."""
+        encoded_response = self.encode(sample_png(), "cover.png", lsb_bits=3)
+        self.assertEqual(
+            encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
         )
-        self.assertEqual(encoded.status_code, 200, encoded.get_data(as_text=True))
-        encoded_data = encoded.get_json()
-
-        decoded = self.client.post(
-            "/decode",
-            data={
-                "stego": (
-                    io.BytesIO(base64.b64decode(encoded_data["stego_base64"])),
-                    "stego.png",
-                ),
-                "public_key": (
-                    io.BytesIO(encoded_data["public_key_pem"].encode("ascii")),
-                    "public-key.pem",
-                ),
-                "original_cover": (io.BytesIO(cover), "cover.png"),
-                "start_secret": "correct horse battery staple",
-                "lsb_bits": "3",
-            },
-            content_type="multipart/form-data",
-        )
+        encoded = encoded_response.get_json()
+        self.assertEqual(encoded["protocol_version"], 2)
+        self.assertEqual(encoded["bootstrap_span"], 2048)
+        decoded = self.decode(encoded, "stego.png")
         self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
-        self.assertEqual(decoded.get_json()["verdict"], "Authentic")
-
-    def test_wrong_start_secret_has_strict_verdict(self):
-        cover = sample_png()
-        encoded = self.client.post(
-            "/encode",
-            data={
-                "cover": (io.BytesIO(cover), "cover.png"),
-                "team_id": "P1-4",
-                "sender": "Test User",
-                "start_secret": "correct-secret",
-                "key_password": "test-password",
-                "private_key": (io.BytesIO(self.private_key_pem), "private-key.pem"),
-                "lsb_bits": "1",
-            },
-            content_type="multipart/form-data",
-        ).get_json()
-
-        decoded = self.client.post(
-            "/decode",
-            data={
-                "stego": (
-                    io.BytesIO(base64.b64decode(encoded["stego_base64"])),
-                    "stego.png",
-                ),
-                "public_key": (
-                    io.BytesIO(encoded["public_key_pem"].encode("ascii")),
-                    "public-key.pem",
-                ),
-                "start_secret": "incorrect-secret",
-                "lsb_bits": "1",
-            },
-            content_type="multipart/form-data",
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertEqual(report["start_location"], 2048)
+        self.assertEqual(report["lsb_bits"], 3)
+        self.assertEqual(report["payload"]["metadata"]["team"], "P1-4")
+        self.assertEqual(
+            base64.b64decode(report["payload"]["user_payload_base64"]),
+            b"authenticated message",
         )
-        self.assertEqual(decoded.status_code, 422)
-        # A missing header cannot prove whether the secret is wrong or no payload exists.
-        self.assertEqual(decoded.get_json()["verdict"], "Payload Missing")
-        self.assertIn("secret", decoded.get_json()["message"])
+        self.assertTrue(report["payload"]["preview_allowed"])
 
-    def test_wav_encode_and_authentic_decode(self):
-        cover = sample_wav()
-        encoded = self.client.post(
-            "/encode",
-            data={
-                "cover": (io.BytesIO(cover), "cover.wav"),
-                "team_id": "P1-4",
-                "sender": "Test User",
-                "start_secret": "correct horse battery staple",
-                "key_password": "test-password",
-                "private_key": (io.BytesIO(self.private_key_pem), "private-key.pem"),
-                "lsb_bits": "2",
-            },
-            content_type="multipart/form-data",
+    def test_wav_binary_payload_round_trip(self) -> None:
+        """WAV carriers preserve an arbitrary binary payload and type claim."""
+        payload = b"RIFF\x04\x00\x00\x00WAVE"
+        encoded_response = self.encode(
+            sample_wav(),
+            "cover.wav",
+            lsb_bits=2,
+            payload=(payload, "clip.wav"),
+            payload_mime="audio/wav",
         )
-        self.assertEqual(encoded.status_code, 200, encoded.get_data(as_text=True))
-        body = encoded.get_json()
-
-        decoded = self.client.post(
-            "/decode",
-            data={
-                "stego": (io.BytesIO(base64.b64decode(body["stego_base64"])), "stego.wav"),
-                "public_key": (io.BytesIO(body["public_key_pem"].encode("ascii")), "public-key.pem"),
-                "original_cover": (io.BytesIO(cover), "cover.wav"),
-                "start_secret": "correct horse battery staple",
-                "lsb_bits": "2",
-            },
-            content_type="multipart/form-data",
+        self.assertEqual(
+            encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
         )
+        decoded = self.decode(encoded_response.get_json(), "stego.wav")
         self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
-        self.assertEqual(decoded.get_json()["verdict"], "Authentic")
-
-    def test_key_generation_is_separate_from_encoding(self):
-        response = self.client.post(
-            "/keys/generate",
-            data={"key_password": "setup-password"},
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertEqual(
+            base64.b64decode(report["payload"]["user_payload_base64"]), payload
         )
-        self.assertEqual(response.status_code, 200)
-        body = response.get_json()
-        self.assertIn("BEGIN ENCRYPTED PRIVATE KEY", body["private_key_pem"])
-        self.assertIn("BEGIN PUBLIC KEY", body["public_key_pem"])
+        self.assertEqual(report["payload"]["declared_mime"], "audio/wav")
 
-    def test_encode_requires_existing_private_key(self):
-        response = self.client.post(
-            "/encode",
-            data={
-                "cover": (io.BytesIO(sample_png()), "cover.png"),
-                "team_id": "P1-4",
-                "sender": "Test User",
-                "start_secret": "correct-secret",
-                "key_password": "test-password",
-                "lsb_bits": "1",
-            },
-            content_type="multipart/form-data",
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("private_key", response.get_json()["error"])
-
-    def test_png_supports_each_lsb_depth(self):
+    def test_png_supports_every_lsb_count(self) -> None:
+        """The retained 1-8 control maps exactly to protocol LSB counts."""
         for lsb_bits in range(1, 9):
             with self.subTest(lsb_bits=lsb_bits):
-                response = self.client.post(
-                    "/encode",
-                    data={
-                        "cover": (io.BytesIO(sample_png()), "cover.png"),
-                        "private_key": (io.BytesIO(self.private_key_pem), "private-key.pem"),
-                        "team_id": "P1-4",
-                        "sender": "Test User",
-                        "start_secret": "correct-secret",
-                        "key_password": "test-password",
-                        "lsb_bits": str(lsb_bits),
-                    },
-                    content_type="multipart/form-data",
-                )
-                self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
-                self.assertEqual(response.get_json()["lsb_bits"], lsb_bits)
+                encoded = self.encode(sample_png(), "cover.png", lsb_bits=lsb_bits)
+                self.assertEqual(encoded.status_code, 200, encoded.get_data(as_text=True))
+                report = self.decode(encoded.get_json(), "stego.png").get_json()
+                self.assertEqual(report["verdict"], "Authentic")
+                self.assertEqual(report["lsb_bits"], lsb_bits)
 
-    def test_malformed_png_is_rejected_before_private_key_loading(self):
-        response = self.client.post(
-            "/encode",
-            data={
-                "cover": (io.BytesIO(b"\x89PNG\r\n\x1a\ncorrupt"), "broken.png"),
-                "private_key": (io.BytesIO(b"not a key"), "private-key.pem"),
-                "team_id": "P1-4",
-                "sender": "Test User",
-                "start_secret": "correct-secret",
-                "key_password": "test-password",
-                "lsb_bits": "1",
-            },
-            content_type="multipart/form-data",
+    def test_wrong_receiver_key_is_payload_missing(self) -> None:
+        """A non-recipient cannot open the RSA-OAEP bootstrap."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        wrong_private, _ = generate_rsa_keypair()
+        decoded = self.decode(
+            encoded, "stego.png", receiver_private=private_pem(wrong_private)
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("PNG", response.get_json()["error"])
+        self.assertEqual(decoded.status_code, 422)
+        self.assertEqual(decoded.get_json()["verdict"], "Payload Missing")
 
-    def test_wrong_private_key_password_is_rejected(self):
-        response = self.client.post(
+    def test_wrong_sender_key_is_signature_invalid(self) -> None:
+        """The receiver rejects a packet under an unrelated sender identity."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        _, wrong_public = generate_rsa_keypair()
+        decoded = self.decode(
+            encoded, "stego.png", sender_public=public_pem(wrong_public)
+        )
+        self.assertEqual(decoded.status_code, 200)
+        self.assertEqual(decoded.get_json()["verdict"], "Signature Invalid")
+
+    def test_changed_preserved_image_bit_is_tampered(self) -> None:
+        """A carrier change outside the packet footprint fails the masked hash."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        raw = base64.b64decode(encoded["stego_base64"])
+        with Image.open(io.BytesIO(raw)) as image:
+            array = np.array(image, dtype=np.uint8, copy=True)
+        array.reshape(-1)[-1] ^= np.uint8(0x80)
+        changed_output = io.BytesIO()
+        Image.fromarray(array, mode="RGB").save(changed_output, format="PNG")
+        encoded["stego_base64"] = base64.b64encode(changed_output.getvalue()).decode(
+            "ascii"
+        )
+        decoded = self.decode(encoded, "changed.png")
+        self.assertEqual(decoded.status_code, 200)
+        self.assertEqual(decoded.get_json()["verdict"], "Tampered")
+
+    def test_mime_mismatch_disables_preview_without_invalidating_signature(self) -> None:
+        """A false typed-payload claim remains authenticated but is not rendered."""
+        encoded = self.encode(
+            sample_png(), "cover.png", payload_mime="image/png"
+        ).get_json()
+        report = self.decode(encoded, "stego.png").get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertFalse(report["payload"]["type_agrees"])
+        self.assertFalse(report["payload"]["preview_allowed"])
+
+    def test_key_generation_supports_both_roles(self) -> None:
+        """Sender and receiver setup both produce encrypted RSA key pairs."""
+        for role in ("sender", "receiver"):
+            with self.subTest(role=role):
+                response = self.client.post(
+                    "/keys/generate",
+                    data={"role": role, "key_password": "setup-password"},
+                )
+                self.assertEqual(response.status_code, 200)
+                body = response.get_json()
+                self.assertEqual(body["role"], role)
+                self.assertIn("BEGIN ENCRYPTED PRIVATE KEY", body["private_key_pem"])
+                self.assertIn("BEGIN PUBLIC KEY", body["public_key_pem"])
+
+    def test_obsolete_or_ambiguous_inputs_are_rejected(self) -> None:
+        """The route requires current keys, valid layout, and exactly one payload."""
+        missing_receiver = self.client.post(
             "/encode",
             data={
                 "cover": (io.BytesIO(sample_png()), "cover.png"),
-                "private_key": (io.BytesIO(self.private_key_pem), "private-key.pem"),
+                "sender_private_key": (
+                    io.BytesIO(self.sender_private_pem),
+                    "sender-private.pem",
+                ),
+                "sender_key_password": PASSWORD,
                 "team_id": "P1-4",
                 "sender": "Test User",
-                "start_secret": "correct-secret",
-                "key_password": "wrong-password",
+                "secret_message": "message",
+                "start_unit": "2048",
                 "lsb_bits": "1",
             },
             content_type="multipart/form-data",
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(missing_receiver.status_code, 400)
+        self.assertIn("receiver_public_key", missing_receiver.get_json()["error"])
 
-    def test_location_endpoint_matches_encoding_pipeline(self):
-        cover = sample_png()
-        derived = self.client.post(
-            "/location/derive",
-            data={
-                "cover": (io.BytesIO(cover), "cover.png"),
-                "start_secret": "correct-secret",
-                "lsb_bits": "4",
-            },
-            content_type="multipart/form-data",
-        )
-        self.assertEqual(derived.status_code, 200, derived.get_data(as_text=True))
-        location = derived.get_json()
-        self.assertEqual(location["algorithm"], "PBKDF2-HMAC-SHA256")
-        self.assertTrue(location["non_default"])
-
-        encoded = self.client.post(
+        inside_bootstrap = self.encode(sample_png(), "cover.png").get_json()
+        self.assertEqual(inside_bootstrap["start_location"], 2048)
+        invalid = self.client.post(
             "/encode",
             data={
-                "cover": (io.BytesIO(cover), "cover.png"),
-                "private_key": (io.BytesIO(self.private_key_pem), "private-key.pem"),
+                "cover": (io.BytesIO(sample_png()), "cover.png"),
+                "sender_private_key": (
+                    io.BytesIO(self.sender_private_pem),
+                    "sender-private.pem",
+                ),
+                "sender_key_password": PASSWORD,
+                "receiver_public_key": (
+                    io.BytesIO(self.receiver_public_pem),
+                    "receiver-public.pem",
+                ),
                 "team_id": "P1-4",
                 "sender": "Test User",
-                "start_secret": "correct-secret",
-                "key_password": "test-password",
-                "lsb_bits": "4",
+                "secret_message": "message",
+                "start_unit": "2047",
+                "lsb_bits": "1",
             },
             content_type="multipart/form-data",
         )
-        self.assertEqual(encoded.status_code, 200, encoded.get_data(as_text=True))
-        self.assertEqual(encoded.get_json()["start_location"], location["start_location"])
+        self.assertEqual(invalid.status_code, 400)
+        self.assertIn("bootstrap", invalid.get_json()["error"])
 
-
-class VerificationPipelineTests(unittest.TestCase):
-    """Current-encoder interoperability and failures, for both mandatory formats."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.client = create_app({"TESTING": True}).test_client()
-        cls.private, public = generate_rsa_keypair()
-        cls.private_pem = export_private_key_pem(cls.private, "test-password")
-        cls.public_pem = export_public_key_pem(public)
-        cls.covers = {"image": sample_png(), "audio": sample_wav()}
-        cls.encoded = {}
-        for kind, cover in cls.covers.items():
-            for bits in range(1, 9):
-                response = cls.client.post('/encode', data={
-                    'cover': (io.BytesIO(cover), 'cover'),
-                    'private_key': (io.BytesIO(cls.private_pem), 'private.pem'),
-                    'key_password': 'test-password', 'team_id': 'P1-4', 'sender': 'Tester',
-                    'start_secret': 'shared-secret', 'lsb_bits': str(bits),
-                    'metadata': '{"project":"verification","sequence":1}',
-                    'secret_message': 'message preserved',
-                })
-                if response.status_code != 200:
-                    raise AssertionError(response.get_data(as_text=True))
-                cls.encoded[kind, bits] = response.get_json()
-
-    def verify(self, kind, *, bits=1, data=None, selected='auto', secret='shared-secret',
-               public=None, original=True, media_type='auto'):
-        body = {
-            'stego': (io.BytesIO(data if data is not None else base64.b64decode(
-                self.encoded[kind, bits]['stego_base64'])), 'received.' + ('png' if kind == 'image' else 'wav')),
-            'public_key': (io.BytesIO(self.public_pem if public is None else public), 'public.pem'),
-            'start_secret': secret, 'lsb_bits': str(selected), 'media_type': media_type,
-        }
-        if original is not False:
-            body['original_cover'] = (io.BytesIO(self.covers[kind] if original is True else original), 'original')
-        response = self.client.post('/decode', data=body)
-        self.assertLess(response.status_code, 500, response.get_data(as_text=True))
-        self.assertTrue(response.is_json)
-        return response.get_json()
-
-    def packet(self, kind):
-        raw = base64.b64decode(self.encoded[kind, 1]['stego_base64'])
-        return stego_registry.for_media(kind).extract(raw, 1, 'shared-secret').packet
-
-    def embed_packet(self, kind, packet):
-        return stego_registry.for_media(kind).embed(self.covers[kind], packet, 1, 'shared-secret').media_bytes
-
-    def rewrite_carrier(self, kind, raw, mutate):
-        engine = stego_registry.for_media(kind)
-        output = io.BytesIO()
-        if kind == 'image':
-            array = engine._load_png(raw)
-            mutate(array.reshape(-1))
-            Image.fromarray(array).save(output, format='PNG')
-        else:
-            params, frames = engine._load_pcm(raw)
-            import numpy as np
-            array = np.frombuffer(frames, dtype=np.uint8).copy()
-            mutate(array)
-            with wave.open(output, 'wb') as wav:
-                wav.setparams(params)
-                wav.writeframes(array.tobytes())
-        return output.getvalue()
-
-    def test_current_encoder_roundtrips_all_lsb_depths_for_both_media(self):
-        for kind in self.covers:
-            for bits in range(1, 9):
-                for selected in ('auto', bits):
-                    with self.subTest(kind=kind, bits=bits, selected=selected):
-                        result = self.verify(kind, bits=bits, selected=selected)
-                        self.assertEqual(result['verdict'], 'Authentic', result)
-                        self.assertTrue(result['signature_valid'])
-                        self.assertTrue(result['integrity_valid'])
-                        self.assertEqual(result['lsb_bits'], bits)
-                        self.assertEqual(result['start_location'], self.encoded[kind, bits]['start_location'])
-                        self.assertEqual(result['stored_hash'], result['computed_hash'])
-                        self.assertEqual(result['expected_media_hash'], result['received_media_hash'])
-                        self.assertEqual(result['signature_size'], 256)
-                        self.assertEqual(result['payload']['metadata']['secret_message'], 'message preserved')
-                        self.assertNotIn('private_key_pem', result)
-
-    def test_changed_media_outside_packet_is_tampered(self):
-        for kind in self.covers:
-            with self.subTest(kind=kind):
-                raw = base64.b64decode(self.encoded[kind, 1]['stego_base64'])
-                start = self.encoded[kind, 1]['start_location']
-                def mutate(values):
-                    values[(start - 1) % values.size] ^= 128
-                changed = self.rewrite_carrier(kind, raw, mutate)
-                result = self.verify(kind, data=changed)
-                self.assertEqual(result['verdict'], 'Tampered', result)
-                self.assertTrue(result['signature_valid'])
-                self.assertTrue(result['media_hash_valid'])
-                self.assertFalse(result['received_media_valid'])
-
-    def test_wrong_key_and_corrupt_signature(self):
-        _, wrong_public = generate_rsa_keypair()
-        for kind in self.covers:
-            with self.subTest(kind=kind):
-                result = self.verify(kind, public=export_public_key_pem(wrong_public))
-                self.assertEqual(result['verdict'], 'Signature Invalid')
-                self.assertFalse(result['signature_valid'])
-                packet = self.packet(kind)
-                corrupted = packet[:-1] + bytes([packet[-1] ^ 1])
-                result = self.verify(kind, data=self.embed_packet(kind, corrupted))
-                self.assertEqual(result['verdict'], 'Signature Invalid')
-
-    def test_unsigned_payload_change_fails_signature(self):
-        for kind in self.covers:
-            packet = bytearray(self.packet(kind))
-            packet[10] ^= 1
-            result = self.verify(kind, data=self.embed_packet(kind, bytes(packet)))
-            self.assertEqual(result['verdict'], 'Signature Invalid')
-
-    def test_missing_payload_wrong_secret_and_wrong_lsb_are_explained(self):
-        for kind in self.covers:
-            for kwargs in ({'data': self.covers[kind]}, {'secret': 'wrong-secret'}, {'selected': 8}):
-                with self.subTest(kind=kind, kwargs=tuple(kwargs)):
-                    result = self.verify(kind, **kwargs)
-                    self.assertEqual(result['verdict'], 'Payload Missing', result)
-                    self.assertIsNone(result['signature_valid'])
-                    self.assertIn('secret/LSB', result['message'])
-
-    def test_no_original_and_wrong_original(self):
-        for kind in self.covers:
-            result = self.verify(kind, original=False)
-            self.assertEqual(result['verdict'], 'Cannot Verify')
-            self.assertTrue(result['signature_valid'])
-            self.assertIsNone(result['integrity_valid'])
-            result = self.verify(kind, original=self.covers[kind] + b'changed')
-            self.assertEqual(result['verdict'], 'Tampered')
-            self.assertFalse(result['media_hash_valid'])
-
-    def test_invalid_truncated_media_and_key(self):
-        for kind in self.covers:
-            for raw in (b'not media', self.covers[kind][:20], self.covers[kind][:-10]):
-                with self.subTest(kind=kind, size=len(raw)):
-                    self.assertEqual(self.verify(kind, data=raw)['verdict'], 'Cannot Verify')
-            self.assertEqual(self.verify(kind, public=b'not a key')['verdict'], 'Cannot Verify')
-            opposite = 'audio' if kind == 'image' else 'image'
-            self.assertEqual(self.verify(kind, media_type=opposite)['verdict'], 'Cannot Verify')
-
-    def test_signed_malformed_schema_and_json_cannot_verify(self):
-        for kind in self.covers:
-            bad_hash = dict(self.encoded[kind, 1]['payload'], media_hash='non-ASCII \u2603')
-            missing = dict(self.encoded[kind, 1]['payload'])
-            missing.pop('nonce')
-            for contents in (b'{', b'[]', b'{}', json.dumps(missing).encode(), json.dumps(bad_hash).encode()):
-                packet = build_verification_packet(contents, sign_payload(contents, self.private))
-                result = self.verify(kind, data=self.embed_packet(kind, packet))
-                self.assertEqual(result['verdict'], 'Cannot Verify', result)
-                self.assertTrue(result['signature_valid'])
-
-    def test_bad_lengths_versions_and_truncated_packets(self):
-        for kind in self.covers:
-            packet = self.packet(kind)
-            for broken in (packet[:20], struct.pack('>I', 0xFFFFFFFF) + packet[4:], packet + b'extra'):
-                result = self.verify(kind, data=self.embed_packet(kind, broken))
-                self.assertEqual(result['verdict'], 'Cannot Verify', result)
-            raw = base64.b64decode(self.encoded[kind, 1]['stego_base64'])
-            start = self.encoded[kind, 1]['start_location']
-            engine = stego_registry.for_media(kind)
-            for magic, length in ((FRAME_MAGIC, 0xFFFFFFFF), (FRAME_MAGIC, 0),
-                                  (FRAME_MAGIC, 1_000_000), (b'STG2', len(packet))):
-                header = FRAME_HEADER.pack(magic, 1, length)
-                def mutate(values):
-                    values[:] = engine.lsb_encoder.write(values, header, start, 1)
-                changed = self.rewrite_carrier(kind, raw, mutate)
-                self.assertEqual(self.verify(kind, data=changed)['verdict'], 'Cannot Verify')
-
-    def test_upload_limit_returns_json(self):
-        client = create_app({'TESTING': True, 'MAX_CONTENT_LENGTH': 100}).test_client()
-        response = client.post('/decode', data={'stego': (io.BytesIO(b'x' * 200), 'file')})
+    def test_upload_limit_returns_json(self) -> None:
+        """Flask request-size failures remain machine-readable."""
+        client = create_app({"TESTING": True, "MAX_CONTENT_LENGTH": 100}).test_client()
+        response = client.post(
+            "/decode", data={"stego": (io.BytesIO(b"x" * 200), "file")}
+        )
         self.assertEqual(response.status_code, 413)
-        self.assertEqual(response.get_json()['verdict'], 'Cannot Verify')
+        self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
 
 
 if __name__ == "__main__":
