@@ -1,6 +1,6 @@
 # Documentation — INF2005-ACW1
 
-This index lists durable documentation for the signed payload protocol repository. The `docs/` directory holds the assignment specification we were given; `AGENT_docs/` holds the records this project maintains.
+This index lists durable documentation for the Flask application and both retained signed payload protocols. The `docs/` directory holds the supplied assignment specification; `AGENT_docs/` holds records maintained by the project.
 
 ## Navigation
 
@@ -11,6 +11,9 @@ For repository structure and implementation entry points, see [Agent Navigation 
 - [README](../README.md) — setup and the masked-media integrity invariant.
 - [stego package](../stego/__init__.py) — public API for the modular signed steganography implementation.
 - [test_stego.py](../test_stego.py) — masked-media protocol implementation tests.
+- [Flask application](../run.py) — localhost GUI entry point.
+- [test_webapp.py](../test_webapp.py) — Flask pipeline and verification tests.
+- [test_payload_protocol.py](../test_payload_protocol.py) — retained legacy `STG1` payload protocol tests.
 - [AGENTS](../AGENTS.md) — agent working instructions.
 
 ## Records
@@ -24,3 +27,6 @@ For repository structure and implementation entry points, see [Agent Navigation 
 - [Work Not Built](WORK-NOT-BUILT.md#work-not-built) — assignment work that remains to be built, demonstrated, or assembled.
 - [KISS Reduction Specification](REDUCTION-SPEC.md) — the approved reduction goals and constraints.
 - [KISS Reduction Record](KISS-REDUCTION-RECORD.md) — the committed reduction outcome, measurements, decisions, and lessons.
+- [Flask Application Status](IMPLEMENTATION-STATUS.md) — current web inputs, protocol-v2 integration, requirement coverage, and request flow.
+- [Flask Decoding and Verification](DECODING-VERIFICATION.md) — receiver-gated verification inputs, response fields, payload-preview controls, tests, and limitations.
+- [Protocol Compatibility](PROTOCOL-COMPATIBILITY.md) — the boundary between active version-2 web files and retained legacy `STG1` files.

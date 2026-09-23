@@ -1,17 +1,18 @@
 ---
 name: inf2005-acw1
-description: Masked-media LSB steganography for PNG and WAV carriers.
+description: Flask steganography application on the masked-media protocol, with a retained legacy protocol module.
 ---
 
 # INF2005-ACW1
 
-This repository provides a signed LSB steganography protocol for strict RGB PNG and uncompressed PCM WAV carriers. Read the [Agent Navigation Map](AGENT_docs/AGENT_MAP.md) and [documentation index](AGENT_docs/README.md) before changing files.
+This repository provides a localhost Flask steganography application on the reduced masked-media protocol and retains the earlier `STG1` protocol as a tested legacy module. Read the [Agent Navigation Map](AGENT_docs/AGENT_MAP.md), [documentation index](AGENT_docs/README.md), and [protocol compatibility record](AGENT_docs/PROTOCOL-COMPATIBILITY.md) before changing files.
 
 ## Read first
 
 1. [Agent Navigation Map](AGENT_docs/AGENT_MAP.md) — repository structure and map chain.
 2. [Documentation index](AGENT_docs/README.md) — durable records and current repository documentation.
-3. [README](README.md) — setup and the masked-media integrity invariant.
+3. [Protocol compatibility](AGENT_docs/PROTOCOL-COMPATIBILITY.md) — boundaries between the web format and masked-media format.
+4. [README](README.md) — setup, application flow, and integrity behavior.
 
 ## Commands
 
@@ -28,13 +29,16 @@ bash scripts/install-hooks.sh
 
 - This is a standalone Python module repository with no package build configuration or CI workflow.
 - The `stego/` package requires Python 3.10+ and uses `cryptography`, NumPy, and Pillow.
-- `test_stego.py` is the unit-test entry point.
+- The Flask application in `stego_web/` uses the current `stego/` protocol through `stego_web/services/current_protocol.py`.
+- `payload_protocol.py` and the earlier web service modules remain as legacy, test-covered code; they are not used by the active Flask routes.
+- `test_stego.py`, `test_payload_protocol.py`, and `test_webapp.py` are all active test entry points.
 
 ## Conventions
 
-- Keep the shared protocol media-neutral and use the fixed PNG and WAV adapters for file I/O.
-- Preserve the documented packet format and verification verdicts when changing protocol behavior.
-- Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in `test_stego.py` unless the repository adopts a different layout.
+- Keep `payload_protocol.py` byte-only and legacy-compatible; do not route new Flask media operations through it.
+- Keep the masked-media protocol media-neutral and use its fixed `stego/` PNG and WAV adapters for file I/O.
+- Preserve both documented packet formats and verification verdicts. The active Flask routes accept only protocol version 2; do not present legacy `STG1` files as interoperable.
+- Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in the existing three test modules unless the repository adopts a different layout.
 - Annotate every function and method parameter and return type, including private helpers; use `-> None` when nothing is returned.
 - Use plain built-in types and `|` unions, write `X | None` instead of `Optional`, and write `str | bytes | PathLike[str]` inline at each site rather than defining an alias. Annotate carrier arrays as `np.ndarray` without dtype or shape; let docstrings carry that detail, and do not import from `typing` unless there is no other way.
 - Store each durable record—such as an architecture note, plan, runbook, status record, release note, or ADR—in its own aptly named file under `AGENT_docs/`, and list it in `AGENT_docs/README.md`. The `docs/` directory holds the supplied assignment specification and is not a place to add records.
