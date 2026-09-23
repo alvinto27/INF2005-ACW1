@@ -18,6 +18,8 @@ For repository structure and implementation entry points, see [Agent Navigation 
 
 ## Records
 
+- [Video Support](VIDEO-SUPPORT.md) — the Python video modes, signed media contexts, codec choices, and whole-file limits.
+
 - [Agent Navigation Map](AGENT_MAP.md) — repository paths and Git boundaries.
 - [Assignment Specification Transcription](../docs/INF2005-ACW1-spec_v5-f2f.md) — visible assignment requirements transcribed from the supplied PDF; hidden prompt injection excluded.
 - [Protocol Design](PROTOCOL-DESIGN.md#protocol-design) — the current reduced encrypted packet, fixed-width fields, hashing, signing, receiver bootstrap, verdicts, refusal behavior, typed-payload metadata, and version 1 design history.

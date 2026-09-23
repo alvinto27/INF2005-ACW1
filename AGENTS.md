@@ -28,7 +28,8 @@ bash scripts/install-hooks.sh
 ## State
 
 - This is a standalone Python module repository with no package build configuration or CI workflow.
-- The `stego/` package requires Python 3.10+ and uses `cryptography`, NumPy, and Pillow.
+- The `stego/` package requires Python 3.10+ and uses `cryptography`, NumPy, Pillow, and PyAV.
+- `stego/video.py` contains the whole-file video frame and PCM audio adapters. The Flask routes still support PNG and WAV only.
 - The Flask application in `stego_web/` uses the current `stego/` protocol through `stego_web/services/current_protocol.py`.
 - `payload_protocol.py` and the earlier web service modules remain as legacy, test-covered code; they are not used by the active Flask routes.
 - `test_stego.py`, `test_payload_protocol.py`, and `test_webapp.py` are all active test entry points.
@@ -36,7 +37,7 @@ bash scripts/install-hooks.sh
 ## Conventions
 
 - Keep `payload_protocol.py` byte-only and legacy-compatible; do not route new Flask media operations through it.
-- Keep the masked-media protocol media-neutral and use its fixed `stego/` PNG and WAV adapters for file I/O.
+- Keep the masked-media protocol media-neutral and use the `stego/` PNG, WAV, and video adapters for file I/O.
 - Preserve both documented packet formats and verification verdicts. The active Flask routes accept only protocol version 2; do not present legacy `STG1` files as interoperable.
 - Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in the existing three test modules unless the repository adopts a different layout.
 - Annotate every function and method parameter and return type, including private helpers; use `-> None` when nothing is returned.

@@ -1,3 +1,5 @@
 .venv/
+.runtime/
+samples/video-test-output/
 __pycache__/
 *.py[cod]

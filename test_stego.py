@@ -2,22 +2,34 @@ import hashlib
 import struct
 import unittest
 import wave
+from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
+import av
 from PIL import Image
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from stego import *
-from stego.constants import MEDIA_ID_SIZE
+from stego.constants import MEDIA_ID_SIZE, MEDIA_PREFIXES, SUPPORTED_MEDIA_CODES
 from stego.bits import encode_protocol_field
 from stego.crypto import sign_bytes, verify_signature
 from stego.layout import build_embedding_layout
 from stego.packet import serialized_record_length
+from stego.core import encode_video_audio, encode_video_frames, verify_video_audio, verify_video_frames
+from stego.video import (
+    encode_video_frame_media_context,
+    load_video_audio_from_path,
+    load_video_frames_from_path,
+    save_video_audio_to_path,
+    save_video_frames_to_path,
+    video_audio_to_carrier,
+    video_frames_to_carrier,
+)
 
 
 SIGNING_PRIVATE_KEY, SENDER_PUBLIC_KEY = generate_rsa_keypair()
@@ -94,6 +106,9 @@ class TestMaskedStego(unittest.TestCase):
         self.assertEqual(encode_png_media_context((7, 11, 3)), struct.pack(">II", 11, 7))
         wav_data = WavPcmData(2, 2, 44100, 3, bytes(12))
         self.assertEqual(encode_wav_media_context(wav_data), struct.pack(">HBIQ", 2, 2, 44100, 3))
+        self.assertEqual(SUPPORTED_MEDIA_CODES, (IMAGE_MEDIA_CODE, AUDIO_MEDIA_CODE, VIDEO_FRAME_MEDIA_CODE, VIDEO_AUDIO_MEDIA_CODE))
+        self.assertEqual(MEDIA_PREFIXES, {1: "IMG", 2: "AUD", 3: "VFR", 4: "VAU"})
+        self.assertEqual(MEDIA_ID_SIZE, 36)
 
     def test_payload_binary_round_trip_and_utf8_metadata(self):
         record = PayloadRecord(
@@ -1086,6 +1101,220 @@ class TestMaskedStego(unittest.TestCase):
             ec_path.write_bytes(ec_key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
             with self.assertRaisesRegex(TypeError, "RSA public key"):
                 load_rsa_public_key_pem(ec_path)
+
+
+def make_test_video(path: Path, width: int = 64, height: int = 64, frame_count: int = 3, audio_sample_count: int | None = None, video_codec: str = "ffv1", audio_codec: str = "pcm_s16le", audio_channels: int = 1) -> None:
+    """Write a small RGB-exact FFV1 fixture with deterministic frame values."""
+    with av.open(str(path), mode="w", format="matroska") as output:
+        stream = output.add_stream(video_codec, rate=12)
+        stream.width = width
+        stream.height = height
+        stream.pix_fmt = "bgr0" if video_codec == "ffv1" else "yuv420p"
+        audio = output.add_stream(audio_codec, rate=8000) if audio_sample_count is not None else None
+        if audio is not None:
+            audio.layout = "mono" if audio_channels == 1 else "stereo"
+        for index in range(frame_count):
+            rgb = (np.arange(width * height * 3, dtype=np.uint32).reshape(height, width, 3) + index * 17).astype(np.uint8)
+            frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
+            frame.pts = index
+            frame.time_base = Fraction(1, 12)
+            for packet in stream.encode(frame):
+                output.mux(packet)
+        for packet in stream.encode():
+            output.mux(packet)
+        if audio is not None:
+            samples = np.arange(audio_sample_count, dtype=np.int16)
+            frame = av.AudioFrame.from_ndarray(samples.reshape(1, -1), format="s16", layout="mono" if audio_channels == 1 else "stereo")
+            frame.sample_rate = 8000
+            frame.pts = 0
+            frame.time_base = Fraction(1, 8000)
+            for packet in audio.encode(frame):
+                output.mux(packet)
+            for packet in audio.encode():
+                output.mux(packet)
+
+
+def video_stream_packets(path: Path) -> list[bytes]:
+    """Read the exact compressed visual packet bytes for remux checks."""
+    with av.open(str(path)) as container:
+        return [bytes(packet) for packet in container.demux(container.streams.video[0]) if packet.dts is not None]
+
+
+class TestVideoFrames(unittest.TestCase):
+    def test_frame_round_trip_and_wrong_key(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.mkv"
+            encoded = directory / "encoded.mkv"
+            make_test_video(source)
+            layout, payload = encode_video_frames(source, encoded, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"video frame payload", b"kind=frames")
+            result = verify_video_frames(encoded, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload.user_payload, b"video frame payload")
+            self.assertTrue(payload.media_id.startswith("VFR-"))
+            self.assertEqual(layout.total_units, 64 * 64 * 3 * 3)
+            self.assertEqual(verify_video_frames(encoded, OTHER_PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Signature Invalid")
+
+    def test_modified_frame_fails_verification(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.mkv"
+            encoded = directory / "encoded.mkv"
+            tampered = directory / "tampered.mkv"
+            make_test_video(source)
+            layout, _ = encode_video_frames(source, encoded, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"data", b"")
+            data = load_video_frames_from_path(encoded)
+            carrier_units = video_frames_to_carrier(data)
+            carrier_units[layout.start_unit + layout.footprint] ^= np.uint8(1)
+            save_video_frames_to_path(data, carrier_units, encoded, tampered)
+            self.assertEqual(verify_video_frames(tampered, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Tampered")
+
+    def test_frame_capacity_and_layout_validation(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "small.mkv"
+            output = directory / "output.mkv"
+            make_test_video(source, 8, 8, 1)
+            with self.assertRaisesRegex(ValueError, "carrier is too small"):
+                encode_video_frames(source, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 1, b"x", b"")
+            make_test_video(source)
+            for lsb_count in (0, 9):
+                with self.subTest(lsb_count=lsb_count), self.assertRaisesRegex(ValueError, "lsb_count"):
+                    encode_video_frames(source, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, lsb_count, b"x", b"")
+            with self.assertRaisesRegex(ValueError, "start_unit"):
+                encode_video_frames(source, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 0, 3, b"x", b"")
+            with self.assertRaisesRegex(ValueError, r"\.mkv"):
+                encode_video_frames(source, directory / "lossy.mp4", PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+
+    def test_frame_mode_remuxes_original_audio(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.mkv"
+            encoded = directory / "encoded.mkv"
+            make_test_video(source, frame_count=12, audio_sample_count=8000)
+            original_audio = load_video_audio_from_path(source)
+            encode_video_frames(source, encoded, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"frames", b"")
+            encoded_audio = load_video_audio_from_path(encoded)
+            self.assertTrue(np.array_equal(original_audio.samples, encoded_audio.samples))
+            self.assertEqual(load_video_frames_from_path(source).timestamps, load_video_frames_from_path(encoded).timestamps)
+            self.assertEqual(verify_video_frames(encoded, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+
+class TestVideoAudio(unittest.TestCase):
+    def test_audio_round_trip_and_visual_copy(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.mkv"
+            encoded = directory / "encoded.mkv"
+            make_test_video(source, frame_count=12, audio_sample_count=8000)
+            _, payload = encode_video_audio(source, encoded, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"audio payload", b"kind=video-audio")
+            result = verify_video_audio(encoded, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload.user_payload, b"audio payload")
+            self.assertTrue(payload.media_id.startswith("VAU-"))
+            self.assertTrue(np.array_equal(video_frames_to_carrier(load_video_frames_from_path(source)), video_frames_to_carrier(load_video_frames_from_path(encoded))))
+            self.assertEqual(video_stream_packets(source), video_stream_packets(encoded))
+
+    def test_stereo_pcm_sample_carrier_round_trip(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "stereo.mkv"
+            encoded = directory / "encoded.mkv"
+            make_test_video(source, frame_count=12, audio_sample_count=16000, audio_channels=2)
+            layout, _ = encode_video_audio(source, encoded, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"stereo", b"")
+            result = verify_video_audio(encoded, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload.user_payload, b"stereo")
+            self.assertEqual(layout.total_units, 16000)
+            self.assertEqual(load_video_audio_from_path(encoded).channels, 2)
+
+    def test_modified_audio_fails_verification(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.mkv"
+            encoded = directory / "encoded.mkv"
+            tampered = directory / "tampered.mkv"
+            make_test_video(source, frame_count=12, audio_sample_count=8000)
+            layout, _ = encode_video_audio(source, encoded, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"data", b"")
+            data = load_video_audio_from_path(encoded)
+            carrier_units = video_audio_to_carrier(data)
+            carrier_units[layout.start_unit + layout.footprint] ^= np.uint8(1)
+            save_video_audio_to_path(data, carrier_units, encoded, tampered)
+            self.assertEqual(verify_video_audio(tampered, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Tampered")
+
+    def test_missing_audio_and_insufficient_capacity(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.mkv"
+            output = directory / "output.mkv"
+            make_test_video(source)
+            with self.assertRaisesRegex(ValueError, "no audio stream"):
+                encode_video_audio(source, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            make_test_video(source, audio_sample_count=200)
+            with self.assertRaisesRegex(ValueError, "carrier is too small"):
+                encode_video_audio(source, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+
+    def test_video_modes_do_not_cross_verify(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.mkv"
+            frame_output = directory / "frames.mkv"
+            audio_output = directory / "audio.mkv"
+            make_test_video(source, frame_count=12, audio_sample_count=8000)
+            encode_video(source, frame_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"frames", b"", mode="frames")
+            encode_video(source, audio_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"audio", b"", mode="audio")
+            self.assertEqual(verify_video(frame_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, mode="frames").verdict, "Authentic")
+            self.assertEqual(verify_video(audio_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, mode="audio").verdict, "Authentic")
+            self.assertFalse(verify_video(frame_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, mode="audio").valid)
+            self.assertFalse(verify_video(audio_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, mode="frames").valid)
+            frame_data = load_video_frames_from_path(frame_output)
+            frame_carrier = video_frames_to_carrier(frame_data)
+            frame_context = encode_video_frame_media_context(frame_data, frame_carrier.size)
+            self.assertEqual(decode_carrier(frame_carrier, VIDEO_AUDIO_MEDIA_CODE, frame_context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Signature Invalid")
+            with self.assertRaisesRegex(ValueError, "video mode"):
+                encode_video(source, directory / "invalid.mkv", PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"", mode="both")
+            with self.assertRaisesRegex(ValueError, "video mode"):
+                verify_video(frame_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, mode="both")
+
+    def test_compressed_source_is_decoded_before_embedding(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "compressed.mkv"
+            frame_output = directory / "frames.mkv"
+            audio_output = directory / "audio.mkv"
+            make_test_video(source, frame_count=12, audio_sample_count=8000, video_codec="mpeg4", audio_codec="aac")
+            encode_video(source, frame_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"frames", b"", mode="frames")
+            encode_video(source, audio_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"audio", b"", mode="audio")
+            source_audio = load_video_audio_from_path(source)
+            exported_audio = load_video_audio_from_path(audio_output)
+            self.assertEqual((source_audio.sample_rate, source_audio.channels, source_audio.samples.size), (exported_audio.sample_rate, exported_audio.channels, exported_audio.samples.size))
+            self.assertEqual(verify_video(frame_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, mode="frames").verdict, "Authentic")
+            self.assertEqual(verify_video(audio_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, mode="audio").verdict, "Authentic")
+            with av.open(str(frame_output)) as container:
+                self.assertEqual(container.streams.video[0].codec_context.name, "ffv1")
+                self.assertEqual(container.streams.audio[0].codec_context.name, "aac")
+            with av.open(str(audio_output)) as container:
+                self.assertEqual(container.streams.video[0].codec_context.name, "mpeg4")
+                self.assertEqual(container.streams.audio[0].codec_context.name, "pcm_s16le")
+
+    def test_missing_video_stream_is_clear(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "audio-only.mkv"
+            with av.open(str(source), mode="w", format="matroska") as output:
+                stream = output.add_stream("pcm_s16le", rate=8000)
+                stream.layout = "mono"
+                frame = av.AudioFrame.from_ndarray(np.arange(8000, dtype=np.int16).reshape(1, -1), format="s16", layout="mono")
+                frame.sample_rate = 8000
+                for packet in stream.encode(frame):
+                    output.mux(packet)
+                for packet in stream.encode():
+                    output.mux(packet)
+            with self.assertRaisesRegex(ValueError, "no video stream"):
+                encode_video_audio(source, directory / "output.mkv", PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            with self.assertRaisesRegex(ValueError, "no video stream"):
+                encode_video_frames(source, directory / "output.mkv", PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertIn("no video stream", verify_video_audio(source, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).detail)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,10 @@ The version in this input comes from the protocol constant, not from received da
 
 The PNG media context is exactly `struct.pack(">II", width, height)`. The WAV media context is exactly `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 
+The video adapters add separate media codes without changing those two formats or
+the packet protocol. Their deterministic contexts are specified in
+[Video Support](VIDEO-SUPPORT.md).
+
 ## Carrier units
 
 A carrier unit is the smallest thing the embedder writes into. Its meaning is per medium:
@@ -109,6 +113,8 @@ A carrier unit is the smallest thing the embedder writes into. Its meaning is pe
 | --- | --- | --- |
 | PNG | one 8-bit colour channel value | `width x height x 3` |
 | WAV | one PCM **sample** | `frame_count x channels` |
+| Video frames | one decoded RGB channel value | `frame_count x height x width x 3` |
+| Video audio | one decoded signed 16-bit PCM sample | `samples_per_channel x channels` |
 
 For WAV, the unit is the sample, not the byte. Multi-byte PCM in WAV is always little-endian, so the lowest-address byte of a sample holds its low 8 bits. The carrier therefore takes every `sample_width`-th byte, starting at offset 0, and the writer puts the modified units back into those same positions. Every other byte of the file is copied through unchanged.
 

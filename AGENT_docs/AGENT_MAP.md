@@ -20,6 +20,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
 | Active web integration status and verification flow | [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md), [DECODING-VERIFICATION.md](DECODING-VERIFICATION.md) |
 | Current and legacy protocol boundary | [PROTOCOL-COMPATIBILITY.md](PROTOCOL-COMPATIBILITY.md) |
+| Video mode design, codec assumptions, and current limits | [VIDEO-SUPPORT.md](VIDEO-SUPPORT.md) |
 
 ## Implementation locations
 
@@ -34,6 +35,9 @@ Use this map before editing an unfamiliar part of the repository.
 | RSA-PSS keys, signatures, fingerprints, and PEM | [stego/crypto.py](../stego/crypto.py) |
 | Carrier capacity and fixed-width protocol fields | [stego/layout.py](../stego/layout.py) |
 | PNG and WAV adapters | [stego/media.py](../stego/media.py) |
+| Video frame and PCM audio adapters | [stego/video.py](../stego/video.py) |
+| Persistent video test cover | [samples/video-test-source.mkv](../samples/video-test-source.mkv) |
+| Repeatable video API demo | [scripts/try_video.py](../scripts/try_video.py) |
 | End-to-end encrypted encode, receiver-gated verification, and reduced protocol format | [stego/core.py](../stego/core.py) |
 | Flask application factory and HTTP routes | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
 | Flask-to-protocol-v2 byte/file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |

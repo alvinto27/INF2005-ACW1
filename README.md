@@ -1,9 +1,8 @@
 # INF2005-ACW1
 
-This project is a localhost Flask application for encrypting, signing, embedding,
-decoding, and verifying payloads in strict RGB PNG images and uncompressed PCM
-WAV audio. The retained web layout now uses the reduced protocol version 2 in
-the `stego` package.
+This project provides a localhost Flask application for strict RGB PNG images and
+uncompressed PCM WAV audio, plus a Python API for video frame and video audio
+steganography. All adapters use the reduced protocol version 2 in `stego`.
 
 The protocol encrypts the complete payload record with AES-256-GCM, authenticates
 the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
@@ -31,6 +30,45 @@ The optional demonstration notebook additionally needs:
 ```sh
 python -m pip install -r requirements-notebook.txt
 ```
+
+## Video Python API
+
+Video input may use a format PyAV can decode. The encoded output must end in
+`.mkv`. Frame mode writes lossless FFV1 RGB video and remuxes original audio
+tracks. Audio mode decodes the first audio track to signed 16-bit PCM, embeds in
+one low byte per sample, writes uncompressed PCM audio, and remuxes the original
+video streams. Select the mode explicitly; the two payload locations and media
+codes are separate.
+
+```python
+from stego import bootstrap_span, encode_video, verify_video
+
+start = bootstrap_span(receiver_public_key)
+for mode in ("frames", "audio"):
+    output = f"stego-{mode}.mkv"
+    encode_video(
+        "input.mp4", output, signing_private_key, receiver_public_key,
+        start, 3, b"secret message", b"mime=text/plain", mode=mode,
+    )
+    result = verify_video(output, sender_public_key, receiver_private_key, mode=mode)
+    assert result.valid and result.payload.user_payload == b"secret message"
+```
+
+Audio mode requires an audio track. Both adapters currently decode their selected
+carrier in memory. Streaming and chunk processing are not implemented. Verification
+authenticates the selected carrier, not unrelated tracks. The Flask UI continues
+to offer PNG and WAV; the video functions are available through Python.
+
+To try both video modes on the bundled MPEG-4/AAC cover and keep the encoded
+videos for inspection, run:
+
+```sh
+python -m scripts.try_video
+```
+
+The cover is `samples/video-test-source.mkv`; the command saves
+`samples/video-test-output/stego-frames.mkv` and `stego-audio.mkv` and prints
+each verification verdict. Use `--mode frames` or `--mode audio` to run one mode.
 
 ## Web application flow
 

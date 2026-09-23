@@ -41,6 +41,8 @@ from .constants import (
     PROTOCOL_VERSION,
     RSA_SIGNATURE_SIZE,
     SESSION_KEY_SIZE,
+    VIDEO_FRAME_MEDIA_CODE,
+    VIDEO_AUDIO_MEDIA_CODE,
 )
 from .crypto import (
     aead_open,
@@ -80,6 +82,16 @@ from .packet import (
     parse_payload,
     serialized_record_length,
     serialize_payload,
+)
+from .video import (
+    encode_video_audio_media_context,
+    encode_video_frame_media_context,
+    load_video_audio_from_path,
+    load_video_frames_from_path,
+    save_video_audio_to_path,
+    save_video_frames_to_path,
+    video_audio_to_carrier,
+    video_frames_to_carrier,
 )
 
 
@@ -375,3 +387,67 @@ def verify_wav(input_path: str | bytes | PathLike[str], sender_public_key: rsa.R
     except (OSError, ValueError) as error:
         return _failure_result("Cannot Verify", str(error))
     return decode_carrier(carrier, AUDIO_MEDIA_CODE, context, sender_public_key, receiver_private_key)
+
+
+def encode_video_frames(input_path: str | bytes | PathLike[str], output_path: str | bytes | PathLike[str], signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[EmbeddingLayout, PayloadRecord]:
+    """Embed in decoded RGB video frames and write lossless FFV1/MKV."""
+    if _paths_resolve_same(input_path, output_path):
+        raise ValueError("input and output paths must be different")
+    data = load_video_frames_from_path(input_path)
+    carrier = video_frames_to_carrier(data)
+    context = encode_video_frame_media_context(data, carrier.size)
+    encoded, layout, payload = encode_carrier(carrier, VIDEO_FRAME_MEDIA_CODE, context, signing_private_key, receiver_public_key, start_unit, lsb_count, user_payload, metadata)
+    save_video_frames_to_path(data, encoded, input_path, output_path)
+    return layout, payload
+
+
+def verify_video_frames(input_path: str | bytes | PathLike[str], sender_public_key: rsa.RSAPublicKey, receiver_private_key: rsa.RSAPrivateKey) -> VerificationResult:
+    """Verify a video-frame carrier using the video-frame domain code."""
+    try:
+        data = load_video_frames_from_path(input_path)
+        carrier = video_frames_to_carrier(data)
+        context = encode_video_frame_media_context(data, carrier.size)
+    except (OSError, ValueError) as error:
+        return _failure_result("Cannot Verify", str(error))
+    return decode_carrier(carrier, VIDEO_FRAME_MEDIA_CODE, context, sender_public_key, receiver_private_key)
+
+
+def encode_video_audio(input_path: str | bytes | PathLike[str], output_path: str | bytes | PathLike[str], signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[EmbeddingLayout, PayloadRecord]:
+    """Embed in decoded PCM audio and write PCM/MKV while remuxing video."""
+    if _paths_resolve_same(input_path, output_path):
+        raise ValueError("input and output paths must be different")
+    data = load_video_audio_from_path(input_path)
+    carrier = video_audio_to_carrier(data)
+    context = encode_video_audio_media_context(data, carrier.size)
+    encoded, layout, payload = encode_carrier(carrier, VIDEO_AUDIO_MEDIA_CODE, context, signing_private_key, receiver_public_key, start_unit, lsb_count, user_payload, metadata)
+    save_video_audio_to_path(data, encoded, input_path, output_path)
+    return layout, payload
+
+
+def verify_video_audio(input_path: str | bytes | PathLike[str], sender_public_key: rsa.RSAPublicKey, receiver_private_key: rsa.RSAPrivateKey) -> VerificationResult:
+    """Verify a video-audio carrier using the video-audio domain code."""
+    try:
+        data = load_video_audio_from_path(input_path)
+        carrier = video_audio_to_carrier(data)
+        context = encode_video_audio_media_context(data, carrier.size)
+    except (OSError, ValueError) as error:
+        return _failure_result("Cannot Verify", str(error))
+    return decode_carrier(carrier, VIDEO_AUDIO_MEDIA_CODE, context, sender_public_key, receiver_private_key)
+
+
+def encode_video(input_path: str | bytes | PathLike[str], output_path: str | bytes | PathLike[str], signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes, mode: str = "frames") -> tuple[EmbeddingLayout, PayloadRecord]:
+    """Encode into exactly the selected video carrier mode."""
+    if mode == "frames":
+        return encode_video_frames(input_path, output_path, signing_private_key, receiver_public_key, start_unit, lsb_count, user_payload, metadata)
+    if mode == "audio":
+        return encode_video_audio(input_path, output_path, signing_private_key, receiver_public_key, start_unit, lsb_count, user_payload, metadata)
+    raise ValueError("video mode must be 'frames' or 'audio'")
+
+
+def verify_video(input_path: str | bytes | PathLike[str], sender_public_key: rsa.RSAPublicKey, receiver_private_key: rsa.RSAPrivateKey, mode: str = "frames") -> VerificationResult:
+    """Verify only the selected video carrier mode."""
+    if mode == "frames":
+        return verify_video_frames(input_path, sender_public_key, receiver_private_key)
+    if mode == "audio":
+        return verify_video_audio(input_path, sender_public_key, receiver_private_key)
+    raise ValueError("video mode must be 'frames' or 'audio'")
