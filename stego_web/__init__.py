@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from flask import Flask, Response, jsonify
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
@@ -10,7 +12,8 @@ def create_app(test_config: dict | None = None) -> Flask:
     """Create an isolated Flask application instance."""
     app = Flask(__name__)
     app.config.from_mapping(
-        MAX_CONTENT_LENGTH=32 * 1024 * 1024,
+        MAX_CONTENT_LENGTH=256 * 1024 * 1024,
+        STEGO_OUTPUT_DIR=Path(app.instance_path) / "stego-outputs",
         JSON_SORT_KEYS=False,
     )
 

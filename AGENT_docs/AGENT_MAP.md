@@ -36,7 +36,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Carrier capacity and fixed-width protocol fields | [stego/layout.py](../stego/layout.py) |
 | Public `PngCarrier`, `WavCarrier`, WAV header reader, and PNG/WAV file adapters | [stego/media.py](../stego/media.py) |
 | Two-pass encode, receiver-gated verification over a carrier backend, and file wrappers | [stego/core.py](../stego/core.py) |
-| Flask application factory and HTTP routes | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
+| Flask application factory, disk-backed uploads, encode/decode routes, and validated stego downloads | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
 | Flask-to-protocol-v2 byte/file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
 | Retained legacy web protocol | [payload_protocol.py](../payload_protocol.py) and legacy modules under [stego_web/services/](../stego_web/services/) |

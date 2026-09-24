@@ -229,7 +229,7 @@ encodeForm.addEventListener('submit', async event => {
     const response = await fetch('/encode', {method: 'POST', body: new FormData(encodeForm)});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error ?? 'Encode failed');
-    const stegoUrl = base64Url(data.stego_base64, data.mime_type);
+    const stegoUrl = data.stego_url;
     renderMedia(document.querySelector('#stego-preview'), stegoUrl, data.mime_type);
     const preserved = (data.preserved_ratio * 100).toFixed(4);
     document.querySelector('#success-summary').textContent = `Protocol v${data.protocol_version}: packet starts at unit ${data.start_location}, uses ${data.lsb_bits} LSB, and preserves ${preserved}% of carrier bits.`;
@@ -265,10 +265,6 @@ function renderMedia(container, url, mime) {
   element.controls = isAudio;
   element.alt = 'Media preview';
   container.replaceChildren(element);
-}
-function base64Url(value, mime) {
-  const bytes = Uint8Array.from(atob(value), character => character.charCodeAt(0));
-  return URL.createObjectURL(new Blob([bytes], {type: mime}));
 }
 function textUrl(value) { return URL.createObjectURL(new Blob([value], {type: 'application/x-pem-file'})); }
 function downloadLink(url, filename, label) {

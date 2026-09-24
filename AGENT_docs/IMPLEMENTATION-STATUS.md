@@ -28,30 +28,38 @@ the legacy `STG1` encoding and verification pipelines.
 1. `run.py` calls `stego_web.create_app()` and serves the retained seven-card GUI.
 2. `/encode` accepts a strict cover, raw message/file payload, sender private key
    and password, receiver public key, explicit start unit, and LSB count.
-3. `CurrentProtocolService` detects the carrier, loads both RSA key roles, builds
-   delimiter-checked typed metadata, and creates a request-scoped temporary workspace.
-4. `stego.encode_png` or `stego.encode_wav` calculates geometry and masked-media
+3. Flask saves the cover upload to a request-scoped temporary file. Key PEMs and
+   the payload file remain bounded byte inputs.
+4. `CurrentProtocolService` detects the carrier from its first 12 bytes, loads both
+   RSA key roles, and builds delimiter-checked typed metadata.
+5. `stego.encode_png` or `stego.encode_wav` calculates geometry and masked-media
    integrity, encrypts the record with AES-256-GCM, signs it with RSA-PSS, encrypts
-   the bootstrap with RSA-OAEP, and writes the stego object.
-5. The response returns stego bytes, sender public key, authenticated record
-   summary, capacity, geometry, and preserved-bit measurements. It never returns
-   either private key.
-6. `/decode` accepts the stego object, trusted sender public key, receiver private
-   key, and receiver-key password.
-7. `stego.verify_png` or `stego.verify_wav` opens one receiver bootstrap, verifies
-   the signature, decrypts and parses the record, and checks the masked-media hash.
-8. Authenticated payload bytes are returned for download. The browser previews
-   only supported media whose signed MIME claim agrees with recognized magic bytes.
-9. The temporary workspace is removed at the end of each request and responses
-   carry `Cache-Control: no-store`.
+   the bootstrap with RSA-OAEP, and writes directly to `instance/stego-outputs`.
+6. The response returns a `stego_url`, filename, MIME type, sender public key,
+   authenticated record summary, capacity, geometry, and preserved-bit measurements.
+   It does not return stego bytes or either private key.
+7. `GET /download/<id>.<ext>` validates the generated token and PNG/WAV extension,
+   then sends the stored file inline for browser preview or download.
+8. `/decode` saves the stego upload to a temporary file. `stego.verify_png` or
+   `stego.verify_wav` opens one receiver bootstrap, verifies the signature,
+   decrypts and parses the record, and checks the masked-media hash.
+9. The report uses the file's stat size. Recovered `user_payload_base64` remains
+   in the verify JSON.
+10. Temporary upload files are removed after each request. Stored stego outputs
+    remain without expiry until the user deletes them. Responses carry
+    `Cache-Control: no-store`.
 
 ## Carrier size
 
 The library reads WAV carriers in bounded chunks. The 64 MiB whole-file WAV cap
-and its whole-file loader have been removed. `CurrentProtocolService` validates
-WAV headers with `read_pcm_wav_info`, but the GUI still has a separate 32 MiB
-request limit, reads uploads and outputs fully into memory, and returns the
-stego object as base64 JSON. The remaining follow-up is in the
+and whole-file loader have been removed. Flask accepts requests up to 256 MiB,
+which can be changed through `create_app(test_config)`. Carrier uploads go to
+request-scoped temporary files. Encoded carriers are written to
+`instance/stego-outputs` and served through `stego_url`; files stay there with no
+expiry until the user deletes them. The output is not returned as base64. WAV
+headers are checked with `read_pcm_wav_info`, and verify reports use the file
+size from `stat()`. Pillow still decodes each PNG into a full image array, so PNG
+working memory grows with image dimensions. See the
 [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#12-web-boundary-follow-up).
 
 `/keys/generate` is an explicit local setup helper for either sender or receiver.

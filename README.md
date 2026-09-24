@@ -57,6 +57,11 @@ Authenticated payload files can be downloaded after verification. The browser
 previews supported text, PNG, JPEG, WAV, and MP3 payloads only when the signed
 MIME claim agrees with the recovered bytes.
 
+The local server accepts requests up to 256 MiB. It stores encoded PNG and WAV
+files in `instance/stego-outputs` and returns a download URL instead of sending
+the media as base64. The files stay in that folder without an expiry. Delete
+them manually when they are no longer needed.
+
 ## Protocol API
 
 The public Python API includes `encode_png`, `verify_png`, `encode_wav`,

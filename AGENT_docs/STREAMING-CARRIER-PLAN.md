@@ -1,6 +1,6 @@
 # Streaming Carrier Plan
 
-**Status: library refactor implemented; web boundary follow-up open.** This record is the single source of truth for chunked carrier access and the removal of the whole-file WAV helpers and `MAX_WAV_FRAME_BYTES`. It supersedes the earlier deferred plan and [decision 14](LOCATION-CONFIDENTIALITY-PLAN.md#12-open-decisions) of the Location Confidentiality Plan.
+**Status: library and web-boundary refactors implemented.** This record is the single source of truth for chunked carrier access and the removal of the whole-file WAV helpers and `MAX_WAV_FRAME_BYTES`. It supersedes the earlier deferred plan and [decision 14](LOCATION-CONFIDENTIALITY-PLAN.md#12-open-decisions) of the Location Confidentiality Plan.
 
 The brief does not ask for this. It is an internal architecture change. It prepares a later video backend; video is not part of it.
 
@@ -153,21 +153,24 @@ The whole-file WAV helpers `WavPcmData` and `load_pcm_wav_from_path` and the `MA
 
 | Limit | Detail |
 | --- | --- |
-| The GUI does not gain large WAVs yet | Flask limits requests to 32 MiB, and `CurrentProtocolService` reads the upload and output fully into memory. WAV header validation uses `read_pcm_wav_info`. See [section 12](#12-web-boundary-follow-up). |
+| Web request bound | Flask accepts requests up to 256 MiB. Carrier uploads are saved to temporary files, and encoded carriers are written to persistent output files instead of being returned as base64. PNG decoding still uses Pillow's full-image decode; its working memory grows with image dimensions. See [section 12](#12-web-boundary-follow-up). |
 | Verification race | If the file changes between the targeted reads and the hash pass, the verdict can mix two versions. A reopened header is checked, but frame data is not taken as a snapshot. A local attacker who can write to the file during verification is out of scope. |
 | Packet-proportional cost | See [section 9](#9-memory-claim). |
 | WAV sample high bytes are not hashed (existing protocol behaviour) | The masked hash covers carrier units only. For 16-, 24-, and 32-bit WAVs, the upper bytes of each sample, which hold most of the audible signal, are outside the hash. On `main` before this refactor, a stego WAV whose upper bytes were all changed still verified as `Authentic`. This refactor keeps the hash exactly the same, so it keeps this behaviour. A fix changes the protocol and needs its own decision. |
 
 ## 12. Web boundary follow-up
 
-This is not done. It is a separate change from the library refactor.
+This follow-up is complete. Carrier files move through the web boundary by path; the Flask service does not load or return the complete carrier file as bytes.
 
-| Current behaviour | Proposed direction |
+| Area | Implemented behaviour |
 | --- | --- |
-| `MAX_CONTENT_LENGTH = 32 MiB` | Review the limit after the other items are done. |
-| `upload.read()` and `input_path.write_bytes(...)` | Stream the upload to a temporary file. |
-| WAV validation | `CurrentProtocolService` uses `read_pcm_wav_info` to validate the header without loading the full WAV. |
-| `output_path.read_bytes()` returned as base64 JSON | Return the file as a download response. |
+| Request limit | `MAX_CONTENT_LENGTH = 256 MiB`, overridable through `create_app(test_config)`. |
+| Carrier uploads | Encode covers and decode stego files are saved from `FileStorage` to temporary files. Missing and empty uploads keep their existing errors. Key PEMs and payload files remain byte inputs. |
+| Carrier detection and report size | `detect_carrier` reads only the first 12 file bytes. Verification reports use `stat().st_size`. WAV headers use `read_pcm_wav_info`. |
+| Encode output | `encode_png` and `encode_wav` write directly to `STEGO_OUTPUT_DIR` as `<token>.png` or `<token>.wav`. Failed encodes remove partial files. |
+| Response and download | Encode JSON returns `stego_url`, `filename`, and `mime_type`; it does not include stego bytes or base64. `GET /download/<id>.<ext>` checks the token and extension, then streams the file inline. |
+| Stored-file lifetime | Files remain in `instance/stego-outputs` with no expiry. Users delete them manually. The verify report keeps `user_payload_base64`. |
+| Browser caching | All responses retain `Cache-Control: no-store`. |
 
 ## 13. Tests
 
@@ -189,6 +192,8 @@ This is not done. It is a separate change from the library refactor.
 - large WAV round trips through the bounded file-backed path
 - memory that does not grow with the carrier size
 - the optional WAV test larger than 64 MiB
+- web tests for upload-to-disk, download URLs, strict identifiers, output retention, failed-encode cleanup, and the 256 MiB limit
+- an optional web round trip for a WAV larger than 32 MiB
 
 The demonstration notebook uses `PngCarrier` and `WavCarrier` for carrier reads and rewrites. Pillow image arrays are used only to display cover, stego, and difference images.
 

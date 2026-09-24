@@ -2,8 +2,11 @@
 
 import base64
 import io
+import os
+import tempfile
 import unittest
 import wave
+from pathlib import Path
 
 import numpy as np
 from cryptography.hazmat.primitives import serialization
@@ -57,7 +60,12 @@ class WebApplicationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """Create an isolated app and independent sender/receiver key pairs."""
-        self.client = create_app({"TESTING": True}).test_client()
+        self.output_temp = tempfile.TemporaryDirectory(prefix="inf2005-test-output-")
+        self.addCleanup(self.output_temp.cleanup)
+        self.output_dir = Path(self.output_temp.name)
+        self.client = create_app(
+            {"TESTING": True, "STEGO_OUTPUT_DIR": self.output_dir}
+        ).test_client()
         self.sender_private, self.sender_public = generate_rsa_keypair()
         self.receiver_private, self.receiver_public = generate_rsa_keypair()
         self.sender_private_pem = private_pem(self.sender_private)
@@ -102,6 +110,14 @@ class WebApplicationTests(unittest.TestCase):
             "/encode", data=data, content_type="multipart/form-data"
         )
 
+    def download_stego(self, encoded: dict[str, object]) -> bytes:
+        """Fetch the carrier bytes from the API's download URL."""
+        response = self.client.get(str(encoded["stego_url"]))
+        body = response.get_data()
+        response.close()
+        self.assertEqual(response.status_code, 200, body[:200].decode("utf-8", "replace"))
+        return body
+
     def decode(
         self,
         encoded: dict[str, object],
@@ -109,14 +125,23 @@ class WebApplicationTests(unittest.TestCase):
         sender_public: bytes | None = None,
         receiver_private: bytes | None = None,
     ) -> object:
-        """Post one verification request with independently selectable keys."""
+        """Download one encoded file, then post it for verification."""
+        return self.decode_bytes(
+            self.download_stego(encoded), filename, sender_public, receiver_private
+        )
+
+    def decode_bytes(
+        self,
+        stego_bytes: bytes,
+        filename: str,
+        sender_public: bytes | None = None,
+        receiver_private: bytes | None = None,
+    ) -> object:
+        """Post carrier bytes with independently selectable verification keys."""
         return self.client.post(
             "/decode",
             data={
-                "stego": (
-                    io.BytesIO(base64.b64decode(str(encoded["stego_base64"]))),
-                    filename,
-                ),
+                "stego": (io.BytesIO(stego_bytes), filename),
                 "sender_public_key": (
                     io.BytesIO(sender_public or self.sender_public_pem),
                     "sender-public.pem",
@@ -198,6 +223,18 @@ class WebApplicationTests(unittest.TestCase):
                 self.assertEqual(report["verdict"], "Authentic")
                 self.assertEqual(report["lsb_bits"], lsb_bits)
 
+    def test_bad_verify_key_returns_cannot_verify_report(self) -> None:
+        """An unreadable key remains a Cannot Verify report with file size."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        stego_bytes = self.download_stego(encoded)
+        response = self.decode_bytes(
+            stego_bytes, "stego.png", sender_public=b"not an RSA key"
+        )
+        self.assertEqual(response.status_code, 200)
+        report = response.get_json()
+        self.assertEqual(report["verdict"], "Cannot Verify")
+        self.assertEqual(report["file_size"], len(stego_bytes))
+
     def test_wrong_receiver_key_is_payload_missing(self) -> None:
         """A non-recipient cannot open the RSA-OAEP bootstrap."""
         encoded = self.encode(sample_png(), "cover.png").get_json()
@@ -221,16 +258,13 @@ class WebApplicationTests(unittest.TestCase):
     def test_changed_preserved_image_bit_is_tampered(self) -> None:
         """A carrier change outside the packet footprint fails the masked hash."""
         encoded = self.encode(sample_png(), "cover.png").get_json()
-        raw = base64.b64decode(encoded["stego_base64"])
+        raw = self.download_stego(encoded)
         with Image.open(io.BytesIO(raw)) as image:
             array = np.array(image, dtype=np.uint8, copy=True)
         array.reshape(-1)[-1] ^= np.uint8(0x80)
         changed_output = io.BytesIO()
         Image.fromarray(array, mode="RGB").save(changed_output, format="PNG")
-        encoded["stego_base64"] = base64.b64encode(changed_output.getvalue()).decode(
-            "ascii"
-        )
-        decoded = self.decode(encoded, "changed.png")
+        decoded = self.decode_bytes(changed_output.getvalue(), "changed.png")
         self.assertEqual(decoded.status_code, 200)
         self.assertEqual(decoded.get_json()["verdict"], "Tampered")
 
@@ -306,9 +340,160 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 400)
         self.assertIn("bootstrap", invalid.get_json()["error"])
 
+    def test_download_route_serves_png_and_wav_files(self) -> None:
+        """Stored PNG and WAV outputs stream with their carrier MIME types."""
+        cases = (("png", sample_png(), "image/png"), ("wav", sample_wav(), "audio/wav"))
+        for extension, cover, expected_mime in cases:
+            with self.subTest(extension=extension):
+                encoded_response = self.encode(cover, f"cover.{extension}")
+                self.assertEqual(
+                    encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
+                )
+                body = encoded_response.get_json()
+                self.assertNotIn("stego_base64", body)
+                self.assertEqual(body["mime_type"], expected_mime)
+                download_response = self.client.get(body["stego_url"])
+                download_bytes = download_response.get_data()
+                self.assertEqual(download_response.status_code, 200)
+                self.assertEqual(download_response.mimetype, expected_mime)
+                self.assertTrue(
+                    download_response.headers["Content-Disposition"].startswith(
+                        f"inline; filename=stego.{extension}"
+                    )
+                )
+                self.assertEqual(download_response.headers["Cache-Control"], "no-store")
+                stored_path = self.output_dir / str(body["stego_url"]).rsplit("/", 1)[1]
+                self.assertEqual(download_bytes, stored_path.read_bytes())
+                download_response.close()
+
+    def test_downloaded_stego_file_remains_available(self) -> None:
+        """A download does not delete the stored stego file."""
+        body = self.encode(sample_png(), "cover.png").get_json()
+        first = self.client.get(body["stego_url"])
+        first_bytes = first.get_data()
+        self.assertEqual(first.status_code, 200)
+        stored_path = self.output_dir / str(body["stego_url"]).rsplit("/", 1)[1]
+        self.assertTrue(stored_path.is_file())
+        first.close()
+        second = self.client.get(body["stego_url"])
+        second_bytes = second.get_data()
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second_bytes, first_bytes)
+        second.close()
+
+    def test_download_rejects_bad_ids_and_extensions(self) -> None:
+        """The download route accepts only token-safe IDs and PNG/WAV suffixes."""
+        urls = (
+            f"/download/{'A' * 22}.png",
+            f"/download/{'A' * 21}!.png",
+            "/download/..png",
+            f"/download/{'A' * 22}.jpg",
+            f"/download/{'A' * 23}.png",
+        )
+        for url in urls:
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 404)
+                if url == urls[0]:
+                    self.assertEqual(
+                        response.get_json(),
+                        {"ok": False, "error": "stego file not found"},
+                    )
+
+    def test_unsupported_carrier_error_is_unchanged(self) -> None:
+        """Unsupported files keep the established carrier-error text."""
+        response = self.encode(b"not a media file", "cover.bin")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "unsupported carrier; upload an RGB PNG or uncompressed PCM WAV",
+        )
+
+    def test_missing_and_empty_carrier_upload_errors_remain(self) -> None:
+        """Missing and empty carrier uploads keep their established messages."""
+        missing = self.client.post(
+            "/encode", data={"secret_message": "message"}, content_type="multipart/form-data"
+        )
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(missing.get_json()["error"], "missing required upload: cover")
+        empty = self.client.post(
+            "/encode",
+            data={
+                "cover": (io.BytesIO(b""), "empty.png"),
+                "secret_message": "message",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(empty.status_code, 400)
+        self.assertEqual(empty.get_json()["error"], "uploaded file is empty: cover")
+        missing_stego = self.client.post(
+            "/decode", data={}, content_type="multipart/form-data"
+        )
+        self.assertEqual(missing_stego.status_code, 400)
+        self.assertEqual(
+            missing_stego.get_json()["error"], "missing required upload: stego"
+        )
+        empty_stego = self.client.post(
+            "/decode",
+            data={"stego": (io.BytesIO(b""), "empty.wav")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(empty_stego.status_code, 400)
+        self.assertEqual(
+            empty_stego.get_json()["error"], "uploaded file is empty: stego"
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_failed_encode_leaves_no_output_file(self) -> None:
+        """An encode refusal removes any incomplete output file."""
+        response = self.encode(
+            sample_png(), "cover.png", payload=(b"x" * (128 * 1024), "large.bin")
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("user payload exceeds capacity", response.get_json()["error"])
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    @unittest.skipUnless(
+        os.environ.get("STEGO_LARGE_WAV_TEST") == "1",
+        "set STEGO_LARGE_WAV_TEST=1 to run the >32 MiB web WAV round trip",
+    )
+    def test_large_wav_web_encode_download_decode(self) -> None:
+        """A WAV larger than 32 MiB round-trips under the default web limit."""
+        frame_count = 33 * 1024 * 1024
+        cover_stream = io.BytesIO()
+        with wave.open(cover_stream, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(1)
+            wav_file.setframerate(8000)
+            wav_file.writeframes(b"\x80" * frame_count)
+        cover = cover_stream.getvalue()
+        self.assertGreater(len(cover), 32 * 1024 * 1024)
+        encoded_response = self.encode(cover, "large-cover.wav")
+        self.assertEqual(
+            encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
+        )
+        encoded = encoded_response.get_json()
+        self.assertEqual(encoded["mime_type"], "audio/wav")
+        stego_bytes = self.download_stego(encoded)
+        self.assertGreater(len(stego_bytes), 32 * 1024 * 1024)
+        decoded = self.decode_bytes(stego_bytes, "large-stego.wav")
+        self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertGreater(report["file_size"], 32 * 1024 * 1024)
+
     def test_upload_limit_returns_json(self) -> None:
-        """Flask request-size failures remain machine-readable."""
-        client = create_app({"TESTING": True, "MAX_CONTENT_LENGTH": 100}).test_client()
+        """The default is 256 MiB and test apps can override the limit."""
+        self.assertEqual(
+            self.client.application.config["MAX_CONTENT_LENGTH"], 256 * 1024 * 1024
+        )
+        client = create_app(
+            {
+                "TESTING": True,
+                "MAX_CONTENT_LENGTH": 100,
+                "STEGO_OUTPUT_DIR": self.output_dir,
+            }
+        ).test_client()
         response = client.post(
             "/decode", data={"stego": (io.BytesIO(b"x" * 200), "file")}
         )

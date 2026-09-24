@@ -3,7 +3,6 @@
 import base64
 import mimetypes
 import re
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,7 +42,6 @@ class WebEncodingResult:
     """Keep the current protocol outputs needed by the browser."""
 
     media_type: str
-    media_bytes: bytes
     layout: EmbeddingLayout
     payload: PayloadRecord
     sender_public_key_pem: bytes
@@ -61,7 +59,7 @@ class GeneratedKeyPair:
 
 
 class CurrentProtocolService:
-    """Bridge uploaded bytes to the reduced version-2 file API."""
+    """Bridge uploaded files and bounded payload bytes to protocol version 2."""
 
     def generate_key_pair(self, password: str) -> GeneratedKeyPair:
         """Generate one RSA-2048 pair with a password-protected private key."""
@@ -78,7 +76,8 @@ class CurrentProtocolService:
 
     def encode(
         self,
-        cover_bytes: bytes,
+        carrier_path: Path,
+        output_path: Path,
         sender_private_key_pem: bytes,
         sender_key_password: str,
         receiver_public_key_pem: bytes,
@@ -91,8 +90,8 @@ class CurrentProtocolService:
         sender: str,
         extra_metadata: str,
     ) -> WebEncodingResult:
-        """Validate, encrypt, sign, and embed one web request."""
-        media_type, suffix = self._detect_carrier(cover_bytes)
+        """Validate a file-backed cover and write its stego output to disk."""
+        media_type, _ = self.detect_carrier(carrier_path)
         if not isinstance(user_payload, bytes):
             raise TypeError("user payload must be bytes")
         metadata = self._build_metadata(
@@ -102,21 +101,18 @@ class CurrentProtocolService:
             payload_name,
             extra_metadata,
         )
-        with tempfile.TemporaryDirectory(prefix="inf2005-web-") as temporary:
-            input_path = Path(temporary) / f"cover.{suffix}"
-            output_path = Path(temporary) / f"stego.{suffix}"
-            input_path.write_bytes(cover_bytes)
-            validator = PngCarrier if media_type == "image" else read_pcm_wav_info
-            validator(input_path)
-            sender_private_key = self._load_private_key(
-                sender_private_key_pem, sender_key_password, "sender private key"
-            )
-            receiver_public_key = self._load_public_key(
-                receiver_public_key_pem, "receiver public key"
-            )
-            encoder = encode_png if media_type == "image" else encode_wav
+        validator = PngCarrier if media_type == "image" else read_pcm_wav_info
+        validator(carrier_path)
+        sender_private_key = self._load_private_key(
+            sender_private_key_pem, sender_key_password, "sender private key"
+        )
+        receiver_public_key = self._load_public_key(
+            receiver_public_key_pem, "receiver public key"
+        )
+        encoder = encode_png if media_type == "image" else encode_wav
+        try:
             layout, payload = encoder(
-                input_path,
+                carrier_path,
                 output_path,
                 sender_private_key,
                 receiver_public_key,
@@ -125,46 +121,47 @@ class CurrentProtocolService:
                 user_payload,
                 metadata,
             )
-            media_bytes = output_path.read_bytes()
-
-        record_overhead = serialized_record_length(
-            len(payload.media_id.encode("utf-8")), 0, len(metadata)
-        )
-        capacity = max_user_payload_length(
-            layout.total_units,
-            layout.start_unit,
-            layout.bootstrap_span,
-            layout.lsb_count,
-            record_overhead,
-        )
-        kept_bits = preserved_bit_count(
-            layout.total_units,
-            layout.footprint,
-            layout.lsb_count,
-            layout.bootstrap_span,
-        )
-        total_bits = layout.total_units * 8
-        return WebEncodingResult(
-            media_type,
-            media_bytes,
-            layout,
-            payload,
-            self._public_key_pem(sender_private_key.public_key()),
-            capacity,
-            kept_bits,
-            kept_bits / total_bits if total_bits else 0.0,
-        )
+            record_overhead = serialized_record_length(
+                len(payload.media_id.encode("utf-8")), 0, len(metadata)
+            )
+            capacity = max_user_payload_length(
+                layout.total_units,
+                layout.start_unit,
+                layout.bootstrap_span,
+                layout.lsb_count,
+                record_overhead,
+            )
+            kept_bits = preserved_bit_count(
+                layout.total_units,
+                layout.footprint,
+                layout.lsb_count,
+                layout.bootstrap_span,
+            )
+            total_bits = layout.total_units * 8
+            return WebEncodingResult(
+                media_type,
+                layout,
+                payload,
+                self._public_key_pem(sender_private_key.public_key()),
+                capacity,
+                kept_bits,
+                kept_bits / total_bits if total_bits else 0.0,
+            )
+        except Exception:
+            output_path.unlink(missing_ok=True)
+            raise
 
     def verify(
         self,
-        stego_bytes: bytes,
+        carrier_path: Path,
         sender_public_key_pem: bytes,
         receiver_private_key_pem: bytes,
         receiver_key_password: str,
     ) -> dict[str, object]:
-        """Verify a current-protocol carrier and return a JSON-ready report."""
+        """Verify a file-backed current-protocol carrier and return its report."""
+        file_size = carrier_path.stat().st_size
         try:
-            media_type, suffix = self._detect_carrier(stego_bytes)
+            media_type, _ = self.detect_carrier(carrier_path)
             sender_public_key = self._load_public_key(
                 sender_public_key_pem, "sender public key"
             )
@@ -173,15 +170,12 @@ class CurrentProtocolService:
                 receiver_key_password,
                 "receiver private key",
             )
-        except (TypeError, ValueError) as error:
-            return self._failed_report(len(stego_bytes), str(error))
+        except (OSError, TypeError, ValueError) as error:
+            return self._failed_report(file_size, str(error))
 
-        with tempfile.TemporaryDirectory(prefix="inf2005-web-") as temporary:
-            input_path = Path(temporary) / f"received.{suffix}"
-            input_path.write_bytes(stego_bytes)
-            verifier = verify_png if media_type == "image" else verify_wav
-            result = verifier(input_path, sender_public_key, receiver_private_key)
-        return self._verification_report(result, media_type, len(stego_bytes))
+        verifier = verify_png if media_type == "image" else verify_wav
+        result = verifier(carrier_path, sender_public_key, receiver_private_key)
+        return self._verification_report(result, media_type, file_size)
 
     @staticmethod
     def payload_record(payload: PayloadRecord) -> dict[str, object]:
@@ -322,13 +316,13 @@ class CurrentProtocolService:
         )
 
     @staticmethod
-    def _detect_carrier(data: bytes) -> tuple[str, str]:
-        """Detect the two strict carrier families from file signatures."""
-        if not isinstance(data, bytes):
-            raise TypeError("carrier must be uploaded as bytes")
-        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+    def detect_carrier(carrier_path: Path) -> tuple[str, str]:
+        """Detect the carrier family by reading only its first 12 bytes."""
+        with carrier_path.open("rb") as carrier_file:
+            signature = carrier_file.read(12)
+        if signature.startswith(b"\x89PNG\r\n\x1a\n"):
             return "image", "png"
-        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        if len(signature) >= 12 and signature[:4] == b"RIFF" and signature[8:12] == b"WAVE":
             return "audio", "wav"
         raise ValueError("unsupported carrier; upload an RGB PNG or uncompressed PCM WAV")
 
