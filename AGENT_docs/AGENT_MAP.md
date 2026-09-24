@@ -18,6 +18,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
 | Chunked carrier access: design, invariants, file-backed backends, chunk size, memory claim, and web follow-up | [STREAMING-CARRIER-PLAN.md](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) |
 | Payload memory, verify-download flow, and deferred streaming work | [PAYLOAD-HANDLING.md](PAYLOAD-HANDLING.md) |
+| Planned payload-path APIs, streamed AES-GCM and Prehashed RSA-PSS, temporary-file lifecycle, and staged tests | [PAYLOAD-STREAMING-DESIGN.md](PAYLOAD-STREAMING-DESIGN.md) |
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
 | Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
 | Active web integration status and verification flow | [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md), [DECODING-VERIFICATION.md](DECODING-VERIFICATION.md) |

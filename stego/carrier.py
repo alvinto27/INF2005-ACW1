@@ -38,9 +38,22 @@ class CarrierAccessError(ValueError):
     """A carrier backend could not supply the requested carrier units."""
 
 
+class _PackedByteRangeReader(ABC):
+    """Supply packed bytes by bounded ranges to an LSB transform."""
+
+    @property
+    @abstractmethod
+    def size(self) -> int:
+        """Return the number of available bytes."""
+
+    @abstractmethod
+    def read_range(self, offset: int, length: int) -> bytes:
+        """Return a bounded byte range."""
+
+
 def _packed_lsb_range_transform(
     region_start: int,
-    data: bytes,
+    data: bytes | _PackedByteRangeReader,
     bit_length: int,
     lsb_count: int,
 ) -> Callable[[int, np.ndarray], np.ndarray]:
@@ -51,12 +64,18 @@ def _packed_lsb_range_transform(
     include alignment padding without allocating a bit array for the packet.
     """
     region_start = _validate_non_negative_integer(region_start, "region_start")
-    if not isinstance(data, bytes):
-        raise TypeError("data must be bytes")
+    if isinstance(data, bytes):
+        data_size = len(data)
+        read_range = lambda offset, length: data[offset:offset + length]
+    elif isinstance(data, _PackedByteRangeReader):
+        data_size = data.size
+        read_range = data.read_range
+    else:
+        raise TypeError("data must be bytes or a packed byte range reader")
     bit_length = _validate_non_negative_integer(bit_length, "bit_length")
     lsb_count = _validate_lsb_count(lsb_count)
     region_end = region_start + (bit_length + lsb_count - 1) // lsb_count
-    data_bit_length = len(data) * 8
+    data_bit_length = data_size * 8
 
     def transform(chunk_start: int, units: np.ndarray) -> np.ndarray:
         """Unpack only the packed data bits that overlap this chunk."""
@@ -81,12 +100,12 @@ def _packed_lsb_range_transform(
             field_count = write_length // 8
             first_data_byte = bit_start // 8
             available_bytes = max(
-                0, min(field_count, len(data) - first_data_byte)
+                0, min(field_count, data_size - first_data_byte)
             )
             if available_bytes > 0:
+                packed_bytes = read_range(first_data_byte, available_bytes)
                 result[field_start:field_start + available_bytes] = np.frombuffer(
-                    data[first_data_byte:first_data_byte + available_bytes],
-                    dtype=np.uint8,
+                    packed_bytes, dtype=np.uint8
                 )
             if available_bytes < field_count:
                 result[field_start + available_bytes:field_start + field_count] = 0
@@ -97,7 +116,9 @@ def _packed_lsb_range_transform(
         if available > 0:
             first_byte = bit_start // 8
             last_byte = (bit_start + available + 7) // 8
-            packed = np.frombuffer(data[first_byte:last_byte], dtype=np.uint8)
+            packed = np.frombuffer(
+                read_range(first_byte, last_byte - first_byte), dtype=np.uint8
+            )
             unpacked = np.unpackbits(packed, bitorder="big")
             bit_offset = bit_start % 8
             bits[:available] = unpacked[bit_offset:bit_offset + available]

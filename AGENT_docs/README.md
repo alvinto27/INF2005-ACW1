@@ -26,6 +26,7 @@ For repository structure and implementation entry points, see [Agent Navigation 
 - [Protocol Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md) — what each completed stage of the version 2 plan changed, what was measured, and what it taught. The plan holds intent; this holds outcome.
 - [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) — **library and web-boundary refactors implemented.** The carrier backend interface, two-pass encoding, targeted-read verification, streamed WAV backend, chunk-size measurements, memory claim, deleted whole-file WAV cap, and known limits.
 - [Payload Handling](PAYLOAD-HANDLING.md) — data flow and measured memory changes for packed packet handling and URL-based recovered-payload downloads, including plaintext-at-rest risk and deferred work.
+- [Payload Streaming Design](PAYLOAD-STREAMING-DESIGN.md) — approved design for chunked AES-GCM, prehashed RSA-PSS, payload-path APIs, authenticated file release, tests, and web integration.
 - [Work Not Built](WORK-NOT-BUILT.md#work-not-built) — assignment work that remains to be built, demonstrated, or assembled.
 - [KISS Reduction Specification](REDUCTION-SPEC.md) — the approved reduction goals and constraints.
 - [KISS Reduction Record](KISS-REDUCTION-RECORD.md) — the committed reduction outcome, measurements, decisions, and lessons.

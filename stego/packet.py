@@ -1,5 +1,6 @@
 """Serialise and parse payload records."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .bits import (
@@ -69,24 +70,81 @@ class PayloadRecord:
             raise ValueError("metadata must contain valid UTF-8 bytes") from error
         object.__setattr__(self, "timestamp", timestamp)
 
+    @property
+    def user_payload_size(self) -> int:
+        """Return the payload byte count."""
+        return len(self.user_payload)
 
-def serialize_payload(record: PayloadRecord) -> bytes:
-    """Turn a payload record into checked packet payload bytes."""
-    if not isinstance(record, PayloadRecord):
-        raise TypeError("record must be a PayloadRecord")
+
+@dataclass(frozen=True)
+class PayloadFileRecord:
+    """Keep authenticated record fields without loading the user payload."""
+    media_id: str
+    timestamp: int
+    nonce: bytes
+    media_hash: bytes
+    user_payload_size: int
+    metadata: bytes
+
+    def __post_init__(self) -> None:
+        """Check all record fields that do not contain the user payload."""
+        if not isinstance(self.media_id, str):
+            raise TypeError("media_id must be text")
+        media_id_bytes = self.media_id.encode("utf-8")
+        if not media_id_bytes or len(media_id_bytes) > MAX_MEDIA_ID_BYTES:
+            raise ValueError("media_id UTF-8 length must be between 1 and 255 bytes")
+        timestamp = _validate_protocol_field_value(self.timestamp, "timestamp")
+        nonce = _require_bytes(self.nonce, "nonce")
+        media_hash = _require_bytes(self.media_hash, "media_hash")
+        user_payload_size = _validate_protocol_field_value(
+            self.user_payload_size, "user_payload_size"
+        )
+        metadata = _require_bytes(self.metadata, "metadata")
+        if len(nonce) != NONCE_SIZE:
+            raise ValueError("nonce must contain exactly 16 bytes")
+        if len(media_hash) != SHA256_DIGEST_SIZE:
+            raise ValueError("media_hash must contain exactly 32 bytes")
+        try:
+            metadata.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("metadata must contain valid UTF-8 bytes") from error
+        object.__setattr__(self, "timestamp", timestamp)
+        object.__setattr__(self, "user_payload_size", user_payload_size)
+
+
+def _payload_record_segments(
+    record: PayloadRecord | PayloadFileRecord,
+) -> tuple[bytes, int, bytes]:
+    """Return fixed serialized fields around a payload byte range."""
+    if not isinstance(record, (PayloadRecord, PayloadFileRecord)):
+        raise TypeError("record must be a PayloadRecord or PayloadFileRecord")
     media_id = record.media_id.encode("utf-8")
-    payload = (
+    user_payload_size = (
+        record.user_payload_size
+        if isinstance(record, PayloadFileRecord)
+        else len(record.user_payload)
+    )
+    prefix = (
         bytes((len(media_id),))
         + media_id
         + encode_protocol_field(record.timestamp, "timestamp")
         + record.nonce
         + record.media_hash
-        + encode_protocol_field(len(record.user_payload), "user_payload_length")
-        + record.user_payload
-        + encode_protocol_field(len(record.metadata), "metadata_length")
+        + encode_protocol_field(user_payload_size, "user_payload_length")
+    )
+    suffix = (
+        encode_protocol_field(len(record.metadata), "metadata_length")
         + record.metadata
     )
-    return validate_payload_bytes(payload)
+    return prefix, user_payload_size, suffix
+
+
+def serialize_payload(record: PayloadRecord) -> bytes:
+    """Turn a payload record into checked packet payload bytes."""
+    if not isinstance(record, PayloadRecord):
+        raise TypeError("record must be a PayloadRecord")
+    prefix, _, suffix = _payload_record_segments(record)
+    return validate_payload_bytes(prefix + record.user_payload + suffix)
 
 
 def _take_payload_field(payload_bytes: bytes, offset: int, length: int, name: str) -> tuple[bytes, int]:
@@ -97,16 +155,28 @@ def _take_payload_field(payload_bytes: bytes, offset: int, length: int, name: st
     return payload_bytes[offset:end], end
 
 
-def parse_payload(payload_bytes: bytes) -> PayloadRecord:
-    """Read checked payload bytes into a payload record."""
-    payload_bytes = validate_payload_bytes(payload_bytes)
-    if not payload_bytes:
+def parse_payload_from_reader(
+    payload_size: int,
+    read_range: Callable[[int, int], bytes],
+) -> tuple[PayloadFileRecord, int]:
+    """Parse record fields by byte range and return the user-payload offset."""
+    payload_size = _validate_non_negative_integer(payload_size, "payload_size")
+
+    def take(offset: int, length: int, name: str) -> tuple[bytes, int]:
+        end = offset + length
+        if end > payload_size:
+            raise ValueError(f"payload is truncated in {name}")
+        value = read_range(offset, length)
+        if len(value) != length:
+            raise ValueError(f"payload is truncated in {name}")
+        return value, end
+
+    if payload_size == 0:
         raise ValueError("payload is truncated before media_id length")
-    media_id_length = payload_bytes[0]
-    offset = 1
-    media_id_bytes, offset = _take_payload_field(payload_bytes, offset, media_id_length, "media_id")
-    fixed, offset = _take_payload_field(
-        payload_bytes,
+    media_id_size_bytes, offset = take(0, 1, "media_id length")
+    media_id_length = media_id_size_bytes[0]
+    media_id_bytes, offset = take(offset, media_id_length, "media_id")
+    fixed, offset = take(
         offset,
         PROTOCOL_FIELD_WIDTH + NONCE_SIZE + SHA256_DIGEST_SIZE,
         "fixed fields",
@@ -114,20 +184,44 @@ def parse_payload(payload_bytes: bytes) -> PayloadRecord:
     timestamp = int.from_bytes(fixed[:PROTOCOL_FIELD_WIDTH], "big")
     nonce = fixed[PROTOCOL_FIELD_WIDTH:PROTOCOL_FIELD_WIDTH + NONCE_SIZE]
     media_hash = fixed[PROTOCOL_FIELD_WIDTH + NONCE_SIZE:]
-    user_length_bytes, offset = _take_payload_field(
-        payload_bytes, offset, PROTOCOL_FIELD_WIDTH, "user length"
-    )
+    user_length_bytes, offset = take(offset, PROTOCOL_FIELD_WIDTH, "user length")
     user_length = int.from_bytes(user_length_bytes, "big")
-    user_payload, offset = _take_payload_field(payload_bytes, offset, user_length, "user payload")
-    metadata_length_bytes, offset = _take_payload_field(
-        payload_bytes, offset, PROTOCOL_FIELD_WIDTH, "metadata length"
-    )
+    user_payload_offset = offset
+    if user_payload_offset + user_length > payload_size:
+        raise ValueError("payload is truncated in user payload")
+    offset += user_length
+    metadata_length_bytes, offset = take(offset, PROTOCOL_FIELD_WIDTH, "metadata length")
     metadata_length = int.from_bytes(metadata_length_bytes, "big")
-    metadata, offset = _take_payload_field(payload_bytes, offset, metadata_length, "metadata")
-    if offset != len(payload_bytes):
+    metadata, offset = take(offset, metadata_length, "metadata")
+    if offset != payload_size:
         raise ValueError("payload contains trailing bytes")
     try:
         media_id = media_id_bytes.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValueError("media_id must contain valid UTF-8") from error
-    return PayloadRecord(media_id, timestamp, nonce, media_hash, user_payload, metadata)
+    return (
+        PayloadFileRecord(
+            media_id, timestamp, nonce, media_hash, user_length, metadata
+        ),
+        user_payload_offset,
+    )
+
+
+def parse_payload(payload_bytes: bytes) -> PayloadRecord:
+    """Read checked payload bytes into a payload record."""
+    payload_bytes = validate_payload_bytes(payload_bytes)
+    file_record, user_payload_offset = parse_payload_from_reader(
+        len(payload_bytes),
+        lambda offset, length: payload_bytes[offset:offset + length],
+    )
+    user_payload = payload_bytes[
+        user_payload_offset:user_payload_offset + file_record.user_payload_size
+    ]
+    return PayloadRecord(
+        file_record.media_id,
+        file_record.timestamp,
+        file_record.nonce,
+        file_record.media_hash,
+        user_payload,
+        file_record.metadata,
+    )

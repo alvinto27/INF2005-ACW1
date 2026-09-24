@@ -1,6 +1,7 @@
 import hashlib
 import os
 import struct
+import tempfile
 import time
 import tracemalloc
 import unittest
@@ -15,7 +16,8 @@ import numpy as np
 import stego
 from PIL import Image
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from stego import *
@@ -27,8 +29,13 @@ from stego.carrier import (
 )
 from stego.core import (
     CarrierEncoding,
+    _MemoryStaging,
+    _StagingSession,
+    _stream_decrypt,
+    _stream_encrypt,
     decode_carrier,
     decode_carrier_source,
+    decode_carrier_source_to_payload_path,
     encode_carrier,
     prepare_carrier_encoding,
 )
@@ -40,11 +47,17 @@ from stego.media import (
     load_png_from_path,
     rgb_array_to_carrier,
 )
-from stego.constants import MEDIA_ID_SIZE
+from stego.constants import MEDIA_ID_SIZE, RSA_PSS_SALT_LENGTH
 from stego.bits import encode_protocol_field
-from stego.crypto import sign_bytes, verify_signature
-from stego.layout import build_embedding_layout
-from stego.packet import serialized_record_length
+from stego.crypto import (
+    _sign_digest,
+    _verify_digest,
+    rsa_pss_padding,
+    sign_bytes,
+    verify_signature,
+)
+from stego.layout import build_embedding_layout, encode_signing_input_prefix
+from stego.packet import parse_payload_from_reader, serialized_record_length
 
 
 SIGNING_PRIVATE_KEY, SENDER_PUBLIC_KEY = generate_rsa_keypair()
@@ -115,6 +128,43 @@ def reseal_bootstrap(fields: BootstrapFields, version: int | None = None, lsb_co
         fields.session_key,
         fields.aead_nonce,
     )
+
+
+def malformed_record_carrier(record_bytes: bytes) -> tuple[np.ndarray, bytes]:
+    """Build a signed, encrypted v3 carrier with intentionally malformed plaintext."""
+    units = carrier(30000)
+    context = struct.pack(">II", units.size // 3, 1)
+    session_key = bytes(range(32))
+    aead_nonce = bytes(range(12))
+    fields = BootstrapFields(
+        3, 3, 2048, len(record_bytes) + GCM_TAG_SIZE, session_key, aead_nonce
+    )
+    aad = encode_bootstrap_aad(fields)
+    ciphertext = aead_seal(session_key, aead_nonce, aad, record_bytes)
+    layout = build_embedding_layout(
+        units.size, fields.start_unit, fields.lsb_count,
+        len(ciphertext), bootstrap_span(RECEIVER_PUBLIC_KEY),
+    )
+    fields = BootstrapFields(
+        3, 3, fields.start_unit, len(ciphertext), session_key, aead_nonce
+    )
+    signature = sign_bytes(
+        encode_signing_input(IMAGE_MEDIA_CODE, context, layout, ciphertext), PRIVATE_KEY
+    )
+    envelope = seal_to_public_key(serialize_bootstrap(fields), RECEIVER_PUBLIC_KEY)
+    span = bootstrap_span(RECEIVER_PUBLIC_KEY)
+    packet_start = layout.start_unit
+    packet_end = packet_start + layout.footprint
+    units[packet_start:packet_end] = 0
+    packet = ciphertext + signature
+    packet_bits = bytes_to_bit_sequence(packet)
+    units[packet_start:packet_end] = write_lsb_bits(
+        units[packet_start:packet_end], packet_bits, layout.lsb_count
+    )
+    units[:span] = write_lsb_bits(
+        units[:span], bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT
+    )
+    return units, context
 
 
 def embedded_bit_flip(encoded, start, k, bit_offset):
@@ -294,6 +344,386 @@ class TestPackedBitHandling(unittest.TestCase):
             RECEIVER_PRIVATE_KEY,
         )
         self.assertEqual(result.verdict, "Authentic", result.detail)
+
+
+class TestPayloadStreaming(unittest.TestCase):
+    """Check shared streaming crypto, staging backends, and file APIs."""
+
+    def test_streaming_aes_gcm_matches_fixed_vector_for_both_backends(self) -> None:
+        record = PayloadRecord(
+            "IMG-vector", 1700000000, bytes(range(16)), bytes(range(32)),
+            b"fixed vector payload\x00\xff", b"kind=vector",
+        )
+        plaintext = serialize_payload(record)
+        key = bytes(range(32))
+        nonce = bytes(range(12))
+        aad = b"INF2005-ACW1-v3-vector"
+        expected = bytes.fromhex(
+            "4d4b9b5ce893a778f92ee58bb1e97808d0278734f1795c783d61e28d14630bbe"
+            "0c1ea1fcaec3119c71a278e5818d2334e3576f9d4bc4b0ce2a813d0101f9eef"
+            "2ed22d97ad3d126611c54bc0886f76b8c18fcac01020c21488d9ce7a01791dd"
+            "8d34f859e6a441c81a957757dc2c48571ad9130dd9d9546ff0b8d56104097651"
+            "cfe21a50b5"
+        )
+        self.assertEqual(AESGCM(key).encrypt(nonce, plaintext, aad), expected)
+        with TemporaryDirectory() as directory_name:
+            parent = Path(directory_name)
+            for chunk_size in (1, 7, 31, 4096):
+                def chunks(size: int = chunk_size) -> Iterator[bytes]:
+                    for offset in range(0, len(plaintext), size):
+                        yield plaintext[offset:offset + size]
+
+                memory = _MemoryStaging()
+                _stream_encrypt(
+                    key, nonce, aad, chunks(), memory, hashes.Hash(hashes.SHA256())
+                )
+                memory_ciphertext = memory.read_range(0, memory.size)
+                self.assertEqual(memory_ciphertext, expected)
+                memory.discard()
+
+                with _StagingSession(True, parent) as session:
+                    file_stage = session.new_store("vector")
+                    _stream_encrypt(
+                        key, nonce, aad, chunks(), file_stage,
+                        hashes.Hash(hashes.SHA256()),
+                    )
+                    self.assertEqual(
+                        file_stage.read_range(0, file_stage.size), expected
+                    )
+                self.assertFalse(
+                    any(path.name.startswith(".stego-staging-") for path in parent.iterdir())
+                )
+
+    def test_prehashed_signature_uses_the_existing_signing_bytes_and_pss_parameters(self) -> None:
+        layout = build_embedding_layout(30000, 2048, 3, 128, 2048)
+        context = struct.pack(">II", 10000, 1)
+        ciphertext = bytes(range(128))
+        prefix = encode_signing_input_prefix(IMAGE_MEDIA_CODE, context, layout)
+        signing_input = encode_signing_input(IMAGE_MEDIA_CODE, context, layout, ciphertext)
+        self.assertEqual(signing_input, prefix + ciphertext)
+        digest = hashlib.sha256(signing_input).digest()
+        full_signature = sign_bytes(signing_input, PRIVATE_KEY)
+        prehashed_signature = _sign_digest(digest, PRIVATE_KEY)
+        self.assertTrue(verify_signature(signing_input, prehashed_signature, PUBLIC_KEY))
+        self.assertTrue(_verify_digest(digest, full_signature, PUBLIC_KEY))
+        pss = rsa_pss_padding()
+        self.assertEqual(pss._salt_length, RSA_PSS_SALT_LENGTH)
+        self.assertIsInstance(pss._mgf, type(rsa_pss_padding()._mgf))
+        self.assertIsInstance(pss._mgf._algorithm, hashes.SHA256)
+
+    def test_streaming_record_parser_preserves_all_error_details(self) -> None:
+        fixed = (1).to_bytes(8, "big") + bytes(16) + bytes(32)
+
+        def raw_record(
+            media_id: bytes = b"A",
+            user_length: int = 0,
+            user_payload: bytes = b"",
+            metadata_length: int = 0,
+            metadata: bytes = b"",
+        ) -> bytes:
+            return (
+                bytes((len(media_id),)) + media_id + fixed
+                + user_length.to_bytes(8, "big") + user_payload
+                + metadata_length.to_bytes(8, "big") + metadata
+            )
+
+        malformed = (
+            (b"", "payload is truncated before media_id length"),
+            (b"\x01", "payload is truncated in media_id"),
+            (b"\x00", "payload is truncated in fixed fields"),
+            (b"\x01A" + fixed, "payload is truncated in user length"),
+            (b"\x01A" + fixed + (2).to_bytes(8, "big") + b"x", "payload is truncated in user payload"),
+            (b"\x01A" + fixed + bytes(8), "payload is truncated in metadata length"),
+            (raw_record(metadata_length=2, metadata=b"x"), "payload is truncated in metadata"),
+            (raw_record() + b"x", "payload contains trailing bytes"),
+            (raw_record(media_id=b"\xff"), "media_id must contain valid UTF-8"),
+            (raw_record(metadata_length=1, metadata=b"\xff"), "metadata must contain valid UTF-8 bytes"),
+            (raw_record(media_id=b""), "media_id UTF-8 length must be between 1 and 255 bytes"),
+        )
+        for malformed_bytes, detail in malformed:
+            with self.subTest(detail=detail):
+                with self.assertRaisesRegex(ValueError, detail):
+                    parse_payload_from_reader(
+                        len(malformed_bytes),
+                        lambda offset, length: malformed_bytes[offset:offset + length],
+                    )
+
+    def test_bytes_api_staging_never_creates_files(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.png"
+            output = directory / "encoded.png"
+            Image.fromarray(carrier(120 * 120 * 3).reshape((120, 120, 3))).save(source)
+            empty_temp = directory / "empty-temp"
+            empty_temp.mkdir()
+            old_tempdir = tempfile.tempdir
+            tempfile.tempdir = str(empty_temp)
+            try:
+                encode_png(
+                    source, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3,
+                    b"bytes API stays in memory", b"kind=memory",
+                )
+                authentic = verify_png(output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                missing = verify_png(output, PUBLIC_KEY, OTHER_PRIVATE_KEY)
+                self.assertEqual(authentic.verdict, "Authentic")
+                self.assertIsNone(authentic.payload_path)
+                self.assertEqual(missing.verdict, "Payload Missing")
+                self.assertIsNone(missing.payload)
+                self.assertEqual(list(empty_temp.iterdir()), [])
+            finally:
+                tempfile.tempdir = old_tempdir
+
+    def test_png_and_wav_file_payload_apis(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            payload_path = directory / "payload.bin"
+            payload_path.write_bytes(b"payload from a file\x00\xff")
+
+            png_input = directory / "input.png"
+            png_output = directory / "output.png"
+            png_payload = directory / "png-recovered.bin"
+            Image.fromarray(carrier(120 * 120 * 3).reshape((120, 120, 3))).save(png_input)
+            _, encoded_record = encode_png_from_payload_path(
+                png_input, png_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, payload_path, b"kind=png",
+            )
+            self.assertIsInstance(encoded_record, PayloadFileRecord)
+            png_result = verify_png_to_payload_path(
+                png_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, png_payload
+            )
+            self.assertEqual(png_result.verdict, "Authentic")
+            self.assertEqual(png_result.payload.user_payload_size, payload_path.stat().st_size)
+            self.assertEqual(png_result.payload_path, png_payload)
+            self.assertEqual(png_payload.read_bytes(), payload_path.read_bytes())
+
+            wav_input = directory / "input.wav"
+            wav_output = directory / "output.wav"
+            wav_payload = directory / "wav-recovered.bin"
+            write_pcm_wav(wav_input, 1, 1, 50000)
+            _, wav_record = encode_wav_from_payload_path(
+                wav_input, wav_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 5, payload_path, b"kind=wav",
+            )
+            self.assertIsInstance(wav_record, PayloadFileRecord)
+            wav_result = verify_wav_to_payload_path(
+                wav_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, wav_payload
+            )
+            self.assertEqual(wav_result.verdict, "Authentic")
+            self.assertEqual(wav_result.payload.metadata, b"kind=wav")
+            self.assertEqual(wav_payload.read_bytes(), payload_path.read_bytes())
+            self.assertFalse(
+                any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+            )
+
+    def test_low_level_file_prepare_owns_and_cleans_its_staging_session(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            payload_path = directory / "payload.bin"
+            payload_path.write_bytes(b"low-level file payload")
+            source_units = carrier(30000)
+            source = ArrayCarrier(source_units)
+            context = struct.pack(">II", source.total_units // 3, 1)
+            old_tempdir = tempfile.tempdir
+            tempfile.tempdir = str(directory)
+            try:
+                with prepare_carrier_encoding_from_payload_path(
+                    source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY, 2048, 3, payload_path, b"kind=low-level",
+                ) as encoding:
+                    encoded = source.rewrite(encoding.embed_chunk)
+                    encoding.finish()
+                self.assertFalse(
+                    any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+                )
+            finally:
+                tempfile.tempdir = old_tempdir
+            result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Authentic")
+            self.assertEqual(result.payload.user_payload, payload_path.read_bytes())
+
+    def test_file_verification_failures_remove_staging_and_do_not_publish(self) -> None:
+        payload = b"payload for file verification"
+        encoded, layout, _ = encode_carrier(
+            carrier(30000), IMAGE_MEDIA_CODE, struct.pack(">II", 10000, 1),
+            PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 5, payload, b"kind=failure",
+        )
+        context = struct.pack(">II", encoded.size // 3, 1)
+        cases: list[tuple[str, np.ndarray, str]] = []
+        missing = encoded.copy()
+        missing[0] ^= np.uint8(1)
+        cases.append(("missing", missing, "Payload Missing"))
+        cases.append((
+            "signature", embedded_bit_flip(encoded, layout.start_unit, 5, 0),
+            "Signature Invalid",
+        ))
+        fields = bootstrap_fields_from_carrier(encoded)
+        wrong_key = raw_bootstrap(
+            fields.version, fields.lsb_count, fields.start_unit,
+            fields.ciphertext_length, bytes(reversed(fields.session_key)),
+            fields.aead_nonce,
+        )
+        invalid_tag = write_lsb_bits(
+            encoded.copy(), bytes_to_bit_sequence(wrong_key), BOOTSTRAP_LSB_COUNT
+        )
+        cases.append(("tag", invalid_tag, "Cannot Decrypt"))
+        tampered = encoded.copy()
+        tampered[layout.start_unit + layout.footprint + 20] ^= np.uint8(0x80)
+        cases.append(("tampered", tampered, "Tampered"))
+        packet_bits = (layout.ciphertext_length + RSA_SIGNATURE_SIZE) * 8
+        padding_bits = layout.footprint * layout.lsb_count - packet_bits
+        self.assertGreater(padding_bits, 0)
+        bad_padding = encoded.copy()
+        padding_unit, padding_offset = divmod(packet_bits, layout.lsb_count)
+        bad_padding[layout.start_unit + padding_unit] |= np.uint8(
+            1 << (layout.lsb_count - 1 - padding_offset)
+        )
+        cases.append(("padding", bad_padding, "Cannot Verify"))
+        malformed, malformed_context = malformed_record_carrier(b"\x00")
+        cases.append(("record", malformed, "Cannot Verify"))
+
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for name, units, verdict in cases:
+                with self.subTest(name=name):
+                    output = directory / f"{name}.bin"
+                    result = decode_carrier_source_to_payload_path(
+                        ArrayCarrier(units), IMAGE_MEDIA_CODE,
+                        malformed_context if name == "record" else context,
+                        PUBLIC_KEY, RECEIVER_PRIVATE_KEY, output,
+                    )
+                    self.assertEqual(result.verdict, verdict, result.detail)
+                    self.assertIsNone(result.payload)
+                    self.assertIsNone(result.payload_path)
+                    self.assertFalse(output.exists())
+                    self.assertFalse(
+                        any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+                    )
+
+            class FailingPacketCarrier(ArrayCarrier):
+                """Raise during packet extraction to test I/O cleanup."""
+
+                def read_units(self, start_unit: int, count: int) -> np.ndarray:
+                    if start_unit >= layout.start_unit:
+                        raise OSError("injected carrier read failure")
+                    return super().read_units(start_unit, count)
+
+            io_output = directory / "io-failure.bin"
+            io_result = decode_carrier_source_to_payload_path(
+                FailingPacketCarrier(encoded), IMAGE_MEDIA_CODE, context,
+                PUBLIC_KEY, RECEIVER_PRIVATE_KEY, io_output,
+            )
+            self.assertEqual(io_result.verdict, "Cannot Verify")
+            self.assertFalse(io_output.exists())
+            self.assertFalse(
+                any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+            )
+
+            sentinel = directory / "existing.bin"
+            sentinel.write_bytes(b"keep existing output")
+            failed = decode_carrier_source_to_payload_path(
+                ArrayCarrier(cases[1][1]), IMAGE_MEDIA_CODE, context,
+                PUBLIC_KEY, RECEIVER_PRIVATE_KEY, sentinel,
+            )
+            self.assertEqual(failed.verdict, "Signature Invalid")
+            self.assertEqual(sentinel.read_bytes(), b"keep existing output")
+
+    def test_file_staging_cleans_up_on_exceptions_and_interruptions(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            wav_input = directory / "input.wav"
+            wav_output = directory / "output.wav"
+            payload_path = directory / "payload.bin"
+            write_pcm_wav(wav_input, 1, 1, 30000)
+            payload_path.write_bytes(b"streamed payload")
+            for chunks in (iter((b"short",)), iter((b"x" * (payload_path.stat().st_size + 1),))):
+                preserved_output = directory / "preserved.wav"
+                preserved_output.write_bytes(b"existing carrier")
+                with patch("stego.core._file_payload_chunks", return_value=chunks):
+                    with self.assertRaisesRegex(ValueError, "payload file changed while it was read"):
+                        encode_wav_from_payload_path(
+                            wav_input, preserved_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                            2048, 3, payload_path, b"",
+                        )
+                self.assertEqual(preserved_output.read_bytes(), b"existing carrier")
+                self.assertFalse(
+                    any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+                )
+            for failure in (RuntimeError("injected"), KeyboardInterrupt()):
+                with self.subTest(operation="encode", failure=type(failure).__name__):
+                    with patch("stego.core._stream_encrypt", side_effect=failure):
+                        with self.assertRaises(type(failure)):
+                            encode_wav_from_payload_path(
+                                wav_input, wav_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                                2048, 3, payload_path, b"",
+                            )
+                    self.assertFalse(wav_output.exists())
+                    self.assertFalse(
+                        any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+                    )
+
+            encoded, _, _ = encode_carrier(
+                carrier(30000), IMAGE_MEDIA_CODE, struct.pack(">II", 10000, 1),
+                PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"decrypt cleanup", b"",
+            )
+            for failure in (RuntimeError("injected"), KeyboardInterrupt()):
+                output = directory / "recovered.bin"
+                with self.subTest(operation="decrypt", failure=type(failure).__name__):
+                    with patch("stego.core._stream_decrypt", side_effect=failure):
+                        with self.assertRaises(type(failure)):
+                            decode_carrier_source_to_payload_path(
+                                ArrayCarrier(encoded), IMAGE_MEDIA_CODE,
+                                struct.pack(">II", encoded.size // 3, 1),
+                                PUBLIC_KEY, RECEIVER_PRIVATE_KEY, output,
+                            )
+                    self.assertFalse(output.exists())
+                    self.assertFalse(
+                        any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+                    )
+            memory = _MemoryStaging()
+            memory.write(b"secret plaintext")
+            memory.discard()
+            self.assertEqual(memory._buffer, bytearray())
+
+    def _assert_large_file_payload(self, payload_size: int) -> tuple[float, int]:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.wav"
+            encoded = directory / "encoded.wav"
+            payload = directory / "payload.bin"
+            recovered = directory / "recovered.bin"
+            write_mono8_wav(source, payload_size + 8192)
+            write_pattern_file(payload, payload_size)
+            tracemalloc.start()
+            started = time.perf_counter()
+            try:
+                _, payload_record = encode_wav_from_payload_path(
+                    source, encoded, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                    2048, 8, payload, b"kind=large-file",
+                )
+                result = verify_wav_to_payload_path(
+                    encoded, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, recovered
+                )
+                elapsed = time.perf_counter() - started
+                peak = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertIsInstance(payload_record, PayloadFileRecord)
+            self.assertEqual(payload_record.user_payload_size, payload_size)
+            self.assertEqual(result.payload.user_payload_size, payload_size)
+            self.assertEqual(file_sha256(payload), file_sha256(recovered))
+            self.assertLess(peak, 16 * 1024 * 1024)
+            return elapsed, peak
+
+    def test_file_api_streams_8_mib_wav_payload_under_memory_limit(self) -> None:
+        elapsed, peak = self._assert_large_file_payload(8 * 1024 * 1024)
+        self.assertGreater(elapsed, 0)
+        self.assertLess(peak, 16 * 1024 * 1024)
+
+    def test_file_api_streams_64_mib_wav_payload_under_memory_limit(self) -> None:
+        elapsed, peak = self._assert_large_file_payload(64 * 1024 * 1024)
+        self.assertGreater(elapsed, 0)
+        self.assertLess(peak, 16 * 1024 * 1024)
 
 
 class TestMaskedStego(unittest.TestCase):
@@ -768,7 +1198,7 @@ class TestMaskedStego(unittest.TestCase):
         source = carrier(30000)
         (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
         signature_invalid = embedded_bit_flip(encoded, layout.start_unit, layout.lsb_count, 0)
-        with patch("stego.core.aead_open", wraps=aead_open) as decrypt_mock:
+        with patch("stego.core._stream_decrypt", wraps=_stream_decrypt) as decrypt_mock:
             authentic = decode_carrier(
                 encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
             )
@@ -2208,6 +2638,40 @@ def flip_carrier_byte_of_last_sample(path: Path, sample_width: int) -> None:
         value = handle.read(1)[0]
         handle.seek(-sample_width, os.SEEK_END)
         handle.write(bytes((value ^ 0x80,)))
+
+
+def write_mono8_wav(path: Path, frame_count: int) -> None:
+    """Write a mono 8-bit WAV incrementally for file-payload tests."""
+    block = bytes((index % 251 for index in range(1024 * 1024)))
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(1)
+        wav_file.setframerate(8000)
+        remaining = frame_count
+        while remaining:
+            count = min(remaining, len(block))
+            wav_file.writeframesraw(block[:count])
+            remaining -= count
+
+
+def write_pattern_file(path: Path, byte_count: int) -> None:
+    """Write deterministic payload bytes in bounded blocks."""
+    block = bytes((index % 251 for index in range(1024 * 1024)))
+    with path.open("wb") as payload_file:
+        remaining = byte_count
+        while remaining:
+            count = min(remaining, len(block))
+            payload_file.write(block[:count])
+            remaining -= count
+
+
+def file_sha256(path: Path) -> bytes:
+    """Hash a file in bounded reads."""
+    hasher = hashlib.sha256()
+    with path.open("rb") as input_file:
+        while chunk := input_file.read(1024 * 1024):
+            hasher.update(chunk)
+    return hasher.digest()
 
 
 def write_large_pcm_wav(path: Path, frame_byte_count: int) -> None:

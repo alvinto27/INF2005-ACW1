@@ -282,15 +282,14 @@ def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_
     return hasher.digest()
 
 
-def encode_signing_input(media_code: int, media_context: bytes, layout: EmbeddingLayout, ciphertext: bytes) -> bytes:
-    """Build signed bytes covering recovered geometry and ciphertext."""
+def encode_signing_input_prefix(
+    media_code: int, media_context: bytes, layout: EmbeddingLayout
+) -> bytes:
+    """Build the fixed signing fields that precede ciphertext bytes."""
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
     if not isinstance(layout, EmbeddingLayout):
         raise TypeError("layout must be an EmbeddingLayout")
-    ciphertext = validate_payload_bytes(ciphertext)
-    if len(ciphertext) != layout.ciphertext_length:
-        raise ValueError("ciphertext length does not match layout")
     return (
         SIGNING_DOMAIN
         + struct.pack(
@@ -305,5 +304,16 @@ def encode_signing_input(media_code: int, media_context: bytes, layout: Embeddin
         + encode_protocol_field(layout.footprint, "footprint")
         + encode_protocol_field(layout.ciphertext_length, "ciphertext_length")
         + media_context
-        + ciphertext
     )
+
+
+def encode_signing_input(media_code: int, media_context: bytes, layout: EmbeddingLayout, ciphertext: bytes) -> bytes:
+    """Build signed bytes covering recovered geometry and ciphertext."""
+    media_code = _validate_media_code(media_code)
+    media_context = _require_bytes(media_context, "media_context")
+    if not isinstance(layout, EmbeddingLayout):
+        raise TypeError("layout must be an EmbeddingLayout")
+    ciphertext = validate_payload_bytes(ciphertext)
+    if len(ciphertext) != layout.ciphertext_length:
+        raise ValueError("ciphertext length does not match layout")
+    return encode_signing_input_prefix(media_code, media_context, layout) + ciphertext
