@@ -1,12 +1,13 @@
 """Integration tests for the Flask UI on the current masked-media protocol."""
 
-import base64
 import io
+import json
 import os
 import tempfile
 import unittest
 import wave
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from cryptography.hazmat.primitives import serialization
@@ -82,10 +83,17 @@ class WebApplicationTests(unittest.TestCase):
     def setUp(self) -> None:
         """Create an isolated app and independent sender/receiver key pairs."""
         self.output_temp = tempfile.TemporaryDirectory(prefix="inf2005-test-output-")
+        self.payload_temp = tempfile.TemporaryDirectory(prefix="inf2005-test-payload-")
         self.addCleanup(self.output_temp.cleanup)
+        self.addCleanup(self.payload_temp.cleanup)
         self.output_dir = Path(self.output_temp.name)
+        self.payload_dir = Path(self.payload_temp.name)
         self.client = create_app(
-            {"TESTING": True, "STEGO_OUTPUT_DIR": self.output_dir}
+            {
+                "TESTING": True,
+                "STEGO_OUTPUT_DIR": self.output_dir,
+                "PAYLOAD_OUTPUT_DIR": self.payload_dir,
+            }
         ).test_client()
         self.sender_private, self.sender_public = generate_rsa_keypair()
         self.receiver_private, self.receiver_public = generate_rsa_keypair()
@@ -176,6 +184,18 @@ class WebApplicationTests(unittest.TestCase):
             content_type="multipart/form-data",
         )
 
+    def get_payload(self, payload: dict[str, object]) -> object:
+        """Fetch one payload by the URL returned in an Authentic report."""
+        response = self.client.get(str(payload["payload_url"]))
+        body = response.get_data()
+        self.assertEqual(response.status_code, 200, body[:200])
+        response.close()
+        return response
+
+    def assert_no_recovered_payloads(self) -> None:
+        """Check that no payload or sidecar was stored after failure."""
+        self.assertEqual(list(self.payload_dir.iterdir()), [])
+
     def test_index_uses_current_protocol_inputs_and_retains_layout(self) -> None:
         """The original wizard remains while obsolete inputs are absent."""
         response = self.client.get("/")
@@ -211,11 +231,34 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["start_location"], 2048)
         self.assertEqual(report["lsb_bits"], 3)
         self.assertEqual(report["payload"]["metadata"]["team"], "P1-4")
+        self.assertNotIn("user_payload_base64", report["payload"])
+        payload_response = self.get_payload(report["payload"])
+        self.assertEqual(payload_response.get_data(), b"authenticated message")
+        self.assertEqual(payload_response.mimetype, "text/plain")
         self.assertEqual(
-            base64.b64decode(report["payload"]["user_payload_base64"]),
-            b"authenticated message",
+            payload_response.headers["Content-Disposition"].split(";")[0], "inline"
+        )
+        self.assertEqual(payload_response.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(payload_response.headers["Cache-Control"], "no-store")
+        payload_id = str(report["payload"]["payload_url"]).rsplit("/", 1)[-1]
+        sidecar = json.loads((self.payload_dir / f"{payload_id}.json").read_text())
+        self.assertEqual(
+            sidecar,
+            {
+                "download_name": "message.txt",
+                "serve_mime": "text/plain",
+                "preview_allowed": True,
+            },
+        )
+        self.assertEqual(
+            payload_response.headers["Content-Security-Policy"],
+            "default-src 'none'; img-src 'self'; media-src 'self'; sandbox",
         )
         self.assertTrue(report["payload"]["preview_allowed"])
+        second_response = self.get_payload(report["payload"])
+        self.assertEqual(second_response.get_data(), b"authenticated message")
+        self.assertEqual(len(list(self.payload_dir.glob("*.bin"))), 1)
+        self.assertEqual(len(list(self.payload_dir.glob("*.json"))), 1)
 
     def test_rgba_png_web_round_trip_keeps_alpha_bytes(self) -> None:
         """The web flow encodes and verifies RGBA without changing alpha."""
@@ -269,10 +312,11 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
         report = decoded.get_json()
         self.assertEqual(report["verdict"], "Authentic")
-        self.assertEqual(
-            base64.b64decode(report["payload"]["user_payload_base64"]), payload
-        )
+        payload_response = self.get_payload(report["payload"])
+        self.assertEqual(payload_response.get_data(), payload)
+        self.assertEqual(payload_response.mimetype, "audio/wav")
         self.assertEqual(report["payload"]["declared_mime"], "audio/wav")
+        self.assertNotIn("user_payload_base64", report["payload"])
 
     def test_png_supports_every_lsb_count(self) -> None:
         """The retained 1-8 control maps exactly to protocol LSB counts."""
@@ -305,7 +349,11 @@ class WebApplicationTests(unittest.TestCase):
             encoded, "stego.png", receiver_private=private_pem(wrong_private)
         )
         self.assertEqual(decoded.status_code, 422)
-        self.assertEqual(decoded.get_json()["verdict"], "Payload Missing")
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Payload Missing")
+        self.assertIsNone(report["payload"])
+        self.assertNotIn("payload_url", report)
+        self.assert_no_recovered_payloads()
 
     def test_wrong_sender_key_is_signature_invalid(self) -> None:
         """The receiver rejects a packet under an unrelated sender identity."""
@@ -315,7 +363,11 @@ class WebApplicationTests(unittest.TestCase):
             encoded, "stego.png", sender_public=public_pem(wrong_public)
         )
         self.assertEqual(decoded.status_code, 200)
-        self.assertEqual(decoded.get_json()["verdict"], "Signature Invalid")
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Signature Invalid")
+        self.assertIsNone(report["payload"])
+        self.assertNotIn("payload_url", report)
+        self.assert_no_recovered_payloads()
 
     def test_changed_preserved_image_bit_is_tampered(self) -> None:
         """A carrier change outside the packet footprint fails the masked hash."""
@@ -328,7 +380,11 @@ class WebApplicationTests(unittest.TestCase):
         Image.fromarray(array, mode="RGB").save(changed_output, format="PNG")
         decoded = self.decode_bytes(changed_output.getvalue(), "changed.png")
         self.assertEqual(decoded.status_code, 200)
-        self.assertEqual(decoded.get_json()["verdict"], "Tampered")
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Tampered")
+        self.assertIsNone(report["payload"])
+        self.assertNotIn("payload_url", report)
+        self.assert_no_recovered_payloads()
 
     def test_mime_mismatch_disables_preview_without_invalidating_signature(self) -> None:
         """A false typed-payload claim remains authenticated but is not rendered."""
@@ -339,6 +395,57 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "Authentic")
         self.assertFalse(report["payload"]["type_agrees"])
         self.assertFalse(report["payload"]["preview_allowed"])
+        payload_response = self.get_payload(report["payload"])
+        self.assertEqual(payload_response.mimetype, "application/octet-stream")
+        self.assertTrue(
+            payload_response.headers["Content-Disposition"].startswith("attachment;")
+        )
+        self.assertEqual(payload_response.headers["X-Content-Type-Options"], "nosniff")
+
+    def test_pdf_payload_is_download_only(self) -> None:
+        """A correctly typed PDF is downloadable but never rendered inline."""
+        pdf_bytes = b"%PDF-1.7\nminimal PDF payload\n"
+        encoded = self.encode(
+            sample_png(),
+            "cover.png",
+            payload=(pdf_bytes, "assignment.pdf"),
+            payload_mime="application/pdf",
+        ).get_json()
+        report = self.decode(encoded, "stego.png").get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        payload = report["payload"]
+        self.assertTrue(payload["type_agrees"])
+        self.assertFalse(payload["preview_allowed"])
+        response = self.get_payload(payload)
+        self.assertEqual(response.get_data(), pdf_bytes)
+        self.assertEqual(response.mimetype, "application/octet-stream")
+        self.assertTrue(response.headers["Content-Disposition"].startswith("attachment;"))
+        self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(
+            response.headers["Content-Security-Policy"],
+            "default-src 'none'; img-src 'self'; media-src 'self'; sandbox",
+        )
+        self.assertIn("filename=assignment.pdf", response.headers["Content-Disposition"])
+
+    def test_payload_route_rejects_invalid_and_missing_ids(self) -> None:
+        """Invalid tokens and absent sidecars return JSON 404 responses."""
+        for payload_id in ("invalid!", "short", "a" * 21):
+            with self.subTest(payload_id=payload_id):
+                response = self.client.get(f"/payload/{payload_id}")
+                self.assertEqual(response.status_code, 404)
+                self.assertEqual(response.get_json()["error"], "payload file not found")
+        missing = self.client.get(f"/payload/{'a' * 22}")
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.get_json()["error"], "payload file not found")
+
+    def test_payload_sidecar_failure_removes_partial_payload(self) -> None:
+        """A failed sidecar write removes the already-written payload bytes."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        with patch("stego_web.routes.json.dump", side_effect=OSError("sidecar failed")):
+            response = self.decode(encoded, "stego.png")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assert_no_recovered_payloads()
 
     def test_key_generation_supports_both_roles(self) -> None:
         """Sender and receiver setup both produce encrypted RSA key pairs."""
@@ -554,6 +661,7 @@ class WebApplicationTests(unittest.TestCase):
                 "TESTING": True,
                 "MAX_CONTENT_LENGTH": 100,
                 "STEGO_OUTPUT_DIR": self.output_dir,
+                "PAYLOAD_OUTPUT_DIR": self.payload_dir,
             }
         ).test_client()
         response = client.post(

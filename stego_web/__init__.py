@@ -14,6 +14,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.config.from_mapping(
         MAX_CONTENT_LENGTH=256 * 1024 * 1024,
         STEGO_OUTPUT_DIR=Path(app.instance_path) / "stego-outputs",
+        PAYLOAD_OUTPUT_DIR=Path(app.instance_path) / "recovered-payloads",
         JSON_SORT_KEYS=False,
     )
 

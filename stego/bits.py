@@ -110,11 +110,30 @@ def write_lsb_bits(carrier_units: np.ndarray, bit_sequence: np.ndarray, lsb_coun
     if bit_sequence.size > carrier_units.size * lsb_count:
         raise ValueError("bit_sequence exceeds carrier capacity")
     result = carrier_units.copy()
-    for bit_index, bit in enumerate(bit_sequence):
-        unit_index, offset = divmod(bit_index, lsb_count)
-        position = lsb_count - 1 - offset
-        mask = 1 << position
-        result[unit_index] = np.uint8((int(result[unit_index]) & ~mask) | (int(bit) << position))
+    bit_count = int(bit_sequence.size)
+    unit_count = (bit_count + lsb_count - 1) // lsb_count
+    if unit_count == 0:
+        return result
+
+    padded_bits = np.zeros(unit_count * lsb_count, dtype=np.uint8)
+    padded_bits[:bit_count] = bit_sequence
+    shifts = np.arange(lsb_count - 1, -1, -1, dtype=np.uint8)
+    grouped_bits = padded_bits.reshape(unit_count, lsb_count)
+    encoded_fields = np.bitwise_or.reduce(grouped_bits << shifts, axis=1)
+
+    full_units = bit_count // lsb_count
+    field_mask = (1 << lsb_count) - 1
+    if full_units:
+        result[:full_units] = (
+            carrier_units[:full_units] & np.uint8((~field_mask) & 0xFF)
+        ) | encoded_fields[:full_units]
+    partial_bits = bit_count % lsb_count
+    if partial_bits:
+        partial_mask = ((1 << partial_bits) - 1) << (lsb_count - partial_bits)
+        result[full_units] = np.uint8(
+            (int(carrier_units[full_units]) & (~partial_mask & 0xFF))
+            | int(encoded_fields[full_units])
+        )
     return result
 
 
@@ -125,12 +144,13 @@ def read_lsb_bits(carrier_units: np.ndarray, bit_length: int, lsb_count: int) ->
     lsb_count = _validate_lsb_count(lsb_count)
     if bit_length > carrier_units.size * lsb_count:
         raise ValueError("requested bit length exceeds carrier capacity")
-    result = np.empty(bit_length, dtype=np.uint8)
-    for bit_index in range(bit_length):
-        unit_index, offset = divmod(bit_index, lsb_count)
-        position = lsb_count - 1 - offset
-        result[bit_index] = (int(carrier_units[unit_index]) >> position) & 1
-    return result
+    if bit_length == 0:
+        return np.empty(0, dtype=np.uint8)
+    unit_count = (bit_length + lsb_count - 1) // lsb_count
+    shifts = np.arange(lsb_count - 1, -1, -1, dtype=np.uint8)
+    low_fields = carrier_units[:unit_count, None] & np.uint8((1 << lsb_count) - 1)
+    bits = ((low_fields >> shifts) & np.uint8(1)).reshape(-1)
+    return bits[:bit_length].copy()
 
 
 def validate_payload_length(payload_length: int) -> int:

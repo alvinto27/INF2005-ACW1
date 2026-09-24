@@ -60,9 +60,11 @@ version, recovered start unit and LSB count, signature and integrity state,
 sender-key fingerprint, preserved-bit count/ratio, and authenticated record
 fields. Unperformed checks are `null`, distinct from `false`.
 
-An `Authentic` result additionally includes Base64-encoded raw user payload bytes
-and parsed typed metadata. The adapter recognizes PNG, JPEG, WAV, MP3, and PDF
-magic. The browser permits inline text/image/audio preview only when:
+An `Authentic` result additionally includes `payload_url` and parsed typed
+metadata. The server stores the decrypted bytes as plaintext in
+`instance/recovered-payloads`; delete them manually. The adapter recognizes PNG,
+JPEG, WAV, MP3, and PDF magic. The browser fetches payload bytes by URL and
+permits inline text/image/audio preview only when:
 
 - metadata parses without duplicates or delimiter ambiguity;
 - the signed MIME claim agrees with recognized payload bytes; and
@@ -86,8 +88,12 @@ and negative-verdict tests.
 - A wrong receiver key and absent payload intentionally share one outcome.
 - PNG ancillary chunks and WAV chunks outside the declared PCM samples are not covered. Version 3 limitations for transparent pixel colours and RGB `tRNS` are listed in the [v3 hash record](PROTOCOL-V3-FULL-MEDIA-HASH.md#6-on-disk-effect-and-known-limits).
 - Overwritten cover LSB values cannot be recovered or authenticated.
-- The web adapter temporarily writes uploads to an isolated directory because
-  the fixed protocol media API accepts paths; that directory is deleted when the
-  request ends, but production deployment still needs host-level storage controls.
+- `GET /payload/<id>` serves the recovered payload with a MIME allowlist,
+  `nosniff`, a restrictive Content Security Policy, and `Cache-Control: no-store`.
+  Non-previewable payloads use `application/octet-stream` and download attachment.
+- The web adapter temporarily writes carrier uploads to an isolated directory
+  because the fixed protocol media API accepts paths; that directory is deleted
+  when the request ends. Recovered payloads are plaintext on disk, so production
+  deployment still needs host-level storage controls.
 - The active decoder does not import legacy `STG1` media. See
   [Protocol Compatibility](PROTOCOL-COMPATIBILITY.md).

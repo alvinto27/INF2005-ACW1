@@ -43,10 +43,14 @@ the legacy `STG1` encoding and verification pipelines.
 8. `/decode` saves the stego upload to a temporary file. `stego.verify_png` or
    `stego.verify_wav` opens one receiver bootstrap, verifies the signature,
    decrypts and parses the record, and checks the v3 full media hash.
-9. The report uses the file's stat size. Recovered `user_payload_base64` remains
-   in the verify JSON.
-10. Temporary upload files are removed after each request. Stored stego outputs
-    remain without expiry until the user deletes them. Responses carry
+9. The report uses the file's stat size. An `Authentic` result stores the
+   decrypted payload in `instance/recovered-payloads` and returns `payload_url`.
+   The JSON does not include payload bytes or Base64 data.
+10. `GET /payload/<id>` serves the stored payload with a safe MIME type,
+    download name, and browser security headers. Temporary upload files are
+    removed after each request. Stego and recovered payload files remain without
+    expiry until the user deletes them. Recovered payload files are plaintext;
+    anyone who can read the instance folder can read them. Responses carry
     `Cache-Control: no-store`.
 
 ## Carrier size
@@ -56,7 +60,9 @@ and whole-file loader have been removed. Flask accepts requests up to 256 MiB,
 which can be changed through `create_app(test_config)`. Carrier uploads go to
 request-scoped temporary files. Encoded carriers are written to
 `instance/stego-outputs` and served through `stego_url`; files stay there with no
-expiry until the user deletes them. The output is not returned as base64. WAV
+expiry until the user deletes them. The output is not returned as base64. Verified
+payloads are stored as plaintext files in `instance/recovered-payloads` and
+served through `payload_url`; these files also stay until manual deletion. WAV
 headers are checked with `read_pcm_wav_info`, and verify reports use the file
 size from `stat()`. Pillow still decodes each PNG into a full image array, so PNG
 working memory grows with image dimensions. See the

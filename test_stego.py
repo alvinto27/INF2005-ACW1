@@ -1,6 +1,7 @@
 import hashlib
 import os
 import struct
+import time
 import tracemalloc
 import unittest
 import wave
@@ -18,8 +19,19 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from stego import *
-from stego.carrier import ArrayCarrier, lsb_range_transform
-from stego.core import decode_carrier, encode_carrier
+from stego.carrier import (
+    DEFAULT_CHUNK_BYTES,
+    ArrayCarrier,
+    _packed_lsb_range_transform,
+    lsb_range_transform,
+)
+from stego.core import (
+    CarrierEncoding,
+    decode_carrier,
+    decode_carrier_source,
+    encode_carrier,
+    prepare_carrier_encoding,
+)
 from stego.layout import calculate_masked_media_hash
 from stego.media import encode_png_media_context, encode_wav_media_context
 from stego.constants import MEDIA_ID_SIZE
@@ -94,6 +106,171 @@ def decode_pcm_samples(frame_bytes: bytes, sample_width: int) -> list[int]:
         int.from_bytes(frame_bytes[offset:offset + sample_width], "little", signed=True)
         for offset in range(0, len(frame_bytes), sample_width)
     ]
+
+
+def reference_write_lsb_bits(
+    carrier_units: np.ndarray, bit_sequence: np.ndarray, lsb_count: int
+) -> np.ndarray:
+    """Reference the original per-bit writer for exact-semantics tests."""
+    result = carrier_units.copy()
+    for bit_index, bit in enumerate(bit_sequence):
+        unit_index, offset = divmod(bit_index, lsb_count)
+        position = lsb_count - 1 - offset
+        mask = 1 << position
+        result[unit_index] = np.uint8(
+            (int(result[unit_index]) & ~mask) | (int(bit) << position)
+        )
+    return result
+
+
+def reference_read_lsb_bits(
+    carrier_units: np.ndarray, bit_length: int, lsb_count: int
+) -> np.ndarray:
+    """Reference the original per-bit reader for exact-semantics tests."""
+    result = np.empty(bit_length, dtype=np.uint8)
+    for bit_index in range(bit_length):
+        unit_index, offset = divmod(bit_index, lsb_count)
+        position = lsb_count - 1 - offset
+        result[bit_index] = (int(carrier_units[unit_index]) >> position) & 1
+    return result
+
+
+class TestPackedBitHandling(unittest.TestCase):
+    """Check vectorized bit operations and packed chunk transforms."""
+
+    def test_decoder_reads_packet_in_bounded_chunks(self) -> None:
+        """Packet reads stay bounded and split at awkward test chunk edges."""
+        original = carrier(12000)
+        context = struct.pack(">II", 4000, 1)
+        encoding = prepare_carrier_encoding(
+            ArrayCarrier(original, 113),
+            IMAGE_MEDIA_CODE,
+            context,
+            PRIVATE_KEY,
+            RECEIVER_PUBLIC_KEY,
+            2048,
+            3,
+            b"chunked packet extraction " * 40,
+            b"kind=chunk-test",
+        )
+        encoded = ArrayCarrier(original, 113).rewrite(encoding.embed_chunk)
+        encoding.finish()
+        tracked = ReadTrackingCarrier(encoded, 127)
+        with patch("stego.core.DEFAULT_CHUNK_BYTES", 37):
+            result = decode_carrier_source(
+                tracked,
+                IMAGE_MEDIA_CODE,
+                context,
+                PUBLIC_KEY,
+                RECEIVER_PRIVATE_KEY,
+            )
+        self.assertEqual(result.verdict, "Authentic", result.detail)
+        packet_reads = [
+            count
+            for start, count in tracked.read_ranges
+            if encoding.layout.start_unit
+            <= start
+            < encoding.layout.start_unit + encoding.layout.footprint
+        ]
+        self.assertGreater(len(packet_reads), 1)
+        self.assertEqual(sum(packet_reads), encoding.layout.footprint)
+        self.assertLessEqual(max(packet_reads), 32)
+
+    def test_vectorized_lsb_operations_match_per_bit_references(self) -> None:
+        rng = np.random.default_rng(202503)
+        units = rng.integers(0, 256, 40, dtype=np.uint8)
+        for lsb_count in range(1, 9):
+            lengths = {
+                0,
+                1,
+                max(1, lsb_count - 1),
+                lsb_count,
+                lsb_count + 1,
+                3 * lsb_count,
+                3 * lsb_count + 1,
+            }
+            for bit_length in sorted(lengths):
+                bits = rng.integers(0, 2, bit_length, dtype=np.uint8)
+                with self.subTest(lsb_count=lsb_count, bit_length=bit_length):
+                    self.assertTrue(
+                        np.array_equal(
+                            write_lsb_bits(units, bits, lsb_count),
+                            reference_write_lsb_bits(units, bits, lsb_count),
+                        )
+                    )
+                    self.assertTrue(
+                        np.array_equal(
+                            read_lsb_bits(units, bit_length, lsb_count),
+                            reference_read_lsb_bits(units, bit_length, lsb_count),
+                        )
+                    )
+
+    def test_packed_range_transform_is_independent_of_chunk_edges(self) -> None:
+        rng = np.random.default_rng(202504)
+        source = rng.integers(0, 256, 5000, dtype=np.uint8)
+        region_start = 23
+        payload = bytes(rng.integers(0, 256, 251, dtype=np.uint8))
+        for lsb_count in range(1, 9):
+            bit_length = ceil_unit_count(len(payload) * 8, lsb_count) * lsb_count
+            padded_bits = np.zeros(bit_length, dtype=np.uint8)
+            payload_bits = bytes_to_bit_sequence(payload)
+            padded_bits[:payload_bits.size] = payload_bits
+            expected = source.copy()
+            region_units = ceil_unit_count(bit_length, lsb_count)
+            expected[region_start:region_start + region_units] = reference_write_lsb_bits(
+                expected[region_start:region_start + region_units],
+                padded_bits,
+                lsb_count,
+            )
+            transform = _packed_lsb_range_transform(
+                region_start, payload, bit_length, lsb_count
+            )
+            for chunk_units in (1, 2, 3, 5, 7, 13, 31, 997):
+                with self.subTest(lsb_count=lsb_count, chunk_units=chunk_units):
+                    actual = ArrayCarrier(source, chunk_units).rewrite(transform)
+                    self.assertTrue(np.array_equal(actual, expected))
+
+    def test_packed_encoder_output_matches_reference_embedding(self) -> None:
+        source_units = carrier(30000)
+        context = struct.pack(">II", 10000, 1)
+        encoding = prepare_carrier_encoding(
+            ArrayCarrier(source_units, 137),
+            IMAGE_MEDIA_CODE,
+            context,
+            PRIVATE_KEY,
+            RECEIVER_PUBLIC_KEY,
+            2048,
+            5,
+            b"byte-identical packed path",
+            b"kind=test",
+        )
+        actual = ArrayCarrier(source_units, 137).rewrite(encoding.embed_chunk)
+        reference = source_units.copy()
+        envelope_bits = bytes_to_bit_sequence(encoding._envelope)
+        reference[:encoding.layout.bootstrap_span] = reference_write_lsb_bits(
+            reference[:encoding.layout.bootstrap_span],
+            envelope_bits,
+            BOOTSTRAP_LSB_COUNT,
+        )
+        packet_bit_length = encoding.layout.footprint * encoding.layout.lsb_count
+        packet_bits = np.zeros(packet_bit_length, dtype=np.uint8)
+        raw_packet_bits = bytes_to_bit_sequence(encoding._packet)
+        packet_bits[:raw_packet_bits.size] = raw_packet_bits
+        start = encoding.layout.start_unit
+        end = start + encoding.layout.footprint
+        reference[start:end] = reference_write_lsb_bits(
+            reference[start:end], packet_bits, encoding.layout.lsb_count
+        )
+        self.assertTrue(np.array_equal(actual, reference))
+        encoding.finish()
+        result = decode_carrier_source(
+            ArrayCarrier(actual, 113),
+            IMAGE_MEDIA_CODE,
+            context,
+            PUBLIC_KEY,
+            RECEIVER_PRIVATE_KEY,
+        )
+        self.assertEqual(result.verdict, "Authentic", result.detail)
 
 
 class TestMaskedStego(unittest.TestCase):
@@ -1365,8 +1542,74 @@ class LongCarrier(ArrayCarrier):
         yield np.zeros(1, dtype=np.uint8)
 
 
+class ReadTrackingCarrier(ArrayCarrier):
+    """Record bounded ranges requested by a decoder."""
+
+    def __init__(self, carrier_units: np.ndarray, chunk_units: int = DEFAULT_CHUNK_BYTES) -> None:
+        super().__init__(carrier_units, chunk_units)
+        self.read_ranges: list[tuple[int, int]] = []
+
+    def read_units(self, start_unit: int, count: int) -> np.ndarray:
+        self.read_ranges.append((start_unit, count))
+        return super().read_units(start_unit, count)
+
+
 class TestChunkedCarrier(unittest.TestCase):
     SPAN = bootstrap_span(RECEIVER_PUBLIC_KEY)
+
+    def test_four_mib_payload_k8_performance_and_encode_memory(self) -> None:
+        """A packed 4 MiB WAV packet stays within normal time and memory limits."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "large-input.wav"
+            output_path = directory / "large-output.wav"
+            payload = bytes(range(256)) * (4 * 1024 * 1024 // 256)
+            frame_count = len(payload) + 8192
+            with wave.open(str(input_path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(1)
+                wav_file.setframerate(8000)
+                remaining = frame_count
+                block = bytes(1024 * 1024)
+                while remaining:
+                    frames = min(remaining, len(block))
+                    wav_file.writeframesraw(block[:frames])
+                    remaining -= frames
+                wav_file.writeframes(b"")
+
+            tracemalloc.start()
+            started = time.perf_counter()
+            encode_wav(
+                input_path,
+                output_path,
+                PRIVATE_KEY,
+                RECEIVER_PUBLIC_KEY,
+                2048,
+                8,
+                payload,
+                b"kind=performance",
+            )
+            encode_seconds = time.perf_counter() - started
+            _, peak_bytes = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+
+            started = time.perf_counter()
+            result = verify_wav(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            verify_seconds = time.perf_counter() - started
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload.user_payload, payload)
+            self.assertLess(
+                encode_seconds + verify_seconds,
+                10.0,
+                f"encode={encode_seconds:.3f}s verify={verify_seconds:.3f}s",
+            )
+            memory_limit = 4 * len(payload) + 16 * 1024 * 1024
+            self.assertLess(
+                peak_bytes,
+                memory_limit,
+                f"encode peak={peak_bytes / 1024 / 1024:.2f} MiB; "
+                f"limit={memory_limit / 1024 / 1024:.2f} MiB",
+            )
 
     def test_wav_carrier_media_properties(self) -> None:
         with TemporaryDirectory() as directory_name:

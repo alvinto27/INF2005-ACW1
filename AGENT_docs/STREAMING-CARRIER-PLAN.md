@@ -134,18 +134,18 @@ Why 1 MiB:
 
 ## 9. Memory claim
 
-Memory is **not** constant. The carrier working memory does not grow with the carrier size. The total working memory grows with the packet size.
+Memory is **not** constant. Carrier working memory stays bounded by chunks; payload and cryptographic buffers still grow with the packet.
 
-Packet embedding and extraction still hold `footprint x lsb_count` bits as one byte per bit. The loop in `read_lsb_bits` and `write_lsb_bits` runs one Python step per bit. This refactor did not change that.
+Task 5 vectorizes `read_lsb_bits` and `write_lsb_bits`. Encoding keeps the packet packed as bytes and expands only the bits that overlap the current carrier chunk. Verification reads packet units in bounded ranges and appends packed bytes. The full `footprint x lsb_count` byte-per-bit array and its extra transform copy are removed. The transform chunk is bounded by `chunk_units x lsb_count`.
 
-Measured on the same 96 MiB WAV, `k = 3`:
+The following measurements are the **before-Task-5 baseline**, on a 96 MiB WAV at `k = 3`:
 
 | Payload | Encode | Encode peak | Verify | Verify peak |
 | --- | --- | --- | --- | --- |
 | 673 B | 0.19 s | 4.3 MiB | 0.06 s | 2.7 MiB |
 | 1 MiB | 18.4 s | 20.0 MiB | 4.5 s | 34.7 MiB |
 
-The second row is packet-bit cost, not carrier cost. Make packet bits faster only if a real payload needs it, and do it as a separate change.
+The new vector and packed-path timings, chunk-work memory, and 4 MiB test measurement are in [Payload Handling](PAYLOAD-HANDLING.md#measurements). The measurements use different payload sizes and settings; they are examples, not a controlled speedup ratio.
 
 ## 10. Whole-file WAV cap
 
@@ -170,8 +170,8 @@ This follow-up is complete. Carrier files move through the web boundary by path;
 | Carrier uploads | Encode covers and decode stego files are saved from `FileStorage` to temporary files. Missing and empty uploads keep their existing errors. Key PEMs and payload files remain byte inputs. |
 | Carrier detection and report size | `detect_carrier` reads only the first 12 file bytes. Verification reports use `stat().st_size`. WAV headers use `read_pcm_wav_info`. |
 | Encode output | `encode_png` and `encode_wav` write directly to `STEGO_OUTPUT_DIR` as `<token>.png` or `<token>.wav`. Failed encodes remove partial files. |
-| Response and download | Encode JSON returns `stego_url`, `filename`, and `mime_type`; it does not include stego bytes or base64. `GET /download/<id>.<ext>` checks the token and extension, then streams the file inline. |
-| Stored-file lifetime | Files remain in `instance/stego-outputs` with no expiry. Users delete them manually. The verify report keeps `user_payload_base64`. |
+| Response and download | Encode JSON returns `stego_url`, `filename`, and `mime_type`; it does not include stego bytes or base64. `GET /download/<id>.<ext>` checks the token and extension, then streams the file inline. An `Authentic` verify report returns `payload_url`; `GET /payload/<id>` serves the recovered bytes with MIME and browser safeguards. |
+| Stored-file lifetime | Stego files remain in `instance/stego-outputs`. Authenticated recovered payloads and small sidecars remain in `instance/recovered-payloads` with no expiry. Users delete them manually. Recovered payloads are plaintext on disk; see [Payload Handling](PAYLOAD-HANDLING.md#web-payload-flow). |
 | Browser caching | All responses retain `Cache-Control: no-store`. |
 
 ## 13. Tests

@@ -41,17 +41,12 @@
     return value === true ? yes : value === false ? no : 'Not checked';
   }
 
-  function payloadBytes(value) {
-    return Uint8Array.from(atob(value), character => character.charCodeAt(0));
-  }
-
   function payloadSection(payload) {
     const section = document.createElement('section');
     section.className = 'decoded-payload';
     section.append(element('h4', 'Authenticated decrypted payload'));
-    const bytes = payloadBytes(payload.user_payload_base64);
     const mime = payload.declared_mime || 'application/octet-stream';
-    const url = URL.createObjectURL(new Blob([bytes], {type: mime}));
+    const url = payload.payload_url;
     const download = document.createElement('a');
     download.href = url;
     download.download = payload.download_name || 'recovered-payload.bin';
@@ -66,8 +61,16 @@
       return section;
     }
     if (mime === 'text/plain') {
-      const pre = element('pre', new TextDecoder('utf-8', {fatal: false}).decode(bytes));
+      const pre = element('pre', 'Loading authenticated text...');
       section.append(pre);
+      fetch(url).then(response => {
+        if (!response.ok) throw new Error('Payload download failed.');
+        return response.text();
+      }).then(text => {
+        pre.textContent = text;
+      }).catch(() => {
+        pre.textContent = 'The authenticated text could not be loaded.';
+      });
     } else if (mime.startsWith('image/')) {
       const image = document.createElement('img');
       image.src = url; image.alt = 'Recovered authenticated payload';
@@ -100,7 +103,7 @@
       ['Sender key fingerprint', data.sender_key_fingerprint],
     ]));
 
-    if (data.ok && data.payload?.user_payload_base64) result.append(payloadSection(data.payload));
+    if (data.ok && data.payload?.payload_url) result.append(payloadSection(data.payload));
 
     const technical = document.createElement('details');
     technical.append(element('summary', 'Technical details'), fields([

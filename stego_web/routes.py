@@ -1,5 +1,6 @@
 """HTTP boundary for the current masked-media protocol and existing web UI."""
 
+import json
 import re
 import secrets
 import tempfile
@@ -18,7 +19,11 @@ from flask import (
 
 from stego import PROTOCOL_VERSION
 
-from .services.current_protocol import CurrentProtocolService, infer_payload_claim
+from .services.current_protocol import (
+    CurrentProtocolService,
+    _PREVIEW_MIME_TYPES,
+    infer_payload_claim,
+)
 
 
 web = Blueprint("web", __name__)
@@ -133,13 +138,13 @@ def generate_keys() -> Response | tuple[Response, int]:
 
 @web.post("/decode")
 def decode() -> Response | tuple[Response, int]:
-    """Recover geometry, verify integrity, and decrypt an authenticated payload."""
+    """Recover geometry, verify integrity, and save an authentic payload."""
     try:
         with tempfile.TemporaryDirectory(prefix="inf2005-stego-") as temporary:
             stego_path = Path(temporary) / "received.upload"
             _save_carrier_upload("stego", stego_path)
             original_name = request.files["stego"].filename
-            result = protocol_service.verify(
+            report, payload_bytes = protocol_service.verify(
                 stego_path,
                 _required_upload("sender_public_key"),
                 _required_upload("receiver_private_key"),
@@ -148,9 +153,115 @@ def decode() -> Response | tuple[Response, int]:
     except (OSError, TypeError, ValueError) as error:
         return _error(str(error), 400, "Cannot Verify")
 
-    result["filename"] = original_name
-    status = 422 if result["verdict"] == "Payload Missing" else 200
-    return jsonify(result), status
+    report["filename"] = original_name
+    if report["verdict"] == "Authentic":
+        payload_fields = report.get("payload")
+        if not isinstance(payload_bytes, bytes) or not isinstance(payload_fields, dict):
+            return _error("verified payload bytes are unavailable", 500, "Cannot Verify")
+        try:
+            _, payload_fields["payload_url"] = _store_recovered_payload(
+                payload_bytes, payload_fields
+            )
+        except (OSError, TypeError, ValueError) as error:
+            return _error(f"could not store recovered payload: {error}", 500, "Cannot Verify")
+
+    status = 422 if report["verdict"] == "Payload Missing" else 200
+    return jsonify(report), status
+
+
+def _store_recovered_payload(
+    payload_bytes: bytes, payload_fields: dict[str, object]
+) -> tuple[str, str]:
+    """Store an authenticated payload and sidecar, removing partial files on error."""
+    output_dir = Path(current_app.config["PAYLOAD_OUTPUT_DIR"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    download_name = payload_fields.get("download_name")
+    if not isinstance(download_name, str):
+        download_name = "recovered-payload.bin"
+    download_name = protocol_service.safe_filename(download_name)
+    claimed_mime = payload_fields.get("declared_mime")
+    preview_allowed = (
+        payload_fields.get("preview_allowed") is True
+        and isinstance(claimed_mime, str)
+        and claimed_mime in _PREVIEW_MIME_TYPES
+    )
+    serve_mime = claimed_mime if preview_allowed else "application/octet-stream"
+
+    for _ in range(5):
+        payload_id = secrets.token_urlsafe(16)
+        payload_path = output_dir / f"{payload_id}.bin"
+        sidecar_path = output_dir / f"{payload_id}.json"
+        payload_url = url_for("web.download_payload", payload_id=payload_id)
+        payload_created = False
+        sidecar_created = False
+        try:
+            with payload_path.open("xb") as payload_file:
+                payload_created = True
+                payload_file.write(payload_bytes)
+            with sidecar_path.open("x", encoding="utf-8") as sidecar_file:
+                sidecar_created = True
+                json.dump(
+                    {
+                        "download_name": download_name,
+                        "serve_mime": serve_mime,
+                        "preview_allowed": preview_allowed,
+                    },
+                    sidecar_file,
+                    separators=(",", ":"),
+                )
+                sidecar_file.write("\n")
+            return payload_id, payload_url
+        except FileExistsError:
+            if payload_created:
+                payload_path.unlink(missing_ok=True)
+            if sidecar_created:
+                sidecar_path.unlink(missing_ok=True)
+        except BaseException:
+            if payload_created:
+                payload_path.unlink(missing_ok=True)
+            if sidecar_created:
+                sidecar_path.unlink(missing_ok=True)
+            raise
+    raise OSError("could not allocate a recovered payload ID")
+
+
+@web.get("/payload/<payload_id>")
+def download_payload(payload_id: str) -> Response | tuple[Response, int]:
+    """Serve a recovered payload with MIME and browser-rendering safeguards."""
+    if _STEGO_ID.fullmatch(payload_id) is None:
+        return _error("payload file not found", 404)
+    output_dir = Path(current_app.config["PAYLOAD_OUTPUT_DIR"])
+    payload_path = output_dir / f"{payload_id}.bin"
+    sidecar_path = output_dir / f"{payload_id}.json"
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return _error("payload file not found", 404)
+    if not isinstance(sidecar, dict) or not payload_path.is_file():
+        return _error("payload file not found", 404)
+
+    candidate_mime = sidecar.get("serve_mime")
+    preview_allowed = (
+        sidecar.get("preview_allowed") is True
+        and isinstance(candidate_mime, str)
+        and candidate_mime in _PREVIEW_MIME_TYPES
+    )
+    serve_mime = candidate_mime if preview_allowed else "application/octet-stream"
+    claimed_name = sidecar.get("download_name")
+    if not isinstance(claimed_name, str):
+        claimed_name = "recovered-payload.bin"
+    download_name = protocol_service.safe_filename(claimed_name)
+    response = send_file(
+        payload_path,
+        mimetype=serve_mime,
+        as_attachment=not preview_allowed,
+        download_name=download_name,
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; img-src 'self'; media-src 'self'; sandbox"
+    )
+    return response
 
 
 def _save_carrier_upload(name: str, destination: Path) -> None:

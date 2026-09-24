@@ -38,6 +38,78 @@ class CarrierAccessError(ValueError):
     """A carrier backend could not supply the requested carrier units."""
 
 
+def _packed_lsb_range_transform(
+    region_start: int,
+    data: bytes,
+    bit_length: int,
+    lsb_count: int,
+) -> Callable[[int, np.ndarray], np.ndarray]:
+    """Return a chunk transform backed by packed bytes.
+
+    The first ``min(bit_length, len(data) * 8)`` bits come from ``data`` in
+    big-endian order. Missing trailing bits are zero. This lets a packet writer
+    include alignment padding without allocating a bit array for the packet.
+    """
+    region_start = _validate_non_negative_integer(region_start, "region_start")
+    if not isinstance(data, bytes):
+        raise TypeError("data must be bytes")
+    bit_length = _validate_non_negative_integer(bit_length, "bit_length")
+    lsb_count = _validate_lsb_count(lsb_count)
+    region_end = region_start + (bit_length + lsb_count - 1) // lsb_count
+    data_bit_length = len(data) * 8
+
+    def transform(chunk_start: int, units: np.ndarray) -> np.ndarray:
+        """Unpack only the packed data bits that overlap this chunk."""
+        units = _validate_carrier_units(units)
+        chunk_start = _validate_non_negative_integer(chunk_start, "chunk_start")
+        local = overlap_range(
+            chunk_start, chunk_start + units.size, region_start, region_end
+        )
+        if local is None:
+            return units
+
+        first_unit = chunk_start + local[0] - region_start
+        bit_start = first_unit * lsb_count
+        bit_end = min(
+            bit_length,
+            bit_start + (local[1] - local[0]) * lsb_count,
+        )
+        write_length = bit_end - bit_start
+        result = units.copy()
+        if lsb_count == 8 and write_length % 8 == 0:
+            field_start = local[0]
+            field_count = write_length // 8
+            first_data_byte = bit_start // 8
+            available_bytes = max(
+                0, min(field_count, len(data) - first_data_byte)
+            )
+            if available_bytes > 0:
+                result[field_start:field_start + available_bytes] = np.frombuffer(
+                    data[first_data_byte:first_data_byte + available_bytes],
+                    dtype=np.uint8,
+                )
+            if available_bytes < field_count:
+                result[field_start + available_bytes:field_start + field_count] = 0
+            return result
+
+        bits = np.zeros(write_length, dtype=np.uint8)
+        available = min(write_length, data_bit_length - bit_start)
+        if available > 0:
+            first_byte = bit_start // 8
+            last_byte = (bit_start + available + 7) // 8
+            packed = np.frombuffer(data[first_byte:last_byte], dtype=np.uint8)
+            unpacked = np.unpackbits(packed, bitorder="big")
+            bit_offset = bit_start % 8
+            bits[:available] = unpacked[bit_offset:bit_offset + available]
+
+        result[local[0]:local[1]] = write_lsb_bits(
+            result[local[0]:local[1]], bits, lsb_count
+        )
+        return result
+
+    return transform
+
+
 def lsb_range_transform(region_start: int, bit_sequence: np.ndarray, lsb_count: int) -> Callable[[int, np.ndarray], np.ndarray]:
     """Return a chunk transform that writes bits at a global carrier-unit range.
 
@@ -48,25 +120,10 @@ def lsb_range_transform(region_start: int, bit_sequence: np.ndarray, lsb_count: 
     region_start = _validate_non_negative_integer(region_start, "region_start")
     bit_sequence = _validate_bit_sequence(bit_sequence).copy()
     lsb_count = _validate_lsb_count(lsb_count)
-    region_end = region_start + (bit_sequence.size + lsb_count - 1) // lsb_count
-
-    def transform(chunk_start: int, units: np.ndarray) -> np.ndarray:
-        """Write the portion of the bit sequence that overlaps this chunk."""
-        units = _validate_carrier_units(units)
-        chunk_start = _validate_non_negative_integer(chunk_start, "chunk_start")
-        local = overlap_range(chunk_start, chunk_start + units.size, region_start, region_end)
-        if local is None:
-            return units
-        first_unit = chunk_start + local[0] - region_start
-        bit_start = first_unit * lsb_count
-        bit_end = min(bit_sequence.size, bit_start + (local[1] - local[0]) * lsb_count)
-        result = units.copy()
-        result[local[0]:local[1]] = write_lsb_bits(
-            result[local[0]:local[1]], bit_sequence[bit_start:bit_end], lsb_count
-        )
-        return result
-
-    return transform
+    packed_bits = np.packbits(bit_sequence, bitorder="big").tobytes()
+    return _packed_lsb_range_transform(
+        region_start, packed_bits, int(bit_sequence.size), lsb_count
+    )
 
 
 def overlap_range(chunk_start: int, chunk_end: int, region_start: int, region_end: int) -> tuple[int, int] | None:

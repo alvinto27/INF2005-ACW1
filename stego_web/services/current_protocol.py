@@ -1,6 +1,5 @@
 """Adapt the current masked-media protocol to byte-oriented Flask requests."""
 
-import base64
 import mimetypes
 import re
 from dataclasses import dataclass
@@ -158,8 +157,8 @@ class CurrentProtocolService:
         sender_public_key_pem: bytes,
         receiver_private_key_pem: bytes,
         receiver_key_password: str,
-    ) -> dict[str, object]:
-        """Verify a file-backed current-protocol carrier and return its report."""
+    ) -> tuple[dict[str, object], bytes | None]:
+        """Verify a carrier and return its report plus authenticated payload bytes."""
         file_size = carrier_path.stat().st_size
         try:
             media_type, _ = self.detect_carrier(carrier_path)
@@ -172,11 +171,17 @@ class CurrentProtocolService:
                 "receiver private key",
             )
         except (OSError, TypeError, ValueError) as error:
-            return self._failed_report(file_size, str(error))
+            return self._failed_report(file_size, str(error)), None
 
         verifier = verify_png if media_type == "image" else verify_wav
         result = verifier(carrier_path, sender_public_key, receiver_private_key)
-        return self._verification_report(result, media_type, file_size)
+        report = self._verification_report(result, media_type, file_size)
+        payload_bytes = (
+            result.payload.user_payload
+            if result.verdict == "Authentic" and result.payload is not None
+            else None
+        )
+        return report, payload_bytes
 
     @staticmethod
     def payload_record(payload: PayloadRecord) -> dict[str, object]:
@@ -238,7 +243,7 @@ class CurrentProtocolService:
         claimed_name = metadata.get("name") if metadata_valid else None
         sniffed_mime = self._sniff_payload_mime(payload.user_payload)
         type_agrees = self._type_agrees(declared_mime, sniffed_mime, payload.user_payload)
-        safe_name = self._safe_filename(claimed_name or "recovered-payload.bin")
+        safe_name = self.safe_filename(claimed_name or "recovered-payload.bin")
         preview_allowed = bool(
             type_agrees and declared_mime in _PREVIEW_MIME_TYPES
         )
@@ -247,7 +252,6 @@ class CurrentProtocolService:
             "metadata": metadata if metadata_valid else {},
             "metadata_raw": raw_metadata,
             "metadata_valid": metadata_valid,
-            "user_payload_base64": base64.b64encode(payload.user_payload).decode("ascii"),
             "declared_mime": declared_mime,
             "sniffed_mime": sniffed_mime,
             "type_agrees": type_agrees,
@@ -342,7 +346,7 @@ class CurrentProtocolService:
         if _MIME_TYPE.fullmatch(mime) is None:
             raise ValueError("payload MIME type must look like type/subtype")
         claimed_name = self._metadata_value(payload_name, "payload name")
-        name = self._safe_filename(claimed_name)
+        name = self.safe_filename(claimed_name)
         custom, valid = self._parse_metadata(extra_metadata)
         if extra_metadata.strip() and not valid:
             raise ValueError("additional metadata must use key=value entries separated by semicolons")
@@ -387,7 +391,7 @@ class CurrentProtocolService:
         return result, True
 
     @staticmethod
-    def _safe_filename(name: str) -> str:
+    def safe_filename(name: str) -> str:
         """Reduce an authenticated filename claim to a safe download basename."""
         if not isinstance(name, str):
             return "recovered-payload.bin"

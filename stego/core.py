@@ -10,6 +10,7 @@ import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import gcd
 from os import PathLike, fspath
 
 from cryptography.exceptions import InvalidTag
@@ -30,10 +31,14 @@ from .bits import (
     _validate_media_code,
     _validate_non_negative_integer,
     bit_sequence_to_bytes,
-    bytes_to_bit_sequence,
     read_lsb_bits,
 )
-from .carrier import ArrayCarrier, CarrierSource, lsb_range_transform
+from .carrier import (
+    DEFAULT_CHUNK_BYTES,
+    ArrayCarrier,
+    CarrierSource,
+    _packed_lsb_range_transform,
+)
 from .constants import (
     AEAD_NONCE_SIZE,
     BOOTSTRAP_LSB_COUNT,
@@ -158,15 +163,19 @@ class CarrierEncoding:
         self.layout = layout
         self.payload = payload
         self._media_hash = media_hash
-        packet_bits = bytes_to_bit_sequence(packet)
-        self._packet_bits = np.zeros(layout.footprint * layout.lsb_count, dtype=np.uint8)
-        self._packet_bits[:packet_bits.size] = packet_bits
-        self._envelope_bits = bytes_to_bit_sequence(envelope)
-        self._bootstrap_transform = lsb_range_transform(
-            BOOTSTRAP_START_UNIT, self._envelope_bits, BOOTSTRAP_LSB_COUNT
+        self._packet = packet
+        self._envelope = envelope
+        self._bootstrap_transform = _packed_lsb_range_transform(
+            BOOTSTRAP_START_UNIT,
+            envelope,
+            len(envelope) * 8,
+            BOOTSTRAP_LSB_COUNT,
         )
-        self._packet_transform = lsb_range_transform(
-            layout.start_unit, self._packet_bits, layout.lsb_count
+        self._packet_transform = _packed_lsb_range_transform(
+            layout.start_unit,
+            packet,
+            layout.footprint * layout.lsb_count,
+            layout.lsb_count,
         )
         self._rehash = _new_masked_hasher(media_code, layout, fixed_byte_count)
         self._next_unit = 0
@@ -182,7 +191,7 @@ class CarrierEncoding:
         # separately by file backends from the same chunk read.
         self._rehash.update(units)
         chunk_end = chunk_start + int(units.size)
-        result = self._bootstrap_transform(chunk_start, units.copy())
+        result = self._bootstrap_transform(chunk_start, units)
         result = self._packet_transform(chunk_start, result)
         self._next_unit = chunk_end
         return result
@@ -349,18 +358,35 @@ def decode_carrier_source(source: CarrierSource, media_code: int, media_context:
     except ValueError as error:
         return _failure_result("Wrong Start Location", str(error))
     packet_bits_length = (layout.ciphertext_length + RSA_SIGNATURE_SIZE) * 8
+    packet_buffer = bytearray()
     try:
-        packet_units = source.read_units(layout.start_unit, layout.footprint)
-        all_bits = read_lsb_bits(
-            packet_units,
-            layout.footprint * layout.lsb_count,
-            layout.lsb_count,
+        unit_alignment = 8 // gcd(layout.lsb_count, 8)
+        chunk_units = max(
+            unit_alignment,
+            DEFAULT_CHUNK_BYTES // unit_alignment * unit_alignment,
         )
-        if np.any(all_bits[packet_bits_length:] != 0):
-            return _failure_result("Cannot Verify", "alignment padding must be zero")
-        packet = bit_sequence_to_bytes(all_bits[:packet_bits_length])
-        ciphertext = packet[:layout.ciphertext_length]
-        signature = packet[layout.ciphertext_length:]
+        packet_bit_offset = 0
+        for unit_offset in range(0, layout.footprint, chunk_units):
+            unit_count = min(chunk_units, layout.footprint - unit_offset)
+            units = source.read_units(layout.start_unit + unit_offset, unit_count)
+            chunk_bits = read_lsb_bits(
+                units, unit_count * layout.lsb_count, layout.lsb_count
+            )
+            packet_bit_count = min(
+                chunk_bits.size, packet_bits_length - packet_bit_offset
+            )
+            if np.any(chunk_bits[packet_bit_count:] != 0):
+                return _failure_result(
+                    "Cannot Verify", "alignment padding must be zero"
+                )
+            packet_buffer.extend(
+                np.packbits(
+                    chunk_bits[:packet_bit_count], bitorder="big"
+                ).tobytes()
+            )
+            packet_bit_offset += packet_bit_count
+        ciphertext = bytes(packet_buffer[:layout.ciphertext_length])
+        signature = bytes(packet_buffer[layout.ciphertext_length:])
     except ValueError as error:
         return _failure_result("Cannot Verify", str(error))
     signing_input = encode_signing_input(
@@ -368,6 +394,7 @@ def decode_carrier_source(source: CarrierSource, media_code: int, media_context:
     )
     if not verify_signature(signing_input, signature, sender_public_key):
         return _failure_result("Signature Invalid", "RSA-PSS signature verification failed")
+    del packet_buffer, signature
     try:
         record_bytes = aead_open(
             fields.session_key,

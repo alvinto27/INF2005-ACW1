@@ -25,6 +25,7 @@ For repository structure and implementation entry points, see [Agent Navigation 
 - [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md) — historical protocol version 2 design; stages 0 through 6b complete and 6c cancelled; its deferred decision 14 is superseded by the Streaming Carrier Plan. Its wire-format claims are superseded by the reduction record; its field-binding audit and accepted trade-offs remain useful.
 - [Protocol Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md) — what each completed stage of the version 2 plan changed, what was measured, and what it taught. The plan holds intent; this holds outcome.
 - [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) — **library and web-boundary refactors implemented.** The carrier backend interface, two-pass encoding, targeted-read verification, streamed WAV backend, chunk-size measurements, memory claim, deleted whole-file WAV cap, and known limits.
+- [Payload Handling](PAYLOAD-HANDLING.md) — data flow and measured memory changes for packed packet handling and URL-based recovered-payload downloads, including plaintext-at-rest risk and deferred work.
 - [Work Not Built](WORK-NOT-BUILT.md#work-not-built) — assignment work that remains to be built, demonstrated, or assembled.
 - [KISS Reduction Specification](REDUCTION-SPEC.md) — the approved reduction goals and constraints.
 - [KISS Reduction Record](KISS-REDUCTION-RECORD.md) — the committed reduction outcome, measurements, decisions, and lessons.

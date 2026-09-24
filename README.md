@@ -54,14 +54,17 @@ key, and the intended receiver private key/password. The receiver bootstrap
 recovers the start unit, LSB count, record length, and AES session material.
 The original cover and the previous shared start-location secret are not inputs.
 
-Authenticated payload files can be downloaded after verification. The browser
-previews supported text, PNG, JPEG, WAV, and MP3 payloads only when the signed
-MIME claim agrees with the recovered bytes.
+After an `Authentic` result, the server stores the recovered payload as a
+plaintext file in `instance/recovered-payloads` and returns a download URL. The
+browser previews text, PNG, JPEG, WAV, and MP3 only when the signed MIME claim
+agrees with the recovered bytes. The verify JSON returns a URL, not payload
+bytes. These recovered files stay without an expiry. Delete them manually. Anyone
+who can read the server's instance folder can read the recovered payloads.
 
 The local server accepts requests up to 256 MiB. It stores encoded PNG and WAV
 files in `instance/stego-outputs` and returns a download URL instead of sending
-the media as base64. The files stay in that folder without an expiry. Delete
-them manually when they are no longer needed.
+the media as base64. These files also stay without an expiry. Delete them
+manually when they are no longer needed.
 
 ## Protocol API
 
