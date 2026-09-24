@@ -19,8 +19,8 @@ from stego import (
     encode_png,
     encode_wav,
     generate_rsa_keypair,
-    load_pcm_wav_from_path,
-    load_png_from_path,
+    PngCarrier,
+    read_pcm_wav_info,
     max_user_payload_length,
     preserved_bit_count,
     verify_png,
@@ -106,7 +106,7 @@ class CurrentProtocolService:
             input_path = Path(temporary) / f"cover.{suffix}"
             output_path = Path(temporary) / f"stego.{suffix}"
             input_path.write_bytes(cover_bytes)
-            validator = load_png_from_path if media_type == "image" else load_pcm_wav_from_path
+            validator = PngCarrier if media_type == "image" else read_pcm_wav_info
             validator(input_path)
             sender_private_key = self._load_private_key(
                 sender_private_key_pem, sender_key_password, "sender private key"

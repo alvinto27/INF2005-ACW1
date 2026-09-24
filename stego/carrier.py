@@ -11,7 +11,14 @@ from collections.abc import Callable, Iterator
 
 import numpy as np
 
-from .bits import _validate_carrier_units, _validate_non_negative_integer, _validate_positive_integer
+from .bits import (
+    _validate_bit_sequence,
+    _validate_carrier_units,
+    _validate_lsb_count,
+    _validate_non_negative_integer,
+    _validate_positive_integer,
+    write_lsb_bits,
+)
 
 # Target size of one working chunk of physical carrier data, in bytes.
 #
@@ -29,6 +36,37 @@ DEFAULT_CHUNK_BYTES = 1024 * 1024
 
 class CarrierAccessError(ValueError):
     """A carrier backend could not supply the requested carrier units."""
+
+
+def lsb_range_transform(region_start: int, bit_sequence: np.ndarray, lsb_count: int) -> Callable[[int, np.ndarray], np.ndarray]:
+    """Return a chunk transform that writes bits at a global carrier-unit range.
+
+    ``bit_sequence`` starts at ``region_start`` and is written into the low
+    ``lsb_count`` bits of each unit. Chunks may begin or end inside that range;
+    their boundaries do not change the resulting carrier units.
+    """
+    region_start = _validate_non_negative_integer(region_start, "region_start")
+    bit_sequence = _validate_bit_sequence(bit_sequence).copy()
+    lsb_count = _validate_lsb_count(lsb_count)
+    region_end = region_start + (bit_sequence.size + lsb_count - 1) // lsb_count
+
+    def transform(chunk_start: int, units: np.ndarray) -> np.ndarray:
+        """Write the portion of the bit sequence that overlaps this chunk."""
+        units = _validate_carrier_units(units)
+        chunk_start = _validate_non_negative_integer(chunk_start, "chunk_start")
+        local = overlap_range(chunk_start, chunk_start + units.size, region_start, region_end)
+        if local is None:
+            return units
+        first_unit = chunk_start + local[0] - region_start
+        bit_start = first_unit * lsb_count
+        bit_end = min(bit_sequence.size, bit_start + (local[1] - local[0]) * lsb_count)
+        result = units.copy()
+        result[local[0]:local[1]] = write_lsb_bits(
+            result[local[0]:local[1]], bit_sequence[bit_start:bit_end], lsb_count
+        )
+        return result
+
+    return transform
 
 
 def overlap_range(chunk_start: int, chunk_end: int, region_start: int, region_end: int) -> tuple[int, int] | None:

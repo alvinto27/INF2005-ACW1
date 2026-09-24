@@ -2,8 +2,8 @@
 
 The protocol functions here work on a ``CarrierSource``. They decide which
 carrier units change and in what order the protocol steps run; the carrier
-backend only supplies units. ``encode_carrier`` and ``decode_carrier`` keep the
-original NumPy-array API by wrapping the array in an ``ArrayCarrier``.
+backend only supplies units. Public file wrappers open the matching media
+backend and use its media code and context.
 """
 
 import os
@@ -32,16 +32,13 @@ from .bits import (
     bit_sequence_to_bytes,
     bytes_to_bit_sequence,
     read_lsb_bits,
-    write_lsb_bits,
 )
-from .carrier import ArrayCarrier, CarrierSource, overlap_range
+from .carrier import ArrayCarrier, CarrierSource, lsb_range_transform
 from .constants import (
     AEAD_NONCE_SIZE,
-    AUDIO_MEDIA_CODE,
     BOOTSTRAP_LSB_COUNT,
     BOOTSTRAP_START_UNIT,
     GCM_TAG_SIZE,
-    IMAGE_MEDIA_CODE,
     MEDIA_ID_SIZE,
     MEDIA_PREFIXES,
     NONCE_SIZE,
@@ -69,16 +66,7 @@ from .layout import (
     minimum_carrier_units,
     preserved_bit_count,
 )
-from .media import (
-    UnSupportedFileType,
-    WavCarrier,
-    carrier_to_rgb_array,
-    encode_png_media_context,
-    encode_wav_media_context,
-    load_png_from_path,
-    rgb_array_to_carrier,
-    save_rgb_png_to_path,
-)
+from .media import PngCarrier, UnSupportedFileType, WavCarrier
 from .packet import (
     PayloadRecord,
     parse_payload,
@@ -173,6 +161,12 @@ class CarrierEncoding:
         self._packet_bits = np.zeros(layout.footprint * layout.lsb_count, dtype=np.uint8)
         self._packet_bits[:packet_bits.size] = packet_bits
         self._envelope_bits = bytes_to_bit_sequence(envelope)
+        self._bootstrap_transform = lsb_range_transform(
+            BOOTSTRAP_START_UNIT, self._envelope_bits, BOOTSTRAP_LSB_COUNT
+        )
+        self._packet_transform = lsb_range_transform(
+            layout.start_unit, self._packet_bits, layout.lsb_count
+        )
         self._rehash = _new_masked_hasher(media_code, layout)
         self._next_unit = 0
 
@@ -186,18 +180,8 @@ class CarrierEncoding:
         # carrier that changed after the first pass.
         self._rehash.update(units)
         chunk_end = chunk_start + int(units.size)
-        result = units.copy()
-        layout = self.layout
-        local = overlap_range(chunk_start, chunk_end, BOOTSTRAP_START_UNIT, BOOTSTRAP_START_UNIT + layout.bootstrap_span)
-        if local is not None:
-            first_unit = chunk_start + local[0] - BOOTSTRAP_START_UNIT
-            bits = self._envelope_bits[first_unit * BOOTSTRAP_LSB_COUNT:(first_unit + local[1] - local[0]) * BOOTSTRAP_LSB_COUNT]
-            result[local[0]:local[1]] = write_lsb_bits(result[local[0]:local[1]], bits, BOOTSTRAP_LSB_COUNT)
-        local = overlap_range(chunk_start, chunk_end, layout.start_unit, layout.start_unit + layout.footprint)
-        if local is not None:
-            first_unit = chunk_start + local[0] - layout.start_unit
-            bits = self._packet_bits[first_unit * layout.lsb_count:(first_unit + local[1] - local[0]) * layout.lsb_count]
-            result[local[0]:local[1]] = write_lsb_bits(result[local[0]:local[1]], bits, layout.lsb_count)
+        result = self._bootstrap_transform(chunk_start, units.copy())
+        result = self._packet_transform(chunk_start, result)
         self._next_unit = chunk_end
         return result
 
@@ -434,23 +418,26 @@ def encode_png(input_path: str | bytes | PathLike[str], output_path: str | bytes
     """Encode a signed packet into an RGB PNG file and save it."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
-    image = load_png_from_path(input_path)
-    carrier = rgb_array_to_carrier(image)
-    context = encode_png_media_context(image.shape, carrier.size)
-    encoded, layout, payload = encode_carrier(carrier, IMAGE_MEDIA_CODE, context, signing_private_key, receiver_public_key, start_unit, lsb_count, user_payload, metadata)
-    save_rgb_png_to_path(carrier_to_rgb_array(encoded, image.shape), output_path)
-    return layout, payload
+    source = PngCarrier(input_path)
+    encoding = prepare_carrier_encoding(
+        source, source.media_code, source.media_context, signing_private_key,
+        receiver_public_key, start_unit, lsb_count, user_payload, metadata,
+    )
+    source.rewrite_to_path(output_path, encoding.embed_chunk)
+    encoding.finish()
+    return encoding.layout, encoding.payload
 
 
 def verify_png(input_path: str | bytes | PathLike[str], sender_public_key: rsa.RSAPublicKey, receiver_private_key: rsa.RSAPrivateKey) -> VerificationResult:
     """Verify an RGB PNG using sender and receiver keys."""
     try:
-        image = load_png_from_path(input_path)
-        carrier = rgb_array_to_carrier(image)
-        context = encode_png_media_context(image.shape, carrier.size)
+        source = PngCarrier(input_path)
     except (OSError, ValueError, UnSupportedFileType) as error:
         return _failure_result("Cannot Verify", str(error))
-    return decode_carrier(carrier, IMAGE_MEDIA_CODE, context, sender_public_key, receiver_private_key)
+    return decode_carrier_source(
+        source, source.media_code, source.media_context,
+        sender_public_key, receiver_private_key,
+    )
 
 
 def _remove_incomplete_output(output_path: str | bytes | PathLike[str]) -> None:
@@ -471,8 +458,10 @@ def encode_wav(input_path: str | bytes | PathLike[str], output_path: str | bytes
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
     source = WavCarrier(input_path)
-    context = encode_wav_media_context(source.info, source.total_units)
-    encoding = prepare_carrier_encoding(source, AUDIO_MEDIA_CODE, context, signing_private_key, receiver_public_key, start_unit, lsb_count, user_payload, metadata)
+    encoding = prepare_carrier_encoding(
+        source, source.media_code, source.media_context, signing_private_key,
+        receiver_public_key, start_unit, lsb_count, user_payload, metadata,
+    )
     try:
         source.rewrite_to_path(output_path, encoding.embed_chunk)
         encoding.finish()
@@ -490,7 +479,9 @@ def verify_wav(input_path: str | bytes | PathLike[str], sender_public_key: rsa.R
     """
     try:
         source = WavCarrier(input_path)
-        context = encode_wav_media_context(source.info, source.total_units)
     except (OSError, ValueError) as error:
         return _failure_result("Cannot Verify", str(error))
-    return decode_carrier_source(source, AUDIO_MEDIA_CODE, context, sender_public_key, receiver_private_key)
+    return decode_carrier_source(
+        source, source.media_code, source.media_context,
+        sender_public_key, receiver_private_key,
+    )

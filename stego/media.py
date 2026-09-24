@@ -1,9 +1,7 @@
 """Read and write strict RGB PNG and uncompressed PCM WAV carriers.
 
-PNG images are loaded whole, because Pillow decodes the whole image. PCM WAV
-files are read in bounded chunks by ``WavCarrier``. ``WavPcmData`` and
-``load_pcm_wav_from_path`` still load a whole WAV and keep the
-``MAX_WAV_FRAME_BYTES`` allocation guard.
+PNG images are decoded whole by Pillow, then exposed through bounded chunks by
+``PngCarrier``. PCM WAV files are read in bounded chunks by ``WavCarrier``.
 """
 
 import struct
@@ -16,20 +14,21 @@ import numpy as np
 from PIL import Image
 
 from .bits import (
-    _require_bytes,
     _validate_carrier_units,
     _validate_non_negative_integer,
     _validate_positive_integer,
 )
 from .carrier import (
     DEFAULT_CHUNK_BYTES,
+    ArrayCarrier,
     CarrierAccessError,
     CarrierSource,
     _validate_transformed_units,
     _validate_unit_range,
 )
 from .constants import (
-    MAX_WAV_FRAME_BYTES,
+    AUDIO_MEDIA_CODE,
+    IMAGE_MEDIA_CODE,
     PNG_CARRIER_MODE,
     PNG_MEDIA_CONTEXT_FORMAT,
     RGB_CHANNEL_COUNT,
@@ -134,6 +133,51 @@ def save_rgb_png_to_path(image_array: np.ndarray, output_path: str | bytes | Pat
         raise ValueError("could not save RGB PNG") from error
 
 
+class PngCarrier(CarrierSource):
+    """Read a strict RGB PNG through bounded carrier-unit chunks.
+
+    Pillow decodes the complete image when this backend opens the file. The
+    backend keeps the decoded carrier privately, so memory use grows with the
+    whole image even though range reads and iteration return bounded chunks.
+    """
+
+    def __init__(self, path: str | bytes | PathLike[str], chunk_units: int = DEFAULT_CHUNK_BYTES) -> None:
+        """Load and check one RGB PNG, then choose the carrier chunk size."""
+        chunk_units = _validate_positive_integer(chunk_units, "chunk_units")
+        image = load_png_from_path(path)
+        self._shape = image.shape
+        self._carrier = ArrayCarrier(rgb_array_to_carrier(image), chunk_units)
+        self._media_context = encode_png_media_context(self._shape, self._carrier.total_units)
+
+    @property
+    def total_units(self) -> int:
+        """Return the number of RGB channel values in the image."""
+        return self._carrier.total_units
+
+    @property
+    def media_code(self) -> int:
+        """Return the PNG protocol media code."""
+        return IMAGE_MEDIA_CODE
+
+    @property
+    def media_context(self) -> bytes:
+        """Return the PNG dimensions encoded for the protocol media context."""
+        return self._media_context
+
+    def read_units(self, start_unit: int, count: int) -> np.ndarray:
+        """Return a copy of the requested carrier-unit range."""
+        return self._carrier.read_units(start_unit, count)
+
+    def iter_chunks(self) -> Iterator[np.ndarray]:
+        """Yield every carrier unit once in bounded chunks."""
+        yield from self._carrier.iter_chunks()
+
+    def rewrite_to_path(self, output_path: str | bytes | PathLike[str], transform: Callable[[int, np.ndarray], np.ndarray]) -> None:
+        """Save the image after passing each carrier chunk through ``transform``."""
+        rewritten = self._carrier.rewrite(transform)
+        save_rgb_png_to_path(carrier_to_rgb_array(rewritten, self._shape), output_path)
+
+
 def _validate_wav_format(channels: int, sample_width: int, frame_rate: int, frame_count: int) -> tuple[int, int, int, int]:
     """Check and normalise PCM WAV format values."""
     channels = _validate_positive_integer(channels, "channels")
@@ -170,108 +214,13 @@ class WavPcmInfo:
         return self.channels * self.frame_count
 
 
-@dataclass(frozen=True)
-class WavPcmData:
-    """Keep checked PCM WAV settings together with their frame bytes."""
-    channels: int
-    sample_width: int
-    frame_rate: int
-    frame_count: int
-    frame_bytes: bytes
-
-    def __post_init__(self) -> None:
-        """Check and normalise all PCM WAV fields and frame bytes."""
-        channels, sample_width, frame_rate, frame_count = _validate_wav_format(
-            self.channels, self.sample_width, self.frame_rate, self.frame_count
-        )
-        frame_bytes = _require_bytes(self.frame_bytes, "frame_bytes")
-        expected = channels * sample_width * frame_count
-        if expected > MAX_WAV_FRAME_BYTES or len(frame_bytes) != expected:
-            raise ValueError("frame_bytes length does not match WAV parameters")
-        object.__setattr__(self, "channels", channels)
-        object.__setattr__(self, "sample_width", sample_width)
-        object.__setattr__(self, "frame_rate", frame_rate)
-        object.__setattr__(self, "frame_count", frame_count)
-        object.__setattr__(self, "frame_bytes", bytes(frame_bytes))
-
-
-def load_pcm_wav_from_path(path: str | bytes | PathLike[str]) -> WavPcmData:
-    """Load and check uncompressed PCM WAV data from a file path."""
-    if not isinstance(path, (str, bytes, PathLike)):
-        raise TypeError("path must be a filesystem path")
-    try:
-        with wave.open(fspath(path), "rb") as wav_file:
-            channels = wav_file.getnchannels()
-            sample_width = wav_file.getsampwidth()
-            frame_rate = wav_file.getframerate()
-            frame_count = wav_file.getnframes()
-            if wav_file.getcomptype() != "NONE":
-                raise ValueError("WAV must use uncompressed PCM")
-            if frame_count * channels * sample_width > MAX_WAV_FRAME_BYTES:
-                raise ValueError("decoded WAV frame bytes exceed the version-1 limit")
-            frame_bytes = wav_file.readframes(frame_count)
-            return WavPcmData(channels, sample_width, frame_rate, frame_count, frame_bytes)
-    except ValueError:
-        raise
-    except (OSError, EOFError, wave.Error, struct.error) as error:
-        raise ValueError("invalid or unreadable uncompressed PCM WAV") from error
-
-
-def wav_frame_bytes_to_carrier(frame_bytes: bytes, sample_width: int) -> np.ndarray:
-    """Copy one uint8 carrier unit per PCM sample from its least significant byte."""
-    frame_bytes = _require_bytes(frame_bytes, "frame_bytes")
-    sample_width = _validate_positive_integer(sample_width, "sample_width")
-    if sample_width not in range(1, 5):
-        raise ValueError("sample_width must be between 1 and 4 bytes")
-    if len(frame_bytes) % sample_width:
-        raise ValueError("frame_bytes length must be a multiple of sample_width")
-    return np.frombuffer(frame_bytes, dtype=np.uint8)[::sample_width].copy()
-
-
-def encode_wav_media_context(wav_data: WavPcmData | WavPcmInfo, carrier_unit_count: int | None = None) -> bytes:
-    """Make the WAV context that ties its format and frame settings to the signature.
-
-    ``wav_data`` may be whole-file ``WavPcmData`` or header-only ``WavPcmInfo``;
-    both give the same bytes for the same WAV format and frame count.
-    """
-    if not isinstance(wav_data, (WavPcmData, WavPcmInfo)):
-        raise TypeError("wav_data must be a WavPcmData or WavPcmInfo")
+def encode_wav_media_context(wav_data: WavPcmInfo) -> bytes:
+    """Make the WAV context that ties header format and frame settings to the signature."""
+    if not isinstance(wav_data, WavPcmInfo):
+        raise TypeError("wav_data must be a WavPcmInfo")
     if wav_data.channels > 0xFFFF or wav_data.sample_width > 0xFF or wav_data.frame_rate > 0xFFFFFFFF or wav_data.frame_count > 0xFFFFFFFFFFFFFFFF:
         raise ValueError("WAV values do not fit the media context")
-    # WavPcmData guarantees len(frame_bytes) == channels * sample_width * frame_count.
-    sample_count = wav_data.channels * wav_data.frame_count
-    if carrier_unit_count is not None and carrier_unit_count != sample_count:
-        raise ValueError("carrier count does not match WAV sample count")
     return struct.pack(WAV_MEDIA_CONTEXT_FORMAT, wav_data.channels, wav_data.sample_width, wav_data.frame_rate, wav_data.frame_count)
-
-
-def wav_data_with_carrier(wav_data: WavPcmData, carrier_units: np.ndarray) -> WavPcmData:
-    """Return WAV data with replacement carrier units and the same format settings."""
-    if not isinstance(wav_data, WavPcmData):
-        raise TypeError("wav_data must be a WavPcmData")
-    carrier_units = _validate_carrier_units(carrier_units)
-    sample_count = len(wav_data.frame_bytes) // wav_data.sample_width
-    if carrier_units.size != sample_count:
-        raise ValueError("carrier length does not match WAV sample count")
-    frame_bytes = bytearray(wav_data.frame_bytes)
-    frame_bytes[0::wav_data.sample_width] = carrier_units.tobytes()
-    return WavPcmData(wav_data.channels, wav_data.sample_width, wav_data.frame_rate, wav_data.frame_count, bytes(frame_bytes))
-
-
-def save_pcm_wav_to_path(wav_data: WavPcmData, output_path: str | bytes | PathLike[str]) -> None:
-    """Save checked PCM WAV data to a file path."""
-    if not isinstance(wav_data, WavPcmData):
-        raise TypeError("wav_data must be a WavPcmData")
-    if not isinstance(output_path, (str, bytes, PathLike)):
-        raise TypeError("output_path must be a filesystem path")
-    try:
-        with wave.open(fspath(output_path), "wb") as wav_file:
-            wav_file.setnchannels(wav_data.channels)
-            wav_file.setsampwidth(wav_data.sample_width)
-            wav_file.setframerate(wav_data.frame_rate)
-            wav_file.writeframes(wav_data.frame_bytes)
-    except (OSError, EOFError, wave.Error, struct.error, ValueError) as error:
-        raise ValueError("could not save uncompressed PCM WAV") from error
 
 
 _WAV_READ_ERRORS = (OSError, EOFError, wave.Error, struct.error)
@@ -334,6 +283,16 @@ class WavCarrier(CarrierSource):
     def total_units(self) -> int:
         """Return the number of PCM samples in the file."""
         return self.info.sample_count
+
+    @property
+    def media_code(self) -> int:
+        """Return the WAV protocol media code."""
+        return AUDIO_MEDIA_CODE
+
+    @property
+    def media_context(self) -> bytes:
+        """Return the WAV format and frame values encoded for the protocol."""
+        return encode_wav_media_context(self.info)
 
     def _open(self) -> wave.Wave_read:
         """Open the WAV again and check that its header has not changed."""
