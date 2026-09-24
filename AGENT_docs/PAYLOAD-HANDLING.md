@@ -105,6 +105,33 @@ unit bits. The encoder's temporary expansion is bounded by
 `chunk_units x lsb_count`; for `k = 8`, the packed writer can copy byte fields
 directly without making a per-bit array.
 
+## PNG carrier memory
+
+`PngCarrier` keeps one read-only decoded pixel buffer (about one decoded image
+size, D) after loading. Its RGBA alpha channel is a view, not a second image-sized
+copy. Reads and protocol chunks are bounded. A rewrite allocates one output
+image, so it uses about 2 x D image data while both source and output are live.
+Loading copies public Pillow row bands into one backing buffer. Each temporary
+band is limited to about 8 MiB, so no second full-image byte string is built.
+Saving uses the output array directly.
+
+The large-image measurements used the same 4341 x 26191 RGBA PNG (about 434 MiB
+decoded) on the same machine. Encode and verify ran in separate processes. The
+old figures are the `HEAD` reference; new figures are from this implementation.
+Peak RSS includes Python and native Pillow allocations and is not a memory
+limit or guarantee.
+
+| Operation | Old time | New time | Old peak RSS | New peak RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Encode | 8.1 s | 10.2 s | 1,571 MiB | 947 MiB |
+| Verify | 1.9 s | 2.2 s | 1,350 MiB | 947 MiB |
+
+A separate old/new check used fixed keys and the same payload on RGB and RGBA
+covers. Both implementations encoded both covers. Since encoding uses random
+nonce material, the encoded files were not compared byte-for-byte. Instead,
+full carrier-unit reads and identity-rewrite PNG files matched exactly for both
+modes.
+
 ## Deferred work
 
 These items were not implemented:

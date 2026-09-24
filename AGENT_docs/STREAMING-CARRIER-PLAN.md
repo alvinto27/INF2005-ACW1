@@ -21,7 +21,7 @@ file -> carrier backend -> bounded range and chunk reads -> protocol
 | Medium | Backend | Why |
 | --- | --- | --- |
 | WAV | `WavCarrier` (streamed) | Reads whole PCM frames on demand. No part of it grows with the carrier size. |
-| PNG | `PngCarrier` (file-backed) | Pillow decodes the image; bounded reads and rewrites keep protocol operations behind the backend. |
+| PNG | `PngCarrier` (file-backed) | Keeps one read-only pixel buffer (about 1 x decoded image size, D). Bounded reads avoid full RGB and alpha copies; rewrite adds one output image (about 2 x D total). |
 
 PNG and WAV use the same protocol core through file-backed carriers. The internal `CarrierSource` abstraction is not a public route for whole-carrier arrays.
 
@@ -155,7 +155,7 @@ The whole-file WAV helpers `WavPcmData` and `load_pcm_wav_from_path` and the `MA
 
 | Limit | Detail |
 | --- | --- |
-| Web request bound | Flask accepts requests up to 256 MiB. Carrier uploads are saved to temporary files, and encoded carriers are written to persistent output files instead of being returned as base64. PNG decoding still uses Pillow's full-image decode; its working memory grows with image dimensions. See [section 12](#12-web-boundary-follow-up). |
+| Web request bound | Flask accepts requests up to 256 MiB. Carrier uploads are saved to temporary files, and encoded carriers are written to persistent output files instead of being returned as base64. PNG still requires Pillow to decode the full image, so one decoded image remains resident. Rewriting adds one output image. The raw pixel encoder limits loading to about two image-sized buffers; measured large-image RSS is in [Payload Handling](PAYLOAD-HANDLING.md#png-carrier-memory). See [section 12](#12-web-boundary-follow-up). |
 | Verification race | If the file changes between the targeted reads and the hash pass, the verdict can mix two versions. A reopened header is checked, but frame data is not taken as a snapshot. A local attacker who can write to the file during verification is out of scope. |
 | Packet-proportional cost | See [section 9](#9-memory-claim). |
 | WAV sample high bytes were not hashed by the earlier format | **Closed by version 3.** Every non-LSB byte of each declared 16-, 24-, or 32-bit PCM sample enters the fixed-byte hash. Changing one gives `Tampered`. See the [v3 full media hash record](PROTOCOL-V3-FULL-MEDIA-HASH.md#2-version-3-media-hash-rule). |

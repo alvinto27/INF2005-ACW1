@@ -20,7 +20,6 @@ from .bits import (
 )
 from .carrier import (
     DEFAULT_CHUNK_BYTES,
-    ArrayCarrier,
     CarrierAccessError,
     CarrierSource,
     _validate_transformed_units,
@@ -73,8 +72,10 @@ def _validate_rgb_png_header(image_path: str | bytes | PathLike[str]) -> None:
         raise ValueError("unsupported PNG encoding")
 
 
-def load_png_from_path(image_path: str | bytes | PathLike[str]) -> np.ndarray:
-    """Load and check one single-frame 8-bit RGB or RGBA PNG from a file."""
+def _load_png_buffer_from_path(
+    image_path: str | bytes | PathLike[str],
+) -> tuple[memoryview, tuple[int, int, int]]:
+    """Load one checked PNG into a single decoded byte buffer."""
     if not isinstance(image_path, (str, bytes, PathLike)):
         raise TypeError("image_path must be a filesystem path")
     try:
@@ -87,7 +88,28 @@ def load_png_from_path(image_path: str | bytes | PathLike[str]) -> np.ndarray:
             if image.mode not in (PNG_CARRIER_MODE, PNG_ALPHA_CARRIER_MODE):
                 raise ValueError("PNG must be RGB or RGBA; palette and grayscale images are not supported")
             image.load()
-            return _validate_png_array(np.array(image, dtype=np.uint8, copy=True))
+            width, height = image.size
+            channels = RGB_CHANNEL_COUNT if image.mode == PNG_CARRIER_MODE else RGBA_CHANNEL_COUNT
+            if height < 1 or width < 1:
+                raise ValueError("image dimensions must be greater than zero")
+            # Copy public Pillow row bands into one full-image backing buffer.
+            # The temporary tobytes() result is limited to an 8 MiB band.
+            pixels = bytearray(height * width * channels)
+            rows_per_band = max(1, (8 * 1024 * 1024) // (width * channels))
+            offset = 0
+            for row_start in range(0, height, rows_per_band):
+                row_end = min(height, row_start + rows_per_band)
+                with image.crop((0, row_start, width, row_end)) as band:
+                    band_bytes = band.tobytes()
+                    band_size = len(band_bytes)
+                    pixels[offset:offset + band_size] = band_bytes
+                offset += band_size
+                del band_bytes
+            if offset != len(pixels):
+                raise ValueError("unreadable PNG image")
+            pixel_buffer = memoryview(pixels).toreadonly()
+            shape = (height, width, channels)
+        return pixel_buffer, shape
     except UnSupportedFileType:
         raise
     except ValueError:
@@ -102,10 +124,21 @@ def load_png_from_path(image_path: str | bytes | PathLike[str]) -> np.ndarray:
         raise ValueError("unreadable PNG image") from error
 
 
+def load_png_from_path(image_path: str | bytes | PathLike[str]) -> np.ndarray:
+    """Load and check one single-frame 8-bit RGB or RGBA PNG from a file."""
+    pixels, shape = _load_png_buffer_from_path(image_path)
+    return np.frombuffer(pixels, dtype=np.uint8).reshape(shape).copy()
+
+
 def rgb_array_to_carrier(image_array: np.ndarray) -> np.ndarray:
     """Flatten RGB channels from an RGB or RGBA image into carrier units."""
     image_array = _validate_png_array(image_array)
-    return np.array(image_array[:, :, :RGB_CHANNEL_COUNT], dtype=np.uint8, order="C", copy=True).reshape(-1).copy()
+    return np.array(
+        image_array[:, :, :RGB_CHANNEL_COUNT],
+        dtype=np.uint8,
+        order="C",
+        copy=True,
+    ).reshape(-1)
 
 
 def carrier_to_rgb_array(carrier_sequence: np.ndarray, shape: tuple[int, int, int]) -> np.ndarray:
@@ -158,26 +191,35 @@ def save_rgb_png_to_path(image_array: np.ndarray, output_path: str | bytes | Pat
 class PngCarrier(CarrierSource):
     """Read an RGB or RGBA PNG through bounded RGB carrier-unit chunks.
 
-    Pillow decodes the complete image when this backend opens the file. RGB
-    values form the carrier. RGBA alpha values are kept separately and are
-    never changed. Memory use grows with the complete decoded image.
+    The backend keeps one decoded byte buffer: about one image size (D) after
+    loading. Rewriting allocates one output image as well, for about 2 x D
+    image data. RGB values form the carrier. RGBA alpha is a read-only view and
+    is never changed.
     """
 
     def __init__(self, path: str | bytes | PathLike[str], chunk_units: int = DEFAULT_CHUNK_BYTES) -> None:
-        """Load and check one RGB or RGBA PNG, then choose the chunk size."""
+        """Load one PNG into a single backing buffer, then choose the chunk size."""
         chunk_units = _validate_positive_integer(chunk_units, "chunk_units")
-        image = load_png_from_path(path)
-        self._shape = image.shape
-        self._channel_count = image.shape[2]
-        self._alpha = image[:, :, 3].copy() if self._channel_count == RGBA_CHANNEL_COUNT else None
-        self._carrier = ArrayCarrier(rgb_array_to_carrier(image), chunk_units)
+        pixels, self._shape = _load_png_buffer_from_path(path)
+        self._channel_count = self._shape[2]
+        self._pixels = np.frombuffer(pixels, dtype=np.uint8).reshape(self._shape)
+        self._pixels_by_channel = self._pixels.reshape((-1, self._channel_count))
+        self._alpha = (
+            self._pixels_by_channel[:, RGB_CHANNEL_COUNT]
+            if self._channel_count == RGBA_CHANNEL_COUNT
+            else None
+        )
+        self._total_units = self._shape[0] * self._shape[1] * RGB_CHANNEL_COUNT
+        self._chunk_units = chunk_units
         self._pixels_per_chunk = max(1, chunk_units // RGB_CHANNEL_COUNT)
-        self._media_context = encode_png_media_context(self._shape, self._carrier.total_units)
+        self._media_context = encode_png_media_context(
+            self._shape, self._total_units
+        )
 
     @property
     def total_units(self) -> int:
         """Return the number of RGB channel values in the image."""
-        return self._carrier.total_units
+        return self._total_units
 
     @property
     def channel_count(self) -> int:
@@ -200,12 +242,27 @@ class PngCarrier(CarrierSource):
         return self._media_context
 
     def read_units(self, start_unit: int, count: int) -> np.ndarray:
-        """Return a copy of the requested carrier-unit range."""
-        return self._carrier.read_units(start_unit, count)
+        """Return a new writable array for the requested carrier-unit range."""
+        start_unit, count = _validate_unit_range(start_unit, count, self.total_units)
+        if count == 0:
+            return np.empty(0, dtype=np.uint8)
+        if self._channel_count == RGB_CHANNEL_COUNT:
+            return self._pixels.reshape(-1)[start_unit:start_unit + count].copy()
+
+        pixel_start = start_unit // RGB_CHANNEL_COUNT
+        pixel_end = -(-(start_unit + count) // RGB_CHANNEL_COUNT)
+        rgb_pixels = self._pixels_by_channel[
+            pixel_start:pixel_end, :RGB_CHANNEL_COUNT
+        ]
+        rgb_units = np.array(rgb_pixels, dtype=np.uint8, order="C", copy=True).reshape(-1)
+        unit_offset = start_unit - pixel_start * RGB_CHANNEL_COUNT
+        return rgb_units[unit_offset:unit_offset + count]
 
     def iter_chunks(self) -> Iterator[np.ndarray]:
         """Yield every RGB carrier unit once in bounded unit-only chunks."""
-        yield from self._carrier.iter_chunks()
+        for start_unit in range(0, self.total_units, self._chunk_units):
+            count = min(self._chunk_units, self.total_units - start_unit)
+            yield self.read_units(start_unit, count)
 
     def iter_chunks_with_fixed_bytes(self) -> Iterator[tuple[np.ndarray, bytes]]:
         """Yield pixel-aligned RGB chunks and the matching alpha bytes."""
@@ -213,7 +270,7 @@ class PngCarrier(CarrierSource):
         alpha_values = None if self._alpha is None else self._alpha.reshape(-1)
         for pixel_start in range(0, pixel_count, self._pixels_per_chunk):
             pixels = min(self._pixels_per_chunk, pixel_count - pixel_start)
-            units = self._carrier.read_units(
+            units = self.read_units(
                 pixel_start * RGB_CHANNEL_COUNT, pixels * RGB_CHANNEL_COUNT
             )
             fixed_bytes = b"" if alpha_values is None else alpha_values[
@@ -228,25 +285,26 @@ class PngCarrier(CarrierSource):
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
     ) -> None:
         """Write transformed RGB units while preserving the source alpha bytes."""
-        rewritten = np.empty(self.total_units, dtype=np.uint8)
+        output_image = np.empty(self._shape, dtype=np.uint8)
+        output_pixels = output_image.reshape((-1, self._channel_count))
         unit_offset = 0
+        pixel_offset = 0
         for original, fixed_bytes in self.iter_chunks_with_fixed_bytes():
             if fixed_bytes_callback is not None:
                 fixed_bytes_callback(unit_offset, original, fixed_bytes)
             replaced = _validate_transformed_units(
                 transform(unit_offset, original), original.size
             )
-            rewritten[unit_offset:unit_offset + original.size] = replaced
+            pixel_count = original.size // RGB_CHANNEL_COUNT
+            output_pixels[
+                pixel_offset:pixel_offset + pixel_count, :RGB_CHANNEL_COUNT
+            ] = replaced.reshape((pixel_count, RGB_CHANNEL_COUNT))
+            if self._channel_count == RGBA_CHANNEL_COUNT:
+                output_pixels[
+                    pixel_offset:pixel_offset + pixel_count, RGB_CHANNEL_COUNT
+                ] = np.frombuffer(fixed_bytes, dtype=np.uint8)
             unit_offset += original.size
-        rgb = carrier_to_rgb_array(
-            rewritten, (self._shape[0], self._shape[1], RGB_CHANNEL_COUNT)
-        )
-        if self._alpha is None:
-            output_image = rgb
-        else:
-            output_image = np.empty(self._shape, dtype=np.uint8)
-            output_image[:, :, :RGB_CHANNEL_COUNT] = rgb
-            output_image[:, :, 3] = self._alpha
+            pixel_offset += pixel_count
         _save_png_array_to_path(output_image, output_path)
 
 

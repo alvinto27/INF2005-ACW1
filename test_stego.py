@@ -33,7 +33,13 @@ from stego.core import (
     prepare_carrier_encoding,
 )
 from stego.layout import calculate_masked_media_hash
-from stego.media import encode_png_media_context, encode_wav_media_context
+from stego.media import (
+    _save_png_array_to_path,
+    encode_png_media_context,
+    encode_wav_media_context,
+    load_png_from_path,
+    rgb_array_to_carrier,
+)
 from stego.constants import MEDIA_ID_SIZE
 from stego.bits import encode_protocol_field
 from stego.crypto import sign_bytes, verify_signature
@@ -309,6 +315,96 @@ class TestMaskedStego(unittest.TestCase):
             with Image.open(output_path) as image:
                 rewritten_pixels = np.asarray(image, dtype=np.uint8).copy()
             self.assertTrue(np.array_equal(rewritten_pixels, image_array))
+
+    def test_png_carrier_ranges_chunks_and_identity_bytes_match_reference(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            generator = np.random.default_rng(6206)
+            for channels in (3, 4):
+                mode = "RGB" if channels == 3 else "RGBA"
+                image_array = generator.integers(
+                    0, 256, (31, 29, channels), dtype=np.uint8
+                )
+                input_path = directory / f"input-{channels}.png"
+                expected_path = directory / f"expected-{channels}.png"
+                output_path = directory / f"identity-{channels}.png"
+                Image.fromarray(image_array, mode=mode).save(input_path)
+                reference_units = rgb_array_to_carrier(load_png_from_path(input_path))
+                source = PngCarrier(input_path, 19)
+
+                self.assertEqual(source.total_units, reference_units.size)
+                self.assertFalse(source._pixels.flags.writeable)
+                if channels == 4:
+                    self.assertIsNotNone(source._alpha)
+                    self.assertFalse(source._alpha.flags.writeable)
+                    self.assertTrue(np.shares_memory(source._pixels, source._alpha))
+                else:
+                    self.assertIsNone(source._alpha)
+
+                ranges = [(0, 0), (0, 1), (1, 7), (17, 19), (18, 24)]
+                ranges.extend(
+                    (start, min(37, reference_units.size - start))
+                    for start in range(0, reference_units.size, 113)
+                )
+                for start, count in ranges:
+                    actual = source.read_units(start, count)
+                    self.assertTrue(np.array_equal(actual, reference_units[start:start + count]))
+                    self.assertTrue(actual.flags.writeable)
+
+                chunks = list(source.iter_chunks())
+                self.assertTrue(np.array_equal(np.concatenate(chunks), reference_units))
+                paired_chunks = list(source.iter_chunks_with_fixed_bytes())
+                self.assertTrue(
+                    np.array_equal(
+                        np.concatenate([units for units, _ in paired_chunks]),
+                        reference_units,
+                    )
+                )
+                expected_fixed = (
+                    b""
+                    if channels == 3
+                    else image_array[:, :, 3].tobytes()
+                )
+                self.assertEqual(
+                    b"".join(fixed for _, fixed in paired_chunks), expected_fixed
+                )
+
+                def identity_transform(start: int, units: np.ndarray) -> np.ndarray:
+                    return units
+
+                _save_png_array_to_path(image_array, expected_path)
+                source.rewrite_to_path(output_path, identity_transform)
+                self.assertEqual(output_path.read_bytes(), expected_path.read_bytes())
+
+    def test_png_carrier_load_and_rewrite_memory_is_bounded(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "input.png"
+            output_path = directory / "identity.png"
+            image_array = np.zeros((2400, 2400, 4), dtype=np.uint8)
+            image_array[:, :, 0] = np.arange(2400, dtype=np.uint8)[None, :]
+            image_array[:, :, 1] = np.arange(2400, dtype=np.uint8)[:, None]
+            image_array[:, :, 3] = 255
+            Image.fromarray(image_array, mode="RGBA").save(input_path)
+            decoded_size = image_array.nbytes
+            del image_array
+
+            def identity_transform(start: int, units: np.ndarray) -> np.ndarray:
+                return units
+
+            tracemalloc.start()
+            source = PngCarrier(input_path)
+            source.rewrite_to_path(output_path, identity_transform)
+            _, peak_bytes = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+
+            memory_limit = int(2.5 * decoded_size + 2 * 1024 * 1024)
+            self.assertLess(
+                peak_bytes,
+                memory_limit,
+                f"traced peak={peak_bytes / 1024 / 1024:.2f} MiB; "
+                f"limit={memory_limit / 1024 / 1024:.2f} MiB",
+            )
 
     def test_public_api_excludes_array_and_removed_wav_helpers(self) -> None:
         removed_names = {
