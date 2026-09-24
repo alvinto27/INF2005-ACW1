@@ -45,7 +45,7 @@ The shared hash and capacity functions take the reserved bootstrap span as a req
 
 ## Module dependencies
 
-`bits` depends on `constants` and provides `encode_protocol_field`. `carrier` depends on `bits` and defines the `CarrierSource` backend interface, `ArrayCarrier`, and `CarrierAccessError`; it holds no protocol policy. `layout` depends on `bits`, `carrier`, and `constants`; `packet` and `bootstrap` also depend on `bits` and `constants` and no longer import `layout`. `crypto` depends only on `constants` and `bits`; `media` depends on `constants`, `bits`, and `carrier`, and provides the streamed `WavCarrier`. `core` is the only module where protocol, crypto, and media meet. It calls the bootstrap and encryption primitives, and it reads carrier units only through a `CarrierSource`. See the [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#4-protocol-flow) for the pass structure.
+`bits` depends on `constants` and provides `encode_protocol_field`. `carrier` depends on `bits` and defines the public `CarrierSource` interface, internal array backend, range transform, and `CarrierAccessError`; it holds no protocol policy. `layout` depends on `bits`, `carrier`, and `constants`; `packet` and `bootstrap` also depend on `bits` and `constants` and no longer import `layout`. `crypto` depends only on `constants` and `bits`; `media` depends on `constants`, `bits`, and `carrier`, and provides public `PngCarrier` and `WavCarrier` file backends. `core` is the only module where protocol, crypto, and media meet. It calls the bootstrap and encryption primitives, and it reads carrier units only through a `CarrierSource`. Public backend entry points are `prepare_carrier_encoding` and `decode_carrier_source`; whole-carrier array functions are not part of the package API. See the [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#4-protocol-flow) for the pass structure.
 
 ## Packet format and signing input
 
@@ -102,6 +102,8 @@ The version in this input comes from the protocol constant, not from received da
 The PNG media context is exactly `struct.pack(">II", width, height)`. The WAV media context is exactly `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 
 ## Carrier units
+
+The public file-backed API is `PngCarrier` and `WavCarrier`; both provide bounded `read_units()`, `iter_chunks()`, and `rewrite_to_path()` operations. Protocol code can also use the public `CarrierSource` contract through `prepare_carrier_encoding` and `decode_carrier_source`. The internal array backend and whole-carrier array API are not exposed from `stego`. `PngCarrier` still relies on Pillow to decode the full PNG image.
 
 A carrier unit is the smallest thing the embedder writes into. Its meaning is per medium:
 

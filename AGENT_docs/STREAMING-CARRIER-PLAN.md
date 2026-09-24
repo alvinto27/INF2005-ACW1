@@ -1,6 +1,6 @@
 # Streaming Carrier Plan
 
-**Status: library refactor implemented; web boundary follow-up open.** This record is the single source of truth for chunked carrier access and for the `MAX_WAV_FRAME_BYTES` question. It supersedes the earlier deferred plan and [decision 14](LOCATION-CONFIDENTIALITY-PLAN.md#12-open-decisions) of the Location Confidentiality Plan.
+**Status: library refactor implemented; web boundary follow-up open.** This record is the single source of truth for chunked carrier access and the removal of the whole-file WAV helpers and `MAX_WAV_FRAME_BYTES`. It supersedes the earlier deferred plan and [decision 14](LOCATION-CONFIDENTIALITY-PLAN.md#12-open-decisions) of the Location Confidentiality Plan.
 
 The brief does not ask for this. It is an internal architecture change. It prepares a later video backend; video is not part of it.
 
@@ -21,10 +21,9 @@ file -> carrier backend -> bounded range and chunk reads -> protocol
 | Medium | Backend | Why |
 | --- | --- | --- |
 | WAV | `WavCarrier` (streamed) | Reads whole PCM frames on demand. No part of it grows with the carrier size. |
-| PNG | `ArrayCarrier` over the decoded image | Pillow decodes the whole image anyway. Streaming would give no memory benefit. |
-| NumPy array API | `ArrayCarrier` | `encode_carrier` and `decode_carrier` keep their signatures and wrap the array. |
+| PNG | `PngCarrier` (file-backed) | Pillow decodes the image; bounded reads and rewrites keep protocol operations behind the backend. |
 
-PNG and WAV use the same protocol core. This shows that the core works with both an in-memory carrier and a streamed carrier.
+PNG and WAV use the same protocol core through file-backed carriers. The internal `CarrierSource` abstraction is not a public route for whole-carrier arrays.
 
 ## 2. Protocol invariants kept
 
@@ -44,9 +43,9 @@ Tests keep the old whole-array hash as a reference, `reference_masked_media_hash
 | `read_units(start_unit, count)` | A new uint8 array for one bounded range. An out-of-range request raises `CarrierAccessError`. |
 | `iter_chunks()` | Every unit once, in fixed order, in bounded chunks. A storage failure raises `CarrierAccessError`. |
 
-`CarrierAccessError` is a `ValueError`. The backend holds no payload, cryptography, or protocol policy.
+`CarrierAccessError` is a `ValueError`. The backend holds no payload, cryptography, or protocol policy. `PngCarrier` and `WavCarrier` are the public file-backed carrier classes, and `CarrierSource` is their public bounded-access interface. The array backend remains an implementation detail.
 
-Writing is kept separate from reading. A backend that can make output gives a sequential rewrite method (`ArrayCarrier.rewrite`, `WavCarrier.rewrite_to_path`). The method reads every chunk once, in order. It gives each chunk to a transform function and writes the result. No backend must support random-access writes.
+Writing is kept separate from reading. File-backed carriers provide a sequential `rewrite_to_path` method. It reads every chunk once, in order, gives each chunk to a transform function, and writes the result. No backend must support random-access writes.
 
 ## 4. Protocol flow
 
@@ -104,7 +103,7 @@ One carrier unit is the least-significant byte of one PCM sample, as before. WAV
 
 | Item | Behaviour |
 | --- | --- |
-| Header check | `read_pcm_wav_info` reads only the header. Then it reads the last declared frame, so a short file fails early. It allocates nothing in proportion to the frame count, so no size cap applies. |
+| Header check | `read_pcm_wav_info` reads only the header. Then it reads the last declared frame, so a short file fails early. It allocates nothing in proportion to the frame count. |
 | Chunk | `frames_per_chunk = max(1, chunk_bytes // (channels x sample_width))`. A chunk never splits a sample or a frame. |
 | Range read | `wave.setpos` goes to the first frame that holds the range, and only the frames that hold the range are read. |
 | Reopen check | Each read opens the file again and confirms that the header is unchanged. |
@@ -148,15 +147,13 @@ The second row is packet-bit cost, not carrier cost. Make packet bits faster onl
 
 ## 10. Whole-file WAV cap
 
-`MAX_WAV_FRAME_BYTES` stays. `WavPcmData` and `load_pcm_wav_from_path` are still public and still load the whole WAV, so they still need the allocation guard.
-
-The streamed `encode_wav` and `verify_wav` do not use those helpers, so the cap does not apply to them. A test proves this. With `STEGO_LARGE_WAV_TEST=1`, a 72 MiB WAV passes a round trip through the streamed path with a traced peak below 16 MiB, while the whole-file loader rejects it. Remove the constant only if the whole-file helpers are removed or redesigned in a separate compatibility decision.
+The whole-file WAV helpers `WavPcmData` and `load_pcm_wav_from_path` and the `MAX_WAV_FRAME_BYTES` cap have been removed from the public API and implementation. `WavCarrier` and `read_pcm_wav_info` provide bounded carrier access and header validation without allocating memory in proportion to the declared frame count. The optional 72 MiB WAV test passes through the file-backed path with a traced peak below 16 MiB.
 
 ## 11. Known limits
 
 | Limit | Detail |
 | --- | --- |
-| The GUI does not gain large WAVs yet | Flask limits requests to 32 MiB, and `CurrentProtocolService` reads the upload and output fully into memory. It also validates WAVs with the capped whole-file loader. See [section 12](#12-web-boundary-follow-up). |
+| The GUI does not gain large WAVs yet | Flask limits requests to 32 MiB, and `CurrentProtocolService` reads the upload and output fully into memory. WAV header validation uses `read_pcm_wav_info`. See [section 12](#12-web-boundary-follow-up). |
 | Verification race | If the file changes between the targeted reads and the hash pass, the verdict can mix two versions. A reopened header is checked, but frame data is not taken as a snapshot. A local attacker who can write to the file during verification is out of scope. |
 | Packet-proportional cost | See [section 9](#9-memory-claim). |
 | WAV sample high bytes are not hashed (existing protocol behaviour) | The masked hash covers carrier units only. For 16-, 24-, and 32-bit WAVs, the upper bytes of each sample, which hold most of the audible signal, are outside the hash. On `main` before this refactor, a stego WAV whose upper bytes were all changed still verified as `Authentic`. This refactor keeps the hash exactly the same, so it keeps this behaviour. A fix changes the protocol and needs its own decision. |
@@ -169,7 +166,7 @@ This is not done. It is a separate change from the library refactor.
 | --- | --- |
 | `MAX_CONTENT_LENGTH = 32 MiB` | Review the limit after the other items are done. |
 | `upload.read()` and `input_path.write_bytes(...)` | Stream the upload to a temporary file. |
-| `load_pcm_wav_from_path` as the WAV validator | Use `read_pcm_wav_info`. |
+| WAV validation | `CurrentProtocolService` uses `read_pcm_wav_info` to validate the header without loading the full WAV. |
 | `output_path.read_bytes()` returned as base64 JSON | Return the file as a download response. |
 
 ## 13. Tests
@@ -185,15 +182,17 @@ This is not done. It is a separate change from the library refactor.
 - range checks
 - chunk order
 - changes between the encode passes, for arrays and for WAVs
-- WAV units, ranges, and hash compared with the whole-file loader, for 8-bit mono, 16-bit mono, 16-bit stereo, 24-bit, and 32-bit
+- WAV units, ranges, and hash compared with a local whole-file reference helper, for 8-bit mono, 16-bit mono, 16-bit stereo, 24-bit, and 32-bit
 - unchanged chunked output compared with the whole-file writer
 - round trips across WAV chunk edges
 - a truncated WAV and failures during a pass
-- the whole-file cap not applying to the streamed path
+- large WAV round trips through the bounded file-backed path
 - memory that does not grow with the carrier size
 - the optional WAV test larger than 64 MiB
 
-The existing regression suite passes without changes.
+The demonstration notebook uses `PngCarrier` and `WavCarrier` for carrier reads and rewrites. Pillow image arrays are used only to display cover, stego, and difference images.
+
+The regression suite passes with the file-backed carrier and public-API coverage listed above.
 
 ## 14. History
 

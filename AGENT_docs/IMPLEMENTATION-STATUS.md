@@ -47,11 +47,11 @@ the legacy `STG1` encoding and verification pipelines.
 
 ## Carrier size
 
-The library now reads WAV carriers in bounded chunks, so `stego.encode_wav` and
-`stego.verify_wav` accept WAVs larger than the old 64 MiB cap. The GUI does not
-gain this yet: Flask limits requests to 32 MiB, the service reads uploads and
-outputs fully into memory, returns the stego object as base64 JSON, and validates
-WAV covers with the capped whole-file loader. The follow-up is in the
+The library reads WAV carriers in bounded chunks. The 64 MiB whole-file WAV cap
+and its whole-file loader have been removed. `CurrentProtocolService` validates
+WAV headers with `read_pcm_wav_info`, but the GUI still has a separate 32 MiB
+request limit, reads uploads and outputs fully into memory, and returns the
+stego object as base64 JSON. The remaining follow-up is in the
 [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#12-web-boundary-follow-up).
 
 `/keys/generate` is an explicit local setup helper for either sender or receiver.

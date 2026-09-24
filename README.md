@@ -59,12 +59,16 @@ MIME claim agrees with the recovered bytes.
 
 ## Protocol API
 
-The public Python API includes `encode_carrier`, `decode_carrier`, `encode_png`,
-`verify_png`, `encode_wav`, and `verify_wav`. Verification requires the sender
-public key and receiver private key. `encode_wav` and `verify_wav` read the WAV
-in bounded chunks, so the WAV size is not limited by memory. Backend-level
-functions (`prepare_carrier_encoding`, `decode_carrier_source`) accept any
-`CarrierSource`. For example:
+The public Python API includes `encode_png`, `verify_png`, `encode_wav`,
+`verify_wav`, `PngCarrier`, and `WavCarrier`. Verification requires the sender
+public key and receiver private key. The file-backed carriers provide bounded
+range reads, chunk iteration, and sequential rewrites. `WavCarrier` reads whole
+PCM frames, so carrier working memory does not grow with the WAV size. The public
+`CarrierSource` abstraction and `prepare_carrier_encoding` /
+`decode_carrier_source` entry points support backend-level operations. The public
+`lsb_range_transform` helper prepares LSB changes for a carrier range. Whole-array
+carrier APIs and whole-file WAV loading helpers are not public; the
+`MAX_WAV_FRAME_BYTES` limit has been removed. For example:
 
 ```python
 layout, payload = encode_png(
