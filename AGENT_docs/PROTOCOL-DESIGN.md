@@ -45,7 +45,7 @@ The shared hash and capacity functions take the reserved bootstrap span as a req
 
 ## Module dependencies
 
-`bits` depends on `constants` and provides `encode_protocol_field`. `layout` depends on `bits` and `constants`; `packet` and `bootstrap` also depend on `bits` and `constants` and no longer import `layout`. `crypto` and `media` depend only on `constants` and `bits`. `core` is the only module where protocol, crypto, and media meet, and it calls the bootstrap and encryption primitives for encoding and decoding.
+`bits` depends on `constants` and provides `encode_protocol_field`. `carrier` depends on `bits` and defines the `CarrierSource` backend interface, `ArrayCarrier`, and `CarrierAccessError`; it holds no protocol policy. `layout` depends on `bits`, `carrier`, and `constants`; `packet` and `bootstrap` also depend on `bits` and `constants` and no longer import `layout`. `crypto` depends only on `constants` and `bits`; `media` depends on `constants`, `bits`, and `carrier`, and provides the streamed `WavCarrier`. `core` is the only module where protocol, crypto, and media meet. It calls the bootstrap and encryption primitives, and it reads carrier units only through a `CarrierSource`. See the [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#4-protocol-flow) for the pass structure.
 
 ## Packet format and signing input
 
@@ -114,6 +114,8 @@ For WAV, the unit is the sample, not the byte. Multi-byte PCM in WAV is always l
 
 This keeps the change to a sample within `(1 << k) - 1`, which is what "replace the low k bits" must mean. It also makes the selectable 1 to 8 LSBs of brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) refer to bits of the cover object, as [FR6](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements) requires.
 
+The unit definition is the same for the streamed WAV backend. `WavCarrier` reads whole PCM frames in bounded chunks and takes the same bytes; the masked hash does not depend on chunk boundaries.
+
 Capacity follows from the unit count, so multi-byte PCM holds `1 / sample_width` of what a byte count would suggest. That is the honest figure. The larger number came from counting bytes the encoder must not touch.
 
 At `sample_width == 1` the stride is 1, so the sample-stride correction did not change 8-bit behaviour or compatibility at that time. The later stage 4b packet-format change is separate and does break compatibility with version 1 files.
@@ -144,7 +146,7 @@ The signature does not authenticate the original values of overwritten cover LSB
 | `Payload Missing` | The bootstrap cannot be opened with the supplied receiver private key, including a pristine carrier or wrong receiver key. |
 | `Wrong Start Location` | Numerically valid geometry recovered from the opened bootstrap produces a footprint outside the carrier or overlaps the reserved bootstrap span. |
 | `Cannot Decrypt` | The signed ciphertext fails its AES-GCM authentication tag. |
-| `Cannot Verify` | The adapter rejects the file, the bootstrap is structurally malformed, or packet parsing or padding validation fails. |
+| `Cannot Verify` | The adapter rejects the file (including a WAV shorter than its declared frame count), the bootstrap is structurally malformed, packet parsing or padding validation fails, or the carrier cannot be read completely during the masked-hash pass. |
 
 Version 1 preferred the deepest failure among discovered candidates. Stage 4b checks one supplied layout and reports its failure directly. A caller can supply a wrong location that remains in range; it then receives the parsing, padding, or signature failure reached at that location, not proof that the file has no payload.
 
@@ -156,6 +158,8 @@ Version 1 preferred the deepest failure among discovered candidates. Stage 4b ch
 - Preserved bits depend mainly on packet size, with LSB depth able to shift the count through alignment: `preserved_bits = 8*total_units - bootstrap_span - k*footprint`, and `k*footprint` equals the packet bit count plus up to `k - 1` alignment bits. The refreshed demonstration's `k = 1` and `k = 8` cases have no alignment bits and therefore preserve the same 48,163,528 bits. At `k = 8` with a full-carrier footprint, packet bits equal all carrier bits and the media hash witnesses nothing; the reported `preserved_bits` says so.
 - The bootstrap field values and record are encrypted or authenticated for the receiver; the fixed bootstrap span still reveals the envelope footprint.
 - Container metadata outside the decoded carrier is not covered.
+- For 16-, 24-, and 32-bit WAV, only the least-significant byte of each sample is a carrier unit, so the upper sample bytes, which hold most of the audible signal, are outside the masked hash. A stego WAV whose upper bytes are all changed still verifies as `Authentic`. Closing this needs a protocol change; see the [Streaming Carrier Plan, section 11](STREAMING-CARRIER-PLAN.md#11-known-limits).
+- Verification reads the file more than once. A file changed during verification can give a verdict that mixes two versions.
 - A timestamp and nonce alone do not prevent replay.
 
 ## Authenticity claim

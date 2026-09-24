@@ -61,7 +61,10 @@ MIME claim agrees with the recovered bytes.
 
 The public Python API includes `encode_carrier`, `decode_carrier`, `encode_png`,
 `verify_png`, `encode_wav`, and `verify_wav`. Verification requires the sender
-public key and receiver private key. For example:
+public key and receiver private key. `encode_wav` and `verify_wav` read the WAV
+in bounded chunks, so the WAV size is not limited by memory. Backend-level
+functions (`prepare_carrier_encoding`, `decode_carrier_source`) accept any
+`CarrierSource`. For example:
 
 ```python
 layout, payload = encode_png(

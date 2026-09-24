@@ -4,7 +4,7 @@
 
 The goal is to protect the payload start location, length, and LSB depth from everyone except the intended receiver, while the user still chooses all three by hand.
 
-One decision is deferred. See [Open decisions](#12-open-decisions).
+The one deferred decision, 14, is now superseded by the [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan). See [Open decisions](#12-open-decisions).
 
 ## 1. The problem
 
@@ -393,7 +393,7 @@ Both sides know the carrier geometry before they build or read either format, so
 | Capacity-helper zero clamp | removed. An unusable carrier now raises; zero means an exact-fit protocol object |
 | `PNG_MEDIA_CONTEXT_FORMAT` `">II"` | kept. Four billion pixels per side |
 | `WAV_MEDIA_CONTEXT_FORMAT` `">HBIQ"` | kept. The frame count is already 64-bit |
-| `MAX_WAV_FRAME_BYTES` = 64 MiB | **deferred.** See [Open decisions](#12-open-decisions) |
+| `MAX_WAV_FRAME_BYTES` = 64 MiB | **superseded.** Kept only for whole-file WAV helpers; the streamed WAV path has no cap. See [Streaming Carrier Plan, section 10](STREAMING-CARRIER-PLAN.md#10-whole-file-wav-cap) |
 
 ## 6. Encode
 
@@ -544,7 +544,7 @@ Decision 12 was reconsidered in the owner review and reaffirmed: the session key
 
 | 12b | Bootstrap layout as GCM additional authenticated data | yes | no bytes on the wire, and a second binding on the fields that matter most |
 | 13 | Fixed-width layout fields in the signing input | no | it would reintroduce a ceiling the bootstrap had removed |
-| 14 | `MAX_WAV_FRAME_BYTES` | **deferred** | see [Open decisions](#12-open-decisions) |
+| 14 | `MAX_WAV_FRAME_BYTES` | **superseded** | chunked carrier access removed the cap from the streamed WAV path; see [Streaming Carrier Plan, section 10](STREAMING-CARRIER-PLAN.md#10-whole-file-wav-cap) |
 | 15 | Rename `keys.py` to `crypto.py` | yes | it gains AES-GCM, so the old name would describe two thirds of its contents |
 | 16 | The caller-side payload seal in the notebook | delete it | the library now encrypts everything around it, so keeping it is encryption inside encryption, and a reader cannot tell which layer is load-bearing |
 
@@ -578,9 +578,9 @@ The mistake was the question. Encrypting the record was judged against version-1
 
 The constant exists because the loader reads a declared frame count before it can check anything, so it is a resource guard rather than a format rule.
 
-**Status: deferred.** A larger architectural change would remove the need for the constant: replacing whole-carrier arrays with seekable chunked access, so that the bound becomes a chunk size rather than a file-size ceiling. That change is deferred, and the reasons are in the [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#why-it-is-deferred).
+**Status: superseded.** The architectural change named here is implemented: whole-carrier arrays were replaced with seekable chunked access, and the streamed `encode_wav` and `verify_wav` path has no file-size cap. The constant remains only as the allocation guard for the whole-file helpers `WavPcmData` and `load_pcm_wav_from_path`. The [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#10-whole-file-wav-cap) is the current record; the analysis above is kept as history.
 
-The decision therefore stays open rather than being settled twice. Documenting the constant as permanent, and then deleting it in the next change, would leave a false reason in the history.
+The decision was left open instead of settled twice, so the history holds no false reason. It closed without deleting the constant: the streamed path no longer needs it, and the whole-file helpers still do.
 
 ## 13. What this breaks
 

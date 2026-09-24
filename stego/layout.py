@@ -16,6 +16,7 @@ from .bits import (
     validate_payload_bytes,
     validate_payload_length,
 )
+from .carrier import DEFAULT_CHUNK_BYTES, overlap_range
 from .constants import (
     MEDIA_HASH_CONTEXT_PREFIX_FORMAT,
     MEDIA_HASH_DOMAIN,
@@ -147,34 +148,88 @@ def preserved_bit_count(total_units: int, footprint: int, lsb_count: int, bootst
     )
 
 
+class MaskedMediaHasher:
+    """Compute the masked media hash from carrier chunks supplied in order.
+
+    The digest equals SHA-256 over the fixed context prefix followed by every
+    carrier unit, with the bootstrap region's lowest bit and the whole packet
+    footprint's lowest ``lsb_count`` bits cleared. Chunk boundaries have no
+    effect on the result. The hasher counts the units it receives and refuses
+    any count other than ``total_units``.
+    """
+
+    def __init__(self, media_code: int, lsb_count: int, total_units: int, start_unit: int, footprint: int, bootstrap_span: int) -> None:
+        """Check the geometry and feed the fixed context prefix."""
+        media_code = _validate_media_code(media_code)
+        lsb_count = _validate_lsb_count(lsb_count)
+        total_units = _validate_non_negative_integer(total_units, "total_units")
+        start_unit = _validate_non_negative_integer(start_unit, "start_unit")
+        footprint = _validate_non_negative_integer(footprint, "footprint")
+        bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
+        if start_unit + footprint > total_units:
+            raise ValueError("masked media footprint is out of range")
+        if start_unit < bootstrap_span:
+            raise ValueError("start_unit must be at least bootstrap_span")
+        self._total_units = total_units
+        self._consumed_units = 0
+        # The regions cannot overlap because start_unit >= bootstrap_span.
+        self._regions = (
+            (0, bootstrap_span, np.uint8(0xFE)),
+            (start_unit, start_unit + footprint, np.uint8((~((1 << lsb_count) - 1)) & 0xFF)),
+        )
+        self._hash = hashlib.sha256(
+            MEDIA_HASH_DOMAIN
+            + struct.pack(MEDIA_HASH_CONTEXT_PREFIX_FORMAT, media_code, lsb_count)
+            + encode_protocol_field(total_units, "total_units")
+            + encode_protocol_field(start_unit, "start_unit")
+            + encode_protocol_field(footprint, "footprint")
+            + encode_protocol_field(bootstrap_span, "bootstrap_span")
+        )
+
+    @property
+    def consumed_units(self) -> int:
+        """Return how many carrier units have been hashed so far."""
+        return self._consumed_units
+
+    def update(self, chunk: np.ndarray) -> None:
+        """Hash the next chunk of carrier units without changing the caller's array."""
+        chunk = _validate_carrier_units(chunk)
+        chunk_start = self._consumed_units
+        chunk_end = chunk_start + int(chunk.size)
+        if chunk_end > self._total_units:
+            raise ValueError(
+                "carrier supplied more units than total_units: "
+                f"consumed_units={chunk_end}, total_units={self._total_units}"
+            )
+        masked = chunk
+        for region_start, region_end, mask in self._regions:
+            local = overlap_range(chunk_start, chunk_end, region_start, region_end)
+            if local is None:
+                continue
+            if masked is chunk:
+                masked = chunk.copy()
+            masked[local[0]:local[1]] &= mask
+        self._hash.update(np.ascontiguousarray(masked))
+        self._consumed_units = chunk_end
+
+    def digest(self) -> bytes:
+        """Return the hash after checking that exactly total_units were supplied."""
+        if self._consumed_units != self._total_units:
+            raise ValueError(
+                "carrier supplied fewer units than total_units: "
+                f"consumed_units={self._consumed_units}, total_units={self._total_units}"
+            )
+        return self._hash.digest()
+
+
 def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_count: int, start_unit: int, footprint: int, bootstrap_span: int) -> bytes:
     """Hash the carrier with the packet's low bits cleared, so the sender and receiver get the
     same answer even though the packet overwrote those bits."""
     carrier_units = _validate_carrier_units(carrier_units)
-    media_code = _validate_media_code(media_code)
-    lsb_count = _validate_lsb_count(lsb_count)
-    total_units = _validate_non_negative_integer(carrier_units.size, "total_units")
-    start_unit = _validate_non_negative_integer(start_unit, "start_unit")
-    footprint = _validate_non_negative_integer(footprint, "footprint")
-    bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
-    if start_unit + footprint > total_units:
-        raise ValueError("masked media footprint is out of range")
-    if start_unit < bootstrap_span:
-        raise ValueError("start_unit must be at least bootstrap_span")
-    masked = carrier_units.copy()
-    masked[0:bootstrap_span] &= np.uint8(0xFE)
-    mask = (~((1 << lsb_count) - 1)) & 0xFF
-    masked[start_unit:start_unit + footprint] &= np.uint8(mask)
-    preimage = (
-        MEDIA_HASH_DOMAIN
-        + struct.pack(MEDIA_HASH_CONTEXT_PREFIX_FORMAT, media_code, lsb_count)
-        + encode_protocol_field(total_units, "total_units")
-        + encode_protocol_field(start_unit, "start_unit")
-        + encode_protocol_field(footprint, "footprint")
-        + encode_protocol_field(bootstrap_span, "bootstrap_span")
-        + masked.tobytes()
-    )
-    return hashlib.sha256(preimage).digest()
+    hasher = MaskedMediaHasher(media_code, lsb_count, carrier_units.size, start_unit, footprint, bootstrap_span)
+    for offset in range(0, carrier_units.size, DEFAULT_CHUNK_BYTES):
+        hasher.update(carrier_units[offset:offset + DEFAULT_CHUNK_BYTES])
+    return hasher.digest()
 
 
 def encode_signing_input(media_code: int, media_context: bytes, layout: EmbeddingLayout, ciphertext: bytes) -> bytes:

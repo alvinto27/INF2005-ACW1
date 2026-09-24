@@ -45,6 +45,15 @@ the legacy `STG1` encoding and verification pipelines.
 9. The temporary workspace is removed at the end of each request and responses
    carry `Cache-Control: no-store`.
 
+## Carrier size
+
+The library now reads WAV carriers in bounded chunks, so `stego.encode_wav` and
+`stego.verify_wav` accept WAVs larger than the old 64 MiB cap. The GUI does not
+gain this yet: Flask limits requests to 32 MiB, the service reads uploads and
+outputs fully into memory, returns the stego object as base64 JSON, and validates
+WAV covers with the capped whole-file loader. The follow-up is in the
+[Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#12-web-boundary-follow-up).
+
 `/keys/generate` is an explicit local setup helper for either sender or receiver.
 Deployment beyond trusted localhost still needs persistent key management, access
 control, rotation, transport protection, and auditing.

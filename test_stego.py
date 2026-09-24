@@ -1,7 +1,10 @@
 import hashlib
+import os
 import struct
+import tracemalloc
 import unittest
 import wave
+from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -1086,6 +1089,438 @@ class TestMaskedStego(unittest.TestCase):
             ec_path.write_bytes(ec_key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
             with self.assertRaisesRegex(TypeError, "RSA public key"):
                 load_rsa_public_key_pem(ec_path)
+
+
+def reference_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_count: int, start_unit: int, footprint: int, bootstrap_span: int) -> bytes:
+    """Whole-array masked media hash as implemented before chunked access; kept as a test oracle."""
+    masked = carrier_units.copy()
+    masked[0:bootstrap_span] &= np.uint8(0xFE)
+    mask = (~((1 << lsb_count) - 1)) & 0xFF
+    masked[start_unit:start_unit + footprint] &= np.uint8(mask)
+    preimage = (
+        MEDIA_HASH_DOMAIN
+        + struct.pack(">BB", media_code, lsb_count)
+        + carrier_units.size.to_bytes(8, "big")
+        + start_unit.to_bytes(8, "big")
+        + footprint.to_bytes(8, "big")
+        + bootstrap_span.to_bytes(8, "big")
+        + masked.tobytes()
+    )
+    return hashlib.sha256(preimage).digest()
+
+
+def streamed_hash(source: CarrierSource, media_code: int, lsb_count: int, start_unit: int, footprint: int, bootstrap_span: int) -> bytes:
+    hasher = MaskedMediaHasher(media_code, lsb_count, source.total_units, start_unit, footprint, bootstrap_span)
+    for chunk in source.iter_chunks():
+        hasher.update(chunk)
+    return hasher.digest()
+
+
+def random_units(size: int, seed: int = 7) -> np.ndarray:
+    return np.random.default_rng(seed).integers(0, 256, size, dtype=np.uint8)
+
+
+def write_pcm_wav(path: Path, channels: int, sample_width: int, frame_count: int, seed: int = 3) -> None:
+    frame_bytes = random_units(frame_count * channels * sample_width, seed).tobytes()
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(8000)
+        wav_file.writeframes(frame_bytes)
+
+
+def legacy_wav_units(path: Path) -> np.ndarray:
+    wav_data = load_pcm_wav_from_path(path)
+    return wav_frame_bytes_to_carrier(wav_data.frame_bytes, wav_data.sample_width)
+
+
+class ShortCarrier(ArrayCarrier):
+    """Declare every unit but yield one unit fewer."""
+
+    def iter_chunks(self) -> Iterator[np.ndarray]:
+        chunks = list(super().iter_chunks())
+        chunks[-1] = chunks[-1][:-1]
+        yield from chunks
+
+
+class LongCarrier(ArrayCarrier):
+    """Declare every unit but yield one unit more."""
+
+    def iter_chunks(self) -> Iterator[np.ndarray]:
+        yield from super().iter_chunks()
+        yield np.zeros(1, dtype=np.uint8)
+
+
+class TestChunkedCarrier(unittest.TestCase):
+    SPAN = bootstrap_span(RECEIVER_PUBLIC_KEY)
+
+    def test_streamed_hash_equals_whole_array_reference(self) -> None:
+        cases = (
+            (0, 0, 0),
+            (5000, 2048, 0),
+            (5000, 2048, 1),
+            (5000, 2048, 2952),
+            (24000, 3001, 17),
+        )
+        for total, start, footprint in cases:
+            for lsb_count in (1, 3, 8):
+                with self.subTest(total=total, start=start, footprint=footprint, lsb_count=lsb_count):
+                    source = random_units(total)
+                    span = min(start, self.SPAN)
+                    expected = reference_masked_media_hash(source, AUDIO_MEDIA_CODE, lsb_count, start, footprint, span)
+                    self.assertEqual(calculate_masked_media_hash(source, AUDIO_MEDIA_CODE, lsb_count, start, footprint, span), expected)
+                    self.assertEqual(streamed_hash(ArrayCarrier(source, 997), AUDIO_MEDIA_CODE, lsb_count, start, footprint, span), expected)
+
+    def test_chunk_size_does_not_change_digest(self) -> None:
+        source = random_units(12000)
+        expected = reference_masked_media_hash(source, IMAGE_MEDIA_CODE, 3, 4000, 3000, self.SPAN)
+        for chunk_units in (1, 2, 7, 64, 2047, 2048, 2049, 4096, 12000, 50000):
+            with self.subTest(chunk_units=chunk_units):
+                self.assertEqual(
+                    streamed_hash(ArrayCarrier(source, chunk_units), IMAGE_MEDIA_CODE, 3, 4000, 3000, self.SPAN),
+                    expected,
+                )
+
+    def test_masks_cross_chunk_edges(self) -> None:
+        source = random_units(12000)
+        start, footprint = 4000, 3000
+        cases = {
+            "bootstrap crosses one edge": 1000,
+            "packet crosses one edge": 4500,
+            "packet spans many chunks": 250,
+        }
+        for name, chunk_units in cases.items():
+            for lsb_count in (1, 3, 8):
+                with self.subTest(case=name, lsb_count=lsb_count):
+                    carrier_source = ArrayCarrier(source, chunk_units)
+                    edges = set(range(chunk_units, source.size, chunk_units))
+                    if name.startswith("bootstrap"):
+                        self.assertTrue(any(0 < edge < self.SPAN for edge in edges))
+                    elif name.startswith("packet crosses"):
+                        self.assertEqual(sum(start < edge < start + footprint for edge in edges), 1)
+                    else:
+                        self.assertGreater(sum(start < edge < start + footprint for edge in edges), 5)
+                    baseline = streamed_hash(carrier_source, IMAGE_MEDIA_CODE, lsb_count, start, footprint, self.SPAN)
+                    self.assertEqual(baseline, reference_masked_media_hash(source, IMAGE_MEDIA_CODE, lsb_count, start, footprint, self.SPAN))
+                    for edge in sorted(edges)[:3]:
+                        for unit in (edge - 1, edge):
+                            masked_bits = 1 if unit < self.SPAN else lsb_count if start <= unit < start + footprint else 0
+                            if masked_bits:
+                                inside = source.copy()
+                                inside[unit] ^= np.uint8((1 << masked_bits) - 1)
+                                self.assertEqual(streamed_hash(ArrayCarrier(inside, chunk_units), IMAGE_MEDIA_CODE, lsb_count, start, footprint, self.SPAN), baseline)
+                            if masked_bits < 8:
+                                outside = source.copy()
+                                outside[unit] ^= np.uint8(1 << masked_bits)
+                                self.assertNotEqual(streamed_hash(ArrayCarrier(outside, chunk_units), IMAGE_MEDIA_CODE, lsb_count, start, footprint, self.SPAN), baseline)
+
+    def test_alignment_padding_units_are_masked(self) -> None:
+        source = carrier(10000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=5, user_payload=b"x")
+        self.assertGreater(layout.pad_bits, 0)
+        last_unit = layout.start_unit + layout.footprint - 1
+        changed = source.copy()
+        changed[last_unit] ^= np.uint8(0b11111)
+        for chunk_units in (1, 13, last_unit - 1, last_unit, last_unit + 1):
+            with self.subTest(chunk_units=chunk_units):
+                self.assertEqual(
+                    streamed_hash(ArrayCarrier(changed, chunk_units), IMAGE_MEDIA_CODE, 5, layout.start_unit, layout.footprint, layout.bootstrap_span),
+                    streamed_hash(ArrayCarrier(source, chunk_units), IMAGE_MEDIA_CODE, 5, layout.start_unit, layout.footprint, layout.bootstrap_span),
+                )
+
+    def test_hasher_rejects_wrong_unit_counts(self) -> None:
+        hasher = MaskedMediaHasher(IMAGE_MEDIA_CODE, 3, 10, 4, 2, 2)
+        hasher.update(np.zeros(9, dtype=np.uint8))
+        with self.assertRaisesRegex(ValueError, "fewer units than total_units.*consumed_units=9.*total_units=10"):
+            hasher.digest()
+        with self.assertRaisesRegex(ValueError, "more units than total_units.*consumed_units=11"):
+            hasher.update(np.zeros(2, dtype=np.uint8))
+
+    def test_short_and_long_carrier_streams_cannot_verify(self) -> None:
+        (encoded, layout, _), context = encode_image_carrier(carrier(10000))
+        self.assertEqual(decode_carrier_source(ArrayCarrier(encoded, 999), IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+        for source_type, detail in ((ShortCarrier, "fewer units"), (LongCarrier, "more units")):
+            with self.subTest(source=source_type.__name__):
+                result = decode_carrier_source(source_type(encoded, 999), IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                self.assertEqual(result.verdict, "Cannot Verify")
+                self.assertIn(detail, result.detail)
+                with self.assertRaisesRegex(ValueError, detail):
+                    encode_carrier_source_from(source_type(carrier(10000), 999))
+
+    def test_carrier_ranges_are_checked(self) -> None:
+        source = ArrayCarrier(carrier(10), 4)
+        self.assertEqual(source.read_units(8, 2).tolist(), [8, 9])
+        self.assertEqual(source.read_units(10, 0).size, 0)
+        for start_unit, count in ((9, 2), (11, 0)):
+            with self.subTest(start_unit=start_unit, count=count):
+                with self.assertRaisesRegex(CarrierAccessError, "out of bounds"):
+                    source.read_units(start_unit, count)
+        with self.assertRaises(ValueError):
+            ArrayCarrier(carrier(10), 0)
+
+    def test_embedding_requires_chunks_in_order(self) -> None:
+        encoding = encode_carrier_source_from(ArrayCarrier(carrier(10000)))
+        with self.assertRaisesRegex(ValueError, "in order"):
+            encoding.embed_chunk(5, np.zeros(5, dtype=np.uint8))
+
+    def test_array_input_change_between_passes_is_detected(self) -> None:
+        source = carrier(10000)
+        encoding = encode_carrier_source_from(ArrayCarrier(source))
+        source[9000] ^= np.uint8(0x80)
+        with self.assertRaisesRegex(ValueError, "carrier changed between encoding passes"):
+            ArrayCarrier(source).rewrite(encoding.embed_chunk)
+            encoding.finish()
+
+    def test_wav_units_hash_and_ranges_match_legacy_loader(self) -> None:
+        formats = ((1, 1), (1, 2), (2, 2), (2, 3), (1, 4), (3, 4))
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for channels, sample_width in formats:
+                with self.subTest(channels=channels, sample_width=sample_width):
+                    path = directory / f"c{channels}-w{sample_width}.wav"
+                    write_pcm_wav(path, channels, sample_width, 3001)
+                    expected = legacy_wav_units(path)
+                    for chunk_bytes in (1, 7 * channels * sample_width, 4096, 1 << 20):
+                        source = WavCarrier(path, chunk_bytes)
+                        self.assertEqual(source.total_units, expected.size)
+                        chunks = list(source.iter_chunks())
+                        self.assertTrue(all(chunk.size % channels == 0 for chunk in chunks))
+                        self.assertTrue(np.array_equal(np.concatenate(chunks), expected))
+                        for start_unit, count in ((0, 1), (1, channels * 5 + 1), (expected.size - 3, 3), (17, 0)):
+                            self.assertTrue(np.array_equal(source.read_units(start_unit, count), expected[start_unit:start_unit + count]))
+                        with self.assertRaises(CarrierAccessError):
+                            source.read_units(expected.size - 1, 2)
+                        self.assertEqual(
+                            streamed_hash(source, AUDIO_MEDIA_CODE, 3, 2100, 500, 2048),
+                            reference_masked_media_hash(expected, AUDIO_MEDIA_CODE, 3, 2100, 500, 2048),
+                        )
+                    info = read_pcm_wav_info(path)
+                    self.assertEqual(encode_wav_media_context(info, expected.size), encode_wav_media_context(load_pcm_wav_from_path(path), expected.size))
+
+    def test_unchanged_chunked_wav_output_matches_whole_file_writer(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for channels, sample_width in ((1, 1), (2, 2), (2, 3), (1, 4)):
+                with self.subTest(channels=channels, sample_width=sample_width):
+                    path = directory / "input.wav"
+                    write_pcm_wav(path, channels, sample_width, 2500)
+                    legacy = directory / "legacy.wav"
+                    chunked = directory / "chunked.wav"
+                    save_pcm_wav_to_path(load_pcm_wav_from_path(path), legacy)
+                    WavCarrier(path, 333).rewrite_to_path(chunked, lambda start, units: units)
+                    self.assertEqual(chunked.read_bytes(), legacy.read_bytes())
+
+    def test_wav_formats_round_trip_across_chunk_boundaries(self) -> None:
+        formats = ((1, 1), (1, 2), (2, 2), (2, 3), (1, 4))
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for channels, sample_width in formats:
+                path = directory / f"c{channels}-w{sample_width}.wav"
+                write_pcm_wav(path, channels, sample_width, 12000 // channels)
+                original = load_pcm_wav_from_path(path)
+                bytes_per_frame = channels * sample_width
+                for lsb_count in (1, 3, 8):
+                    for chunk_frames in (500 // channels, 97):
+                        with self.subTest(channels=channels, sample_width=sample_width, lsb_count=lsb_count, chunk_frames=chunk_frames):
+                            source = WavCarrier(path, chunk_frames * bytes_per_frame)
+                            chunk_units = source.frames_per_chunk * channels
+                            context = encode_wav_media_context(source.info, source.total_units)
+                            payload = f"c={channels};w={sample_width};k={lsb_count};".encode("ascii").ljust(700, b"p")
+                            encoding = prepare_carrier_encoding(source, AUDIO_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, self.SPAN + 3, lsb_count, payload, b"chunked")
+                            layout = encoding.layout
+                            edges = range(chunk_units, source.total_units, chunk_units)
+                            self.assertTrue(any(0 < edge < layout.bootstrap_span for edge in edges))
+                            self.assertGreaterEqual(sum(layout.start_unit < edge < layout.start_unit + layout.footprint for edge in edges), 1)
+                            output = directory / "output.wav"
+                            source.rewrite_to_path(output, encoding.embed_chunk)
+                            encoding.finish()
+                            result = decode_carrier_source(WavCarrier(output, chunk_frames * bytes_per_frame), AUDIO_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                            self.assertEqual(result.verdict, "Authentic", result.detail)
+                            self.assertEqual(result.payload, encoding.payload)
+                            self.assertEqual(verify_wav(output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+                            stego = load_pcm_wav_from_path(output)
+                            self.assertEqual(
+                                (stego.channels, stego.sample_width, stego.frame_rate, stego.frame_count),
+                                (original.channels, original.sample_width, original.frame_rate, original.frame_count),
+                            )
+                            before = np.frombuffer(original.frame_bytes, dtype=np.uint8).reshape(-1, sample_width)
+                            after = np.frombuffer(stego.frame_bytes, dtype=np.uint8).reshape(-1, sample_width)
+                            self.assertTrue(np.array_equal(before[:, 1:], after[:, 1:]))
+                            changed = np.flatnonzero(before[:, 0] != after[:, 0])
+                            self.assertTrue(np.all((changed < layout.bootstrap_span) | ((changed >= layout.start_unit) & (changed < layout.start_unit + layout.footprint))))
+                            self.assertTrue(np.all((before[:layout.bootstrap_span, 0] ^ after[:layout.bootstrap_span, 0]) <= 1))
+                            stego_units = wav_frame_bytes_to_carrier(stego.frame_bytes, sample_width)
+                            self.assertEqual(stego_units.size, layout.total_units)
+                            self.assertEqual(
+                                reference_masked_media_hash(stego_units, AUDIO_MEDIA_CODE, lsb_count, layout.start_unit, layout.footprint, layout.bootstrap_span),
+                                encoding.payload.media_hash,
+                            )
+
+    def test_truncated_wav_is_cannot_verify_before_protocol_reads(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "input.wav"
+            output = directory / "output.wav"
+            write_pcm_wav(path, 2, 2, 4000)
+            encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"truncate me", b"")
+            truncated = directory / "truncated.wav"
+            truncated.write_bytes(output.read_bytes()[:-1])
+            with self.assertRaisesRegex(ValueError, "shorter than its declared frame count"):
+                read_pcm_wav_info(truncated)
+            with patch("stego.core.decode_carrier_source", wraps=decode_carrier_source) as decode:
+                result = verify_wav(truncated, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Cannot Verify")
+            self.assertIn("shorter than its declared frame count", result.detail)
+            decode.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "shorter than its declared frame count"):
+                encode_wav(truncated, directory / "never.wav", PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse((directory / "never.wav").exists())
+
+    def test_mid_stream_read_failures_are_cannot_verify(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "input.wav"
+            output = directory / "output.wav"
+            write_pcm_wav(path, 1, 2, 12000)
+            encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"mid-stream", b"")
+            context = encode_wav_media_context(read_pcm_wav_info(output))
+
+            source = WavCarrier(output, 1024)
+            with open(output, "r+b") as handle:
+                handle.truncate(os.path.getsize(output) - 64)
+            result = decode_carrier_source(source, AUDIO_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Cannot Verify")
+            self.assertIn("masked media hash", result.detail)
+            self.assertIn("ended before its declared frame count", result.detail)
+
+            encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"mid-stream", b"")
+            real_readframes = wave.Wave_read.readframes
+            calls = []
+
+            def failing_readframes(wav_file: wave.Wave_read, frame_count: int) -> bytes:
+                calls.append(frame_count)
+                if len(calls) == 4:
+                    raise OSError("simulated device error")
+                return real_readframes(wav_file, frame_count)
+
+            source = WavCarrier(output, 1024)
+            with patch.object(wave.Wave_read, "readframes", failing_readframes):
+                result = decode_carrier_source(source, AUDIO_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Cannot Verify")
+            self.assertIn("could not read WAV frame data", result.detail)
+
+            source = WavCarrier(output, 1024)
+            write_pcm_wav(output, 2, 2, 6000)
+            result = decode_carrier_source(source, AUDIO_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Cannot Verify")
+            self.assertIn("header changed", result.detail)
+
+    def test_wav_input_change_between_passes_is_detected(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "input.wav"
+            output = directory / "output.wav"
+            write_pcm_wav(path, 1, 2, 8000)
+
+            source = WavCarrier(path, 4096)
+            context = encode_wav_media_context(source.info, source.total_units)
+            encoding = prepare_carrier_encoding(source, AUDIO_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            flip_carrier_byte_of_last_sample(path, 2)
+            source.rewrite_to_path(output, encoding.embed_chunk)
+            with self.assertRaisesRegex(ValueError, "carrier changed between encoding passes"):
+                encoding.finish()
+
+            write_pcm_wav(path, 1, 2, 8000)
+            real_prepare = prepare_carrier_encoding
+
+            def prepare_then_change_input(*args: object) -> CarrierEncoding:
+                prepared = real_prepare(*args)
+                flip_carrier_byte_of_last_sample(path, 2)
+                return prepared
+
+            output.unlink()
+            with patch("stego.core.prepare_carrier_encoding", prepare_then_change_input):
+                with self.assertRaisesRegex(ValueError, "carrier changed between encoding passes"):
+                    encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse(output.exists())
+
+    def test_streamed_wav_path_ignores_whole_file_cap(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "input.wav"
+            output = directory / "output.wav"
+            write_pcm_wav(path, 2, 2, 5000)
+            with patch("stego.media.MAX_WAV_FRAME_BYTES", 1024):
+                with self.assertRaisesRegex(ValueError, "version-1 limit"):
+                    load_pcm_wav_from_path(path)
+                encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"no cap", b"")
+                self.assertEqual(verify_wav(output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+    def test_wav_carrier_memory_does_not_grow_with_carrier_size(self) -> None:
+        peaks = {}
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for megabytes in (2, 16):
+                path = directory / f"{megabytes}.wav"
+                output = directory / f"{megabytes}-out.wav"
+                write_large_pcm_wav(path, megabytes * 1024 * 1024)
+                tracemalloc.start()
+                try:
+                    encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"bounded", b"")
+                    result = verify_wav(output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                    peaks[megabytes] = tracemalloc.get_traced_memory()[1]
+                finally:
+                    tracemalloc.stop()
+                self.assertEqual(result.verdict, "Authentic")
+        self.assertLess(peaks[16], 8 * 1024 * 1024)
+        self.assertLess(peaks[16], peaks[2] * 2)
+
+    @unittest.skipUnless(os.environ.get("STEGO_LARGE_WAV_TEST") == "1", "set STEGO_LARGE_WAV_TEST=1 to run the >64 MiB WAV test")
+    def test_wav_larger_than_legacy_cap_round_trips(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "large.wav"
+            output = directory / "large-out.wav"
+            write_large_pcm_wav(path, 72 * 1024 * 1024)
+            with self.assertRaisesRegex(ValueError, "version-1 limit"):
+                load_pcm_wav_from_path(path)
+            tracemalloc.start()
+            try:
+                layout, payload = encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"beyond the cap", b"")
+                result = verify_wav(output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                peak = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload, payload)
+            self.assertEqual(layout.total_units, 36 * 1024 * 1024)
+            self.assertLess(peak, 16 * 1024 * 1024)
+
+
+def encode_carrier_source_from(source: CarrierSource) -> CarrierEncoding:
+    context = struct.pack(">II", source.total_units // 3, 1)
+    return prepare_carrier_encoding(source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"hello", b"{}")
+
+
+def flip_carrier_byte_of_last_sample(path: Path, sample_width: int) -> None:
+    """Flip the top bit of the last sample's least-significant byte, which is a hashed carrier bit."""
+    with open(path, "r+b") as handle:
+        handle.seek(-sample_width, os.SEEK_END)
+        value = handle.read(1)[0]
+        handle.seek(-sample_width, os.SEEK_END)
+        handle.write(bytes((value ^ 0x80,)))
+
+
+def write_large_pcm_wav(path: Path, frame_byte_count: int) -> None:
+    """Write 16-bit stereo PCM in blocks, without holding the whole file in memory."""
+    block = random_units(1024 * 1024).tobytes()
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(2)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(44100)
+        wav_file.setnframes(frame_byte_count // 4)
+        for _ in range(frame_byte_count // len(block)):
+            wav_file.writeframesraw(block)
 
 
 if __name__ == "__main__":
