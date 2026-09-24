@@ -16,6 +16,8 @@ from flask import (
     url_for,
 )
 
+from stego import PROTOCOL_VERSION
+
 from .services.current_protocol import CurrentProtocolService, infer_payload_claim
 
 
@@ -33,7 +35,7 @@ def index() -> str:
 
 @web.post("/encode")
 def encode() -> Response | tuple[Response, int]:
-    """Encrypt, sign, and embed a payload using protocol version 2."""
+    """Encrypt, sign, and embed a payload using protocol version 3."""
     output_path: Path | None = None
     try:
         user_payload, payload_mime, payload_name = _payload_input()
@@ -62,7 +64,7 @@ def encode() -> Response | tuple[Response, int]:
             )
         return jsonify(
             ok=True,
-            protocol_version=2,
+            protocol_version=PROTOCOL_VERSION,
             media_type=result.media_type,
             filename=f"stego.{extension}",
             mime_type=_DOWNLOAD_TYPES[extension],
@@ -81,7 +83,7 @@ def encode() -> Response | tuple[Response, int]:
                 "media-and-payload-validated",
                 "sender-and-receiver-keys-loaded",
                 "embedding-geometry-validated",
-                "masked-media-hash-created",
+                "full-media-hash-created",
                 "payload-encrypted-and-signed",
                 "receiver-bootstrap-and-packet-embedded",
                 "media-exported",

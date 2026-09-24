@@ -37,7 +37,7 @@ bash scripts/install-hooks.sh
 
 - Keep `payload_protocol.py` byte-only and legacy-compatible; do not route new Flask media operations through it.
 - Keep the masked-media protocol media-neutral and use its fixed `stego/` PNG and WAV adapters for file I/O.
-- Preserve both documented packet formats and verification verdicts. The active Flask routes accept only protocol version 2; do not present legacy `STG1` files as interoperable.
+- Preserve protocol version 3 and the legacy `STG1` format with their documented verification verdicts. The active Flask routes accept only protocol version 3; do not present legacy `STG1` files as interoperable.
 - Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in the existing three test modules unless the repository adopts a different layout.
 - Annotate every function and method parameter and return type, including private helpers; use `-> None` when nothing is returned.
 - Use plain built-in types and `|` unions, write `X | None` instead of `Optional`, and write `str | bytes | PathLike[str]` inline at each site rather than defining an alias. Annotate carrier arrays as `np.ndarray` without dtype or shape; let docstrings carry that detail, and do not import from `typing` unless there is no other way.

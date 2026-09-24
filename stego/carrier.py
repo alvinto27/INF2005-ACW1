@@ -115,6 +115,11 @@ class CarrierSource(ABC):
     def total_units(self) -> int:
         """Return the number of logical carrier units."""
 
+    @property
+    def fixed_byte_count(self) -> int:
+        """Return the number of fixed media bytes paired with all unit chunks."""
+        return 0
+
     @abstractmethod
     def read_units(self, start_unit: int, count: int) -> np.ndarray:
         """Return ``count`` units starting at ``start_unit``.
@@ -129,6 +134,16 @@ class CarrierSource(ABC):
 
         Raise ``CarrierAccessError`` when the storage cannot supply every unit.
         """
+
+    def iter_chunks_with_fixed_bytes(self) -> Iterator[tuple[np.ndarray, bytes]]:
+        """Yield bounded unit chunks with the fixed media bytes from each chunk.
+
+        Array-backed and other media-neutral sources have no fixed bytes. A
+        media backend overrides this method and obtains both outputs from the
+        same underlying chunk read.
+        """
+        for units in self.iter_chunks():
+            yield units, b""
 
 
 class ArrayCarrier(CarrierSource):

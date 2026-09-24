@@ -149,41 +149,51 @@ def preserved_bit_count(total_units: int, footprint: int, lsb_count: int, bootst
 
 
 class MaskedMediaHasher:
-    """Compute the masked media hash from carrier chunks supplied in order.
+    """Hash masked carrier units and fixed media bytes in bounded chunks.
 
-    The digest equals SHA-256 over the fixed context prefix followed by every
-    carrier unit, with the bootstrap region's lowest bit and the whole packet
-    footprint's lowest ``lsb_count`` bits cleared. Chunk boundaries have no
-    effect on the result. The hasher counts the units it receives and refuses
-    any count other than ``total_units``.
+    Chunk boundaries do not affect the digest. The hasher checks the declared
+    number of unit and fixed bytes before producing the final media hash.
     """
 
-    def __init__(self, media_code: int, lsb_count: int, total_units: int, start_unit: int, footprint: int, bootstrap_span: int) -> None:
-        """Check the geometry and feed the fixed context prefix."""
+    def __init__(
+        self,
+        media_code: int,
+        lsb_count: int,
+        total_units: int,
+        start_unit: int,
+        footprint: int,
+        bootstrap_span: int,
+        fixed_byte_count: int = 0,
+    ) -> None:
+        """Check geometry and expected stream lengths."""
         media_code = _validate_media_code(media_code)
         lsb_count = _validate_lsb_count(lsb_count)
         total_units = _validate_non_negative_integer(total_units, "total_units")
         start_unit = _validate_non_negative_integer(start_unit, "start_unit")
         footprint = _validate_non_negative_integer(footprint, "footprint")
         bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
+        fixed_byte_count = _validate_non_negative_integer(
+            fixed_byte_count, "fixed_byte_count"
+        )
         if start_unit + footprint > total_units:
             raise ValueError("masked media footprint is out of range")
         if start_unit < bootstrap_span:
             raise ValueError("start_unit must be at least bootstrap_span")
+        encode_protocol_field(fixed_byte_count, "fixed_byte_count")
+        self._media_code = media_code
+        self._lsb_count = lsb_count
         self._total_units = total_units
+        self._start_unit = start_unit
+        self._footprint = footprint
+        self._bootstrap_span = bootstrap_span
+        self._expected_fixed_byte_count = fixed_byte_count
         self._consumed_units = 0
-        # The regions cannot overlap because start_unit >= bootstrap_span.
+        self._consumed_fixed_bytes = 0
+        self._unit_hash = hashlib.sha256()
+        self._fixed_hash = hashlib.sha256()
         self._regions = (
             (0, bootstrap_span, np.uint8(0xFE)),
             (start_unit, start_unit + footprint, np.uint8((~((1 << lsb_count) - 1)) & 0xFF)),
-        )
-        self._hash = hashlib.sha256(
-            MEDIA_HASH_DOMAIN
-            + struct.pack(MEDIA_HASH_CONTEXT_PREFIX_FORMAT, media_code, lsb_count)
-            + encode_protocol_field(total_units, "total_units")
-            + encode_protocol_field(start_unit, "start_unit")
-            + encode_protocol_field(footprint, "footprint")
-            + encode_protocol_field(bootstrap_span, "bootstrap_span")
         )
 
     @property
@@ -191,9 +201,15 @@ class MaskedMediaHasher:
         """Return how many carrier units have been hashed so far."""
         return self._consumed_units
 
-    def update(self, chunk: np.ndarray) -> None:
-        """Hash the next chunk of carrier units without changing the caller's array."""
+    @property
+    def consumed_fixed_bytes(self) -> int:
+        """Return how many fixed media bytes have been hashed so far."""
+        return self._consumed_fixed_bytes
+
+    def update(self, chunk: np.ndarray, fixed_bytes: bytes = b"") -> None:
+        """Hash one unit chunk and its fixed bytes without changing the array."""
         chunk = _validate_carrier_units(chunk)
+        fixed_bytes = _require_bytes(fixed_bytes, "fixed_bytes")
         chunk_start = self._consumed_units
         chunk_end = chunk_start + int(chunk.size)
         if chunk_end > self._total_units:
@@ -201,6 +217,25 @@ class MaskedMediaHasher:
                 "carrier supplied more units than total_units: "
                 f"consumed_units={chunk_end}, total_units={self._total_units}"
             )
+        self._hash_units(chunk, chunk_start, chunk_end)
+        self._consumed_units = chunk_end
+        self.update_fixed_bytes(fixed_bytes)
+
+    def update_fixed_bytes(self, fixed_bytes: bytes) -> None:
+        """Hash fixed bytes supplied alongside one or more unit chunks."""
+        fixed_bytes = _require_bytes(fixed_bytes, "fixed_bytes")
+        next_count = self._consumed_fixed_bytes + len(fixed_bytes)
+        if next_count > self._expected_fixed_byte_count:
+            raise ValueError(
+                "carrier supplied more fixed bytes than fixed_byte_count: "
+                f"consumed_fixed_bytes={next_count}, "
+                f"fixed_byte_count={self._expected_fixed_byte_count}"
+            )
+        self._fixed_hash.update(fixed_bytes)
+        self._consumed_fixed_bytes = next_count
+
+    def _hash_units(self, chunk: np.ndarray, chunk_start: int, chunk_end: int) -> None:
+        """Mask and hash carrier units from one chunk."""
         masked = chunk
         for region_start, region_end, mask in self._regions:
             local = overlap_range(chunk_start, chunk_end, region_start, region_end)
@@ -209,22 +244,37 @@ class MaskedMediaHasher:
             if masked is chunk:
                 masked = chunk.copy()
             masked[local[0]:local[1]] &= mask
-        self._hash.update(np.ascontiguousarray(masked))
-        self._consumed_units = chunk_end
+        self._unit_hash.update(np.ascontiguousarray(masked))
 
     def digest(self) -> bytes:
-        """Return the hash after checking that exactly total_units were supplied."""
+        """Return the final hash after checking both declared stream lengths."""
         if self._consumed_units != self._total_units:
             raise ValueError(
                 "carrier supplied fewer units than total_units: "
                 f"consumed_units={self._consumed_units}, total_units={self._total_units}"
             )
-        return self._hash.digest()
+        if self._consumed_fixed_bytes != self._expected_fixed_byte_count:
+            raise ValueError(
+                "carrier supplied fewer fixed bytes than fixed_byte_count: "
+                f"consumed_fixed_bytes={self._consumed_fixed_bytes}, "
+                f"fixed_byte_count={self._expected_fixed_byte_count}"
+            )
+        preimage = (
+            MEDIA_HASH_DOMAIN
+            + struct.pack(MEDIA_HASH_CONTEXT_PREFIX_FORMAT, self._media_code, self._lsb_count)
+            + encode_protocol_field(self._total_units, "total_units")
+            + encode_protocol_field(self._expected_fixed_byte_count, "fixed_byte_count")
+            + encode_protocol_field(self._start_unit, "start_unit")
+            + encode_protocol_field(self._footprint, "footprint")
+            + encode_protocol_field(self._bootstrap_span, "bootstrap_span")
+            + self._unit_hash.digest()
+            + self._fixed_hash.digest()
+        )
+        return hashlib.sha256(preimage).digest()
 
 
 def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_count: int, start_unit: int, footprint: int, bootstrap_span: int) -> bytes:
-    """Hash the carrier with the packet's low bits cleared, so the sender and receiver get the
-    same answer even though the packet overwrote those bits."""
+    """Hash an in-memory carrier with the protocol's bootstrap and packet bits masked."""
     carrier_units = _validate_carrier_units(carrier_units)
     hasher = MaskedMediaHasher(media_code, lsb_count, carrier_units.size, start_unit, footprint, bootstrap_span)
     for offset in range(0, carrier_units.size, DEFAULT_CHUNK_BYTES):

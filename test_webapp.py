@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from PIL import Image
 
-from stego import generate_rsa_keypair
+from stego import PROTOCOL_VERSION, generate_rsa_keypair
 from stego_web import create_app
 
 
@@ -21,14 +21,35 @@ PASSWORD = "test-password"
 
 
 def sample_png() -> bytes:
-    """Return a strict RGB PNG with enough carrier units for protocol v2."""
+    """Return a strict RGB PNG with enough carrier units for protocol v3."""
     output = io.BytesIO()
     Image.new("RGB", (96, 96), (46, 112, 99)).save(output, format="PNG")
     return output.getvalue()
 
 
+def sample_rgba_png() -> tuple[bytes, np.ndarray]:
+    """Return an RGBA PNG and a copy of its expected alpha channel."""
+    pixels = np.zeros((96, 96, 4), dtype=np.uint8)
+    pixels[:, :, :3] = (46, 112, 99)
+    pixels[:, :, 3] = 255
+    pixels[:, :8, 3] = 0
+    pixels[:, -8:, 3] = 0
+    pixels[40:56, :, 3] = 128
+    alpha = pixels[:, :, 3].copy()
+    output = io.BytesIO()
+    Image.fromarray(pixels, mode="RGBA").save(output, format="PNG")
+    return output.getvalue(), alpha
+
+
+def sample_palette_png() -> bytes:
+    """Return a palette PNG to test the strict web carrier boundary."""
+    output = io.BytesIO()
+    Image.new("P", (96, 96)).save(output, format="PNG")
+    return output.getvalue()
+
+
 def sample_wav() -> bytes:
-    """Return a mono 16-bit PCM WAV with enough samples for protocol v2."""
+    """Return a mono 16-bit PCM WAV with enough samples for protocol v3."""
     output = io.BytesIO()
     with wave.open(output, "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -165,6 +186,8 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIn(b"receiver_public_key", response.data)
         self.assertIn(b"receiver_private_key", response.data)
         self.assertIn(b"payload_file", response.data)
+        self.assertIn(b"RGB or RGBA PNG, or uncompressed PCM WAV", response.data)
+        self.assertIn(b"protocol v3", response.data)
         self.assertNotIn(b"start_secret", response.data)
         self.assertNotIn(b"original_cover", response.data)
         self.assertIn(b"gsap@3.15", response.data)
@@ -176,12 +199,15 @@ class WebApplicationTests(unittest.TestCase):
             encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
         )
         encoded = encoded_response.get_json()
-        self.assertEqual(encoded["protocol_version"], 2)
+        self.assertEqual(encoded["protocol_version"], PROTOCOL_VERSION)
+        self.assertEqual(encoded["protocol_version"], 3)
         self.assertEqual(encoded["bootstrap_span"], 2048)
         decoded = self.decode(encoded, "stego.png")
         self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
         report = decoded.get_json()
         self.assertEqual(report["verdict"], "Authentic")
+        self.assertEqual(report["frame_version"], PROTOCOL_VERSION)
+        self.assertEqual(report["frame_version"], 3)
         self.assertEqual(report["start_location"], 2048)
         self.assertEqual(report["lsb_bits"], 3)
         self.assertEqual(report["payload"]["metadata"]["team"], "P1-4")
@@ -190,6 +216,41 @@ class WebApplicationTests(unittest.TestCase):
             b"authenticated message",
         )
         self.assertTrue(report["payload"]["preview_allowed"])
+
+    def test_rgba_png_web_round_trip_keeps_alpha_bytes(self) -> None:
+        """The web flow encodes and verifies RGBA without changing alpha."""
+        cover, expected_alpha = sample_rgba_png()
+        encoded_response = self.encode(cover, "cover.png", lsb_bits=3)
+        self.assertEqual(
+            encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
+        )
+        encoded = encoded_response.get_json()
+        self.assertEqual(encoded["protocol_version"], PROTOCOL_VERSION)
+        stego_bytes = self.download_stego(encoded)
+        with Image.open(io.BytesIO(stego_bytes)) as stego_image:
+            self.assertEqual(stego_image.mode, "RGBA")
+            stego_alpha = np.asarray(stego_image, dtype=np.uint8)[:, :, 3].copy()
+        self.assertTrue(np.array_equal(stego_alpha, expected_alpha))
+
+        decoded = self.decode_bytes(stego_bytes, "stego.png")
+        self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertEqual(report["frame_version"], PROTOCOL_VERSION)
+
+    def test_palette_png_errors_reach_encode_and_verify(self) -> None:
+        """Palette PNG failures keep the library's exact format detail."""
+        detail = "PNG must be RGB or RGBA; palette and grayscale images are not supported"
+        encoded = self.encode(sample_palette_png(), "palette.png")
+        self.assertEqual(encoded.status_code, 400)
+        self.assertEqual(encoded.get_json()["error"], detail)
+
+        decoded = self.decode_bytes(sample_palette_png(), "palette.png")
+        self.assertEqual(decoded.status_code, 200)
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Cannot Verify")
+        self.assertEqual(report["message"], detail)
+        self.assertEqual(report["frame_version"], PROTOCOL_VERSION)
 
     def test_wav_binary_payload_round_trip(self) -> None:
         """WAV carriers preserve an arbitrary binary payload and type claim."""
@@ -233,6 +294,7 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         report = response.get_json()
         self.assertEqual(report["verdict"], "Cannot Verify")
+        self.assertEqual(report["frame_version"], PROTOCOL_VERSION)
         self.assertEqual(report["file_size"], len(stego_bytes))
 
     def test_wrong_receiver_key_is_payload_missing(self) -> None:
@@ -406,7 +468,7 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(
             response.get_json()["error"],
-            "unsupported carrier; upload an RGB PNG or uncompressed PCM WAV",
+            "unsupported carrier; upload an RGB or RGBA PNG or uncompressed PCM WAV",
         )
 
     def test_missing_and_empty_carrier_upload_errors_remain(self) -> None:

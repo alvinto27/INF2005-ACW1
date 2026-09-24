@@ -92,7 +92,7 @@
     result.append(fields([
       ['Bootstrap', data.start_location == null ? 'Not opened' : 'Opened for this receiver'],
       ['Signature', check(data.signature_valid, 'Valid', 'Invalid')],
-      ['Masked-media integrity', check(data.integrity_valid, 'Match', 'Mismatch')],
+      ['Full-media integrity', check(data.integrity_valid, 'Match', 'Mismatch')],
       ['Media ID', data.payload?.media_id],
       ['Timestamp (UTC)', data.payload?.timestamp_utc],
       ['Recovered LSB count', data.lsb_bits],
@@ -113,7 +113,7 @@
       ['MIME claim agrees', check(data.payload?.type_agrees, 'Yes', 'No')],
       ['Preserved carrier bits', data.preserved_bits],
       ['Preserved ratio', data.preserved_ratio == null ? null : `${(data.preserved_ratio * 100).toFixed(4)}%`],
-      ['Stored masked-media hash', data.payload?.media_hash],
+      ['Stored full media hash', data.payload?.media_hash],
       ['Nonce', data.payload?.nonce],
       ['Final verdict', verdict], ['Explanation', data.message || data.error],
     ]));
@@ -134,7 +134,7 @@
     const body = new FormData(form);
     const filename = form.elements.stego.files[0]?.name;
     result.hidden = true;
-    progress.textContent = 'Opening the receiver bootstrap, recovering geometry, verifying the signature, and checking masked-media integrity...';
+    progress.textContent = 'Opening the receiver bootstrap, recovering geometry, verifying the signature, and checking the full media hash...';
     progress.className = 'result operation-status is-loading';
     submit.classList.add('is-loading');
     form.setAttribute('aria-busy', 'true');

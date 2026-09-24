@@ -91,10 +91,10 @@ document.querySelectorAll('.next').forEach(button => button.addEventListener('cl
     button.disabled = true;
     card.classList.add('is-busy');
     status.textContent = 'Preparing integrity context...';
-    detail.textContent = 'The server will bind carrier geometry and preserved bits during encoding.';
+    detail.textContent = 'The server will bind the layout and all declared media sample bytes during encoding.';
     await new Promise(resolve => setTimeout(resolve, 450));
     status.textContent = 'Integrity inputs ready';
-    detail.textContent = 'The masked-media SHA-256 hash will be encrypted inside the signed record.';
+    detail.textContent = 'The full media SHA-256 hash will be encrypted inside the signed record.';
     card.classList.remove('is-busy');
     button.disabled = false;
     motion.pulse(card.querySelector('.process-box'));
@@ -115,13 +115,13 @@ function formatBytes(bytes) {
 function handleCoverFile(file) {
   if (!file) {
     coverInput.setCustomValidity('');
-    coverName.textContent = 'Drop a PNG or WAV here';
+    coverName.textContent = 'Drop an RGB or RGBA PNG, or PCM WAV here';
     coverMeta.textContent = 'Maximum request size is controlled by the local server.';
     coverDrop.classList.remove('has-file', 'has-error');
     return;
   }
   const supported = /\.(png|wav)$/i.test(file.name);
-  coverInput.setCustomValidity(supported ? '' : 'Choose a PNG or WAV file.');
+  coverInput.setCustomValidity(supported ? '' : 'Choose an RGB or RGBA PNG, or PCM WAV file.');
   coverDrop.classList.toggle('has-file', supported);
   coverDrop.classList.toggle('has-error', !supported);
   coverName.textContent = file.name;

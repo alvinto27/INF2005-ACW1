@@ -1,12 +1,12 @@
 # Work Not Built
 
-This record lists assignment work that remains outside the library and notebook. The library implements the reduced protocol version 2 format: verification recovers geometry through the encrypted bootstrap and is gated by the receiver private key; see the [KISS Reduction Record](KISS-REDUCTION-RECORD.md).
+This record lists assignment work that remains outside the library and notebook. The library implements protocol version 3: verification recovers geometry through the encrypted bootstrap and is gated by the receiver private key. Version 3 hashes all declared media sample bytes; see the [protocol design](PROTOCOL-DESIGN.md#why-the-hash-remains-reproducible) and [v3 hash record](PROTOCOL-V3-FULL-MEDIA-HASH.md).
 
 ## 1. IMPLEMENTED INTERFACE AND REMAINING DEMONSTRATION
 
 ### GUI
 
-The mandatory GUI from brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) is implemented in `stego_web/` and now uses the reduced protocol version 2. It accepts message or file payloads, keeps the previous seven-step presentation, shows cover and stego media side by side, supports 1-8 LSBs and an explicit bounded start unit, separates sender and receiver key roles, recovers geometry from the encrypted bootstrap, and previews authenticated supported payloads only after MIME checking. Automated PNG and WAV web tests cover the active flow.
+The mandatory GUI from brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) is implemented in `stego_web/` and uses protocol version 3. It accepts RGB or RGBA PNG and PCM WAV covers, supports message or file payloads, keeps the seven-step presentation, shows cover and stego media side by side, supports 1-8 LSBs and an explicit bounded start unit, separates sender and receiver key roles, recovers geometry from the encrypted bootstrap, and previews authenticated supported payloads only after MIME checking. Automated PNG and WAV web tests cover the active flow.
 
 What remains is demonstration and submission evidence rather than protocol integration: the team must show both media workflows live, play or display representative recovered payloads, explain why receiver-private-key verification replaces the old shared-secret/original-cover inputs, and capture the evidence selected for criteria 2 and 3 under brief [§11](../docs/INF2005-ACW1-spec_v5-f2f.md#11-assessment-rubric-40-marks).
 
@@ -30,7 +30,7 @@ This team criterion is worth 2 marks (brief [§11](../docs/INF2005-ACW1-spec_v5-
 
 - Technical limitations are already written in [PROTOCOL-DESIGN.md](PROTOCOL-DESIGN.md#limitations): overwritten cover bits cannot be recovered or authenticated; the fixed bootstrap span remains observable even though its fields and the record are encrypted; padding validation is only a format check; and authenticity is relative to the sender public key supplied for verification.
 - One further limitation is not yet written down. PNG compression is lossless, so LSB embedding preserves the pixels exactly. However, embedded bits are random and compress poorly, so the stego file is slightly larger than the cover. For `samples/Banana.png`, the cover is 1,673,875 bytes; the stego files are 1,675,090 bytes at `k=1`, 1,675,035 bytes at `k=3`, and 1,674,414 bytes at `k=8`. An observer holding both files sees a size increase of 1,215, 1,160, or 539 bytes at identical dimensions. This is a real detectability signal and an honest limitation to report.
-- A second limitation is not yet in the team's reflection. For 16-, 24-, and 32-bit WAV covers, the masked hash covers only the least-significant byte of each sample. The upper bytes, which hold most of the audible signal, can all change and verification still reports `Authentic`. Details are in the [Streaming Carrier Plan, section 11](STREAMING-CARRIER-PLAN.md#11-known-limits). The demonstration's 8-bit WAV has no upper bytes and is not affected.
+- The version 3 hash covers every declared byte of 16-, 24-, and 32-bit WAV samples, so changing a high sample byte gives `Tampered`. Two limits remain: a tool can change RGB colour values in fully transparent RGBA pixels, and RGB PNG `tRNS` transparency is ancillary data outside the hash. See the [v3 known limits](PROTOCOL-V3-FULL-MEDIA-HASH.md#6-on-disk-effect-and-known-limits).
 - The cleanup and demonstration work in this repository was carried out by AI agents under human direction and human review. The team must write and sign its own reflection; this record does not write that reflection for it.
 
 ## 3. DECIDED BUT NOT YET USED

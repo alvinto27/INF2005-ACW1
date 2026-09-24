@@ -27,11 +27,11 @@ PNG and WAV use the same protocol core through file-backed carriers. The interna
 
 ## 2. Protocol invariants kept
 
-The wire format did not change. Protocol version 2, the record, bootstrap, AES-GCM data, signing input, media codes, and media-context bytes are the same. The `total_units`, `start_unit`, `lsb_count`, footprint, capacity, and preserved-bit calculations are the same. The masked media hash has the same value for the same carrier and geometry. The verdicts keep their meanings.
+The carrier refactor did not change the then-current version 2 wire format. Protocol version 3 later changed the hash domain, hash structure, bootstrap/signing version byte, and PNG context; see the [v3 full media hash record](PROTOCOL-V3-FULL-MEDIA-HASH.md). The payload record, bootstrap fields, AES-GCM data, media codes, capacity, preserved-bit calculations, and verdict meanings remain otherwise unchanged.
 
-The layout and capacity functions in `stego/layout.py` already took only integers, so they did not change. The bit helpers in `stego/bits.py` did not change; they work on local array slices.
+The layout and capacity functions in `stego/layout.py` still use only integers. The bit helpers in `stego/bits.py` still work on local array slices.
 
-Tests keep the old whole-array hash as a reference, `reference_masked_media_hash` in `test_stego.py`, and compare the chunked hash with it.
+`test_stego.py` now uses independent raw-byte reference hashing for PNG pixels and WAV samples. It compares both hash streams across different chunk sizes.
 
 ## 3. Carrier abstraction
 
@@ -40,12 +40,14 @@ Tests keep the old whole-array hash as a reference, `reference_masked_media_hash
 | Member | Contract |
 | --- | --- |
 | `total_units` | The number of logical carrier units. |
+| `fixed_byte_count` | Number of fixed media bytes paired with all chunks; defaults to zero. |
 | `read_units(start_unit, count)` | A new uint8 array for one bounded range. An out-of-range request raises `CarrierAccessError`. |
 | `iter_chunks()` | Every unit once, in fixed order, in bounded chunks. A storage failure raises `CarrierAccessError`. |
+| `iter_chunks_with_fixed_bytes()` | Unit chunks paired with fixed bytes from the same media read; defaults to empty bytes. |
 
 `CarrierAccessError` is a `ValueError`. The backend holds no payload, cryptography, or protocol policy. `PngCarrier` and `WavCarrier` are the public file-backed carrier classes, and `CarrierSource` is their public bounded-access interface. The array backend remains an implementation detail.
 
-Writing is kept separate from reading. File-backed carriers provide a sequential `rewrite_to_path` method. It reads every chunk once, in order, gives each chunk to a transform function, and writes the result. No backend must support random-access writes.
+Writing is kept separate from reading. File-backed carriers provide a sequential `rewrite_to_path` method. It reads every chunk once, in order, gives each unit chunk to the existing two-argument transform, and writes the result. An optional fixed-byte callback hashes fixed bytes from that same read. No backend must support random-access writes.
 
 ## 4. Protocol flow
 
@@ -71,14 +73,14 @@ The packet position is known only after the bootstrap is opened. So the backend 
 
 ## 5. Incremental masked hash
 
-`MaskedMediaHasher` in `stego/layout.py` first hashes the same fixed context prefix as before. For each chunk, it finds the overlap with the two mask regions:
+`MaskedMediaHasher` in `stego/layout.py` streams two SHA-256 digests: masked carrier units and fixed media bytes. At the end, it checks both declared stream lengths and hashes the domain, media/LSB prefix, u64 fields, and two digests. For each unit chunk, it finds the overlap with the two mask regions:
 
 | Region | Range | Bits cleared |
 | --- | --- | --- |
 | Bootstrap | `[0, bootstrap_span)` | lowest 1 |
 | Packet | `[start_unit, start_unit + footprint)`, alignment padding included | lowest `lsb_count` |
 
-It copies the chunk only when a region overlaps it, clears the bits in the overlapping slice, and updates SHA-256. Chunk boundaries have no effect on the digest. `calculate_masked_media_hash` keeps its signature and uses the hasher.
+It copies the chunk only when a region overlaps it, clears the bits in the overlapping slice, and updates the unit digest. The paired fixed bytes update the fixed digest. Chunk boundaries have no effect on the final digest. `calculate_masked_media_hash` keeps its signature and uses an empty fixed stream.
 
 ### Unit accounting
 
@@ -99,7 +101,7 @@ Raw `OSError`, `EOFError`, `wave.Error`, and `struct.error` do not escape from t
 
 ## 7. WAV backend
 
-One carrier unit is the least-significant byte of one PCM sample, as before. WAV samples are little-endian, so that byte is at offset 0 of each sample. The other bytes of the sample are preserved. For N frames, a chunk has `N x channels` units for all sample widths.
+One carrier unit is the least-significant byte of one PCM sample, as before. WAV samples are little-endian, so that byte is at offset 0 of each sample. The other bytes of the sample are fixed media bytes. The writer preserves them, and the version 3 hash covers them. For N frames, a chunk has `N x channels` units for all sample widths.
 
 | Item | Behaviour |
 | --- | --- |
@@ -156,7 +158,7 @@ The whole-file WAV helpers `WavPcmData` and `load_pcm_wav_from_path` and the `MA
 | Web request bound | Flask accepts requests up to 256 MiB. Carrier uploads are saved to temporary files, and encoded carriers are written to persistent output files instead of being returned as base64. PNG decoding still uses Pillow's full-image decode; its working memory grows with image dimensions. See [section 12](#12-web-boundary-follow-up). |
 | Verification race | If the file changes between the targeted reads and the hash pass, the verdict can mix two versions. A reopened header is checked, but frame data is not taken as a snapshot. A local attacker who can write to the file during verification is out of scope. |
 | Packet-proportional cost | See [section 9](#9-memory-claim). |
-| WAV sample high bytes are not hashed (existing protocol behaviour) | The masked hash covers carrier units only. For 16-, 24-, and 32-bit WAVs, the upper bytes of each sample, which hold most of the audible signal, are outside the hash. On `main` before this refactor, a stego WAV whose upper bytes were all changed still verified as `Authentic`. This refactor keeps the hash exactly the same, so it keeps this behaviour. A fix changes the protocol and needs its own decision. |
+| WAV sample high bytes were not hashed by the earlier format | **Closed by version 3.** Every non-LSB byte of each declared 16-, 24-, or 32-bit PCM sample enters the fixed-byte hash. Changing one gives `Tampered`. See the [v3 full media hash record](PROTOCOL-V3-FULL-MEDIA-HASH.md#2-version-3-media-hash-rule). |
 
 ## 12. Web boundary follow-up
 
@@ -176,7 +178,7 @@ This follow-up is complete. Carrier files move through the web boundary by path;
 
 `TestChunkedCarrier` in `test_stego.py` covers:
 
-- equality with the whole-array reference hash
+- equality with an independent raw-byte v3 hash reference for RGB/RGBA PNG and PCM WAV
 - the same digest for different chunk sizes
 - bootstrap and packet masks that cross one chunk edge and many chunk edges
 - `k` = 1, 3, and 8
@@ -184,8 +186,8 @@ This follow-up is complete. Carrier files move through the web boundary by path;
 - short and long unit streams
 - range checks
 - chunk order
-- changes between the encode passes, for arrays and for WAVs
-- WAV units, ranges, and hash compared with a local whole-file reference helper, for 8-bit mono, 16-bit mono, 16-bit stereo, 24-bit, and 32-bit
+- changes between the encode passes, including WAV fixed bytes, for arrays and files
+- WAV units, ranges, and both hash streams compared with raw sample bytes for 8-bit mono, 16-bit mono/stereo, 24-bit, and 32-bit
 - unchanged chunked output compared with the whole-file writer
 - round trips across WAV chunk edges
 - a truncated WAV and failures during a pass

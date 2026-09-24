@@ -82,8 +82,8 @@ def _validate_carrier_source(source: CarrierSource) -> CarrierSource:
     return source
 
 
-def _new_masked_hasher(media_code: int, layout: EmbeddingLayout) -> MaskedMediaHasher:
-    """Make a masked media hasher for the layout's geometry."""
+def _new_masked_hasher(media_code: int, layout: EmbeddingLayout, fixed_byte_count: int = 0) -> MaskedMediaHasher:
+    """Make a masked media hasher for the layout and fixed-byte stream."""
     return MaskedMediaHasher(
         media_code,
         layout.lsb_count,
@@ -91,14 +91,15 @@ def _new_masked_hasher(media_code: int, layout: EmbeddingLayout) -> MaskedMediaH
         layout.start_unit,
         layout.footprint,
         layout.bootstrap_span,
+        fixed_byte_count,
     )
 
 
 def _hash_carrier_source(source: CarrierSource, media_code: int, layout: EmbeddingLayout) -> bytes:
     """Compute the masked media hash in one bounded pass over the carrier."""
-    hasher = _new_masked_hasher(media_code, layout)
-    for chunk in source.iter_chunks():
-        hasher.update(chunk)
+    hasher = _new_masked_hasher(media_code, layout, source.fixed_byte_count)
+    for units, fixed_bytes in source.iter_chunks_with_fixed_bytes():
+        hasher.update(units, fixed_bytes)
     return hasher.digest()
 
 
@@ -152,7 +153,7 @@ class CarrierEncoding:
     change between the passes.
     """
 
-    def __init__(self, media_code: int, layout: EmbeddingLayout, payload: PayloadRecord, media_hash: bytes, packet: bytes, envelope: bytes) -> None:
+    def __init__(self, media_code: int, layout: EmbeddingLayout, payload: PayloadRecord, media_hash: bytes, packet: bytes, envelope: bytes, fixed_byte_count: int = 0) -> None:
         """Keep the packet and bootstrap bits for embedding."""
         self.layout = layout
         self.payload = payload
@@ -167,7 +168,7 @@ class CarrierEncoding:
         self._packet_transform = lsb_range_transform(
             layout.start_unit, self._packet_bits, layout.lsb_count
         )
-        self._rehash = _new_masked_hasher(media_code, layout)
+        self._rehash = _new_masked_hasher(media_code, layout, fixed_byte_count)
         self._next_unit = 0
 
     def embed_chunk(self, chunk_start: int, units: np.ndarray) -> np.ndarray:
@@ -177,13 +178,22 @@ class CarrierEncoding:
         if chunk_start != self._next_unit:
             raise ValueError("carrier chunks must be embedded once each, in order")
         # Hash the original units before any change so finish() can detect a
-        # carrier that changed after the first pass.
+        # carrier that changed after the first pass. Fixed bytes are supplied
+        # separately by file backends from the same chunk read.
         self._rehash.update(units)
         chunk_end = chunk_start + int(units.size)
         result = self._bootstrap_transform(chunk_start, units.copy())
         result = self._packet_transform(chunk_start, result)
         self._next_unit = chunk_end
         return result
+
+    def update_fixed_bytes(self, chunk_start: int, units: np.ndarray, fixed_bytes: bytes) -> None:
+        """Hash fixed bytes paired with the current original carrier chunk."""
+        chunk_start = _validate_non_negative_integer(chunk_start, "chunk_start")
+        units = _validate_carrier_units(units)
+        if chunk_start != self._next_unit:
+            raise ValueError("fixed bytes must match the current carrier chunk")
+        self._rehash.update_fixed_bytes(_require_bytes(fixed_bytes, "fixed_bytes"))
 
     def finish(self) -> None:
         """Check that the second pass covered the carrier and read the same original data."""
@@ -247,7 +257,10 @@ def prepare_carrier_encoding(source: CarrierSource, media_code: int, media_conte
     envelope = seal_to_public_key(serialize_bootstrap(fields), receiver_public_key)
     if len(envelope) * 8 != layout.bootstrap_span:
         raise ValueError("bootstrap envelope has an unexpected span")
-    return CarrierEncoding(media_code, layout, payload, media_hash, ciphertext + signature, envelope)
+    return CarrierEncoding(
+        media_code, layout, payload, media_hash, ciphertext + signature, envelope,
+        source.fixed_byte_count,
+    )
 
 
 def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: bytes, signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[np.ndarray, EmbeddingLayout, PayloadRecord]:
@@ -415,7 +428,7 @@ def _paths_resolve_same(first_path: str | bytes | PathLike[str], second_path: st
 
 
 def encode_png(input_path: str | bytes | PathLike[str], output_path: str | bytes | PathLike[str], signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[EmbeddingLayout, PayloadRecord]:
-    """Encode a signed packet into an RGB PNG file and save it."""
+    """Encode a signed packet into an RGB or RGBA PNG file and save it."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
     source = PngCarrier(input_path)
@@ -423,13 +436,13 @@ def encode_png(input_path: str | bytes | PathLike[str], output_path: str | bytes
         source, source.media_code, source.media_context, signing_private_key,
         receiver_public_key, start_unit, lsb_count, user_payload, metadata,
     )
-    source.rewrite_to_path(output_path, encoding.embed_chunk)
+    source.rewrite_to_path(output_path, encoding.embed_chunk, encoding.update_fixed_bytes)
     encoding.finish()
     return encoding.layout, encoding.payload
 
 
 def verify_png(input_path: str | bytes | PathLike[str], sender_public_key: rsa.RSAPublicKey, receiver_private_key: rsa.RSAPrivateKey) -> VerificationResult:
-    """Verify an RGB PNG using sender and receiver keys."""
+    """Verify an RGB or RGBA PNG using sender and receiver keys."""
     try:
         source = PngCarrier(input_path)
     except (OSError, ValueError, UnSupportedFileType) as error:
@@ -463,7 +476,7 @@ def encode_wav(input_path: str | bytes | PathLike[str], output_path: str | bytes
         receiver_public_key, start_unit, lsb_count, user_payload, metadata,
     )
     try:
-        source.rewrite_to_path(output_path, encoding.embed_chunk)
+        source.rewrite_to_path(output_path, encoding.embed_chunk, encoding.update_fixed_bytes)
         encoding.finish()
     except BaseException:
         _remove_incomplete_output(output_path)

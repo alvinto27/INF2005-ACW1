@@ -13,6 +13,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
 | Current protocol, fixed-width fields, typed-payload metadata, and design history | [PROTOCOL-DESIGN.md](PROTOCOL-DESIGN.md#protocol-design) |
+| Implemented version 3 hash, RGBA, compatibility, and limits | [PROTOCOL-V3-FULL-MEDIA-HASH.md](PROTOCOL-V3-FULL-MEDIA-HASH.md) |
 | Historical protocol version 2 design; stages 0 through 6b complete; 6c cancelled | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
 | Chunked carrier access: design, invariants, file-backed backends, chunk size, memory claim, and web follow-up | [STREAMING-CARRIER-PLAN.md](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) |
@@ -37,7 +38,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Public `PngCarrier`, `WavCarrier`, WAV header reader, and PNG/WAV file adapters | [stego/media.py](../stego/media.py) |
 | Two-pass encode, receiver-gated verification over a carrier backend, and file wrappers | [stego/core.py](../stego/core.py) |
 | Flask application factory, disk-backed uploads, encode/decode routes, and validated stego downloads | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
-| Flask-to-protocol-v2 byte/file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
+| Flask-to-protocol-v3 byte/file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
 | Retained legacy web protocol | [payload_protocol.py](../payload_protocol.py) and legacy modules under [stego_web/services/](../stego_web/services/) |
 | FR1–FR12 demonstration notebook: verdict/fidelity evidence; file-backed PNG and WAV carrier demonstrations | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |

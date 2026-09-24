@@ -5,9 +5,12 @@
 `POST /decode` in `stego_web/routes.py` delegates to
 `stego_web/services/current_protocol.py`. The adapter loads uploaded key bytes,
 uses a request-scoped temporary file for the fixed `stego` media API, and calls
-`verify_png` or `verify_wav`. Cryptographic and integrity decisions stay in
+`verify_png` or `verify_wav` for protocol version 3. Cryptographic and integrity decisions stay in
 `stego/core.py`; the Flask layer only validates multipart inputs and serializes
 the result.
+
+A readable version 2 bootstrap returns `Cannot Verify` with detail
+`unsupported bootstrap version`. The decoder does not retry with version 2.
 
 The browser controller is `stego_web/static/verify.js`. It inserts response text
 with DOM `textContent`, handles JSON and transport failures, prevents duplicate
@@ -18,7 +21,7 @@ rules below.
 
 `POST /decode` accepts four required multipart inputs:
 
-- `stego`: received strict RGB PNG or uncompressed PCM WAV;
+- `stego`: received 8-bit RGB or RGBA PNG, or uncompressed PCM WAV;
 - `sender_public_key`: trusted RSA-2048 public PEM;
 - `receiver_private_key`: intended receiver's encrypted RSA-2048 private PEM; and
 - `receiver_key_password`: password for that private key.
@@ -42,9 +45,9 @@ inspect the JSON verdict instead of treating HTTP success as authenticity.
 6. Verify the signature over protocol version, media interpretation, geometry,
    and ciphertext before attempting record decryption.
 7. Open AES-256-GCM using the recovered bootstrap fields as authenticated data.
-8. Parse the encrypted payload record and recompute the masked-media SHA-256 hash.
+8. Parse the encrypted payload record and recompute the version 3 full media SHA-256 hash over masked RGB units, RGBA alpha bytes, and all bytes of each declared PCM sample.
 9. Return `Authentic` only when signature, authenticated decryption, payload
-   structure, alignment padding, and masked-media integrity all succeed.
+   structure, alignment padding, and full-media integrity all succeed.
 
 The decoder reads one bootstrap and does not search the carrier for alternative
 packets after failure. A pristine carrier and a wrong receiver key are deliberately
@@ -81,7 +84,7 @@ and negative-verdict tests.
 - Authenticity is relative to the sender public key supplied by the receiver;
   there is no certificate directory or trust-on-first-use policy.
 - A wrong receiver key and absent payload intentionally share one outcome.
-- Container metadata outside decoded RGB channels or PCM samples is not covered.
+- PNG ancillary chunks and WAV chunks outside the declared PCM samples are not covered. Version 3 limitations for transparent pixel colours and RGB `tRNS` are listed in the [v3 hash record](PROTOCOL-V3-FULL-MEDIA-HASH.md#6-on-disk-effect-and-known-limits).
 - Overwritten cover LSB values cannot be recovered or authenticated.
 - The web adapter temporarily writes uploads to an isolated directory because
   the fixed protocol media API accepts paths; that directory is deleted when the

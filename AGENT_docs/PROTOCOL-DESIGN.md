@@ -2,13 +2,13 @@
 
 ## What the system does
 
-**Current state: reduced protocol version 2.** See the [KISS Reduction Record](KISS-REDUCTION-RECORD.md) and the historical [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md). The packet has no public marker or header. An RSA-OAEP bootstrap carries the packet geometry and AES-256-GCM session material for the intended receiver. The encrypted record is authenticated by RSA-PSS and the masked media hash. Version 1 files are not readable under this scheme. Serialised protocol integers use fixed unsigned 64-bit big-endian fields, and typed payload claims use encrypted metadata.
+**Current state: protocol version 3.** See the [Protocol Version 3 Full Media Hash](PROTOCOL-V3-FULL-MEDIA-HASH.md), the [KISS Reduction Record](KISS-REDUCTION-RECORD.md), and the historical [Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md). The packet has no public marker or header. An RSA-OAEP bootstrap carries the packet geometry and AES-256-GCM session material for the intended receiver. The encrypted record is authenticated by RSA-PSS and the v3 full media hash. Version 1 and version 2 files are not readable by the active protocol. Serialised protocol integers use fixed unsigned 64-bit big-endian fields, and typed payload claims use encrypted metadata.
 
-The system embeds an encrypted signed payload in the least-significant bits of a strict RGB PNG image or an uncompressed PCM WAV file. It hashes all carrier bits that the embedding operation preserves. Verification requires the sender public key and receiver private key.
+The system embeds an encrypted signed payload in the RGB units of an 8-bit RGB or RGBA PNG image, or in the least-significant byte of each uncompressed PCM WAV sample. The v3 hash covers the masked RGB units, RGBA alpha bytes, and all other bytes of each declared PCM sample. Verification requires the sender public key and receiver private key.
 
 ## Integrity invariant
 
-Every carrier bit that embedding intentionally preserves is represented in the masked media hash. The payload contains that hash and the user content. The signature authenticates the payload together with the media interpretation and the embedding layout. The signature bytes are validated by RSA-PSS verification itself.
+Every media-data byte that embedding preserves is represented in the v3 full media hash. The payload contains that hash and the user content. The signature authenticates the payload together with the media interpretation and the embedding layout. The signature bytes are validated by RSA-PSS verification itself.
 
 ## Why the hash remains reproducible
 
@@ -16,30 +16,7 @@ The encoder and verifier copy the carrier and clear the selected least-significa
 
 For example, with `k = 3`, the footprint mask is `11111000`. A carrier byte `10110110` becomes `10110000` for hashing. Embedding can change the byte to any value from `10110000` through `10110111`; applying the same mask always produces `10110000`. A change to any of the upper five bits produces a different masked byte.
 
-The exact media-hash calculation is:
-
-```python
-masked = carrier_units.copy()
-masked[0:bootstrap_span] &= np.uint8(0xFE)
-mask = (~((1 << lsb_count) - 1)) & 0xFF
-masked[start_unit:start_unit + footprint] &= np.uint8(mask)
-preimage = (
-    MEDIA_HASH_DOMAIN
-    + struct.pack(">BB", media_code, lsb_count)
-    + encode_protocol_field(total_units, "total_units")
-    + encode_protocol_field(start_unit, "start_unit")
-    + encode_protocol_field(footprint, "footprint")
-    + encode_protocol_field(bootstrap_span, "bootstrap_span")
-    + masked.tobytes()
-)
-media_hash = hashlib.sha256(preimage).digest()
-```
-
-`MEDIA_HASH_DOMAIN` is exactly:
-
-```python
-b"INF2005-ACW1\x00MEDIA-HASH\x00"
-```
+Protocol version 3 uses two SHA-256 streams: the masked RGB/sample-LSB unit stream and the fixed media-byte stream. The final hash binds the media code, LSB count, unit count, fixed-byte count, packet geometry, and both stream digests. See the [v3 full media hash rule](PROTOCOL-V3-FULL-MEDIA-HASH.md#2-version-3-media-hash-rule) for the exact preimage and backend byte order.
 
 The shared hash and capacity functions take the reserved bootstrap span as a required argument. Core derives the span from the RSA key and masks the one-LSB bootstrap region as well as the packet region. A start unit below the span is rejected. General lengths, positions, counters, and timestamps use fixed unsigned 64-bit big-endian fields through `encode_protocol_field`; bounded enumeration and prefix fields remain u8. The fixed media-context structs use their own formats.
 
@@ -99,7 +76,7 @@ signing_input = (
 
 The version in this input comes from the protocol constant, not from received data. The ciphertext length includes the 16-byte GCM tag. `max_record_length` accounts for the signature and tag; `max_user_payload_length` also subtracts the record overhead supplied by the caller. The generated 36-byte media id gives a flat 109-byte record overhead before user payload or metadata bytes; user payload and metadata add their own lengths. Core's pre-embedding structural guard uses the empty-metadata overhead and reports `carrier is too small for the protocol`; `max_user_payload_length` separately reports when `record_overhead` exceeds `record_maximum`, including both values. A usable carrier with oversized metadata therefore gets a record-capacity diagnostic rather than a structural-carrier diagnostic. Capacity helpers refuse a carrier that cannot hold the mandatory packet or record instead of clamping that case to zero. A returned user capacity of zero therefore means the complete protocol object fits exactly and leaves no user bytes.
 
-The PNG media context is exactly `struct.pack(">II", width, height)`. The WAV media context is exactly `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
+The PNG media context is exactly `struct.pack(">IIB", width, height, channel_count)`, where the channel count is `3` for RGB or `4` for RGBA. The WAV media context is exactly `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 
 ## Carrier units
 
@@ -109,10 +86,10 @@ A carrier unit is the smallest thing the embedder writes into. Its meaning is pe
 
 | Medium | One carrier unit | Units available |
 | --- | --- | --- |
-| PNG | one 8-bit colour channel value | `width x height x 3` |
+| PNG | one 8-bit R, G, or B value | `width x height x 3` for RGB and RGBA |
 | WAV | one PCM **sample** | `frame_count x channels` |
 
-For WAV, the unit is the sample, not the byte. Multi-byte PCM in WAV is always little-endian, so the lowest-address byte of a sample holds its low 8 bits. The carrier therefore takes every `sample_width`-th byte, starting at offset 0, and the writer puts the modified units back into those same positions. Every other byte of the file is copied through unchanged.
+For WAV, the unit is the sample, not the byte. Multi-byte PCM in WAV is always little-endian, so the lowest-address byte of a sample holds its low 8 bits. The carrier therefore takes every `sample_width`-th byte, starting at offset 0, and the writer puts the modified units back into those same positions. The other bytes of each declared sample are fixed media bytes. They are copied through unchanged and included in the version 3 hash. Container chunks outside the declared PCM samples are not hashed.
 
 This keeps the change to a sample within `(1 << k) - 1`, which is what "replace the low k bits" must mean. It also makes the selectable 1 to 8 LSBs of brief [§5](../docs/INF2005-ACW1-spec_v5-f2f.md#5-mandatory-scope) refer to bits of the cover object, as [FR6](../docs/INF2005-ACW1-spec_v5-f2f.md#6-functional-requirements) requires.
 
@@ -126,7 +103,7 @@ At `sample_width == 1` the stride is 1, so the sample-stride correction did not 
 
 Version 1 scanned for a fixed 16-byte marker at each LSB count from 1 to 8. The marker supplied a candidate start unit; its header supplied the record length. This public discovery path is deleted in stage 4b.
 
-The current decoder reads one bootstrap, opens it with the receiver private key, validates its structure, checks geometry bounds, extracts the packet, verifies RSA-PSS over the geometry and ciphertext, opens AES-GCM, parses the record, and then checks the masked media hash. It does not search for another packet after a failure. Relocating a packet still causes RSA-PSS verification to fail because the recovered start unit is signed.
+The current decoder reads one bootstrap, opens it with the receiver private key, validates its structure, checks geometry bounds, extracts the packet, verifies RSA-PSS over the geometry and ciphertext, opens AES-GCM, parses the record, and then checks the v3 full media hash. It does not search for another packet after a failure. Relocating a packet still causes RSA-PSS verification to fail because the recovered start unit is signed.
 
 The removed scan had a candidate limit and refused multiple valid candidates. There is no candidate list now, so there is no automatic choice between packets and no ambiguity branch. This does not prove that the carrier holds only one packet.
 
@@ -142,8 +119,8 @@ The signature does not authenticate the original values of overwritten cover LSB
 
 | Verdict | Operational meaning |
 | --- | --- |
-| `Authentic` | The bootstrap and packet parse, padding is valid, RSA-PSS and AES-GCM verify, and the recomputed masked media hash equals the stored hash. |
-| `Tampered` | The signature verifies, but the recomputed masked media hash differs from the signed stored hash. |
+| `Authentic` | The bootstrap and packet parse, padding is valid, RSA-PSS and AES-GCM verify, and the recomputed v3 full media hash equals the stored hash. |
+| `Tampered` | The signature verifies, but the recomputed v3 full media hash differs from the signed stored hash. |
 | `Signature Invalid` | RSA-PSS verification fails for the extracted signature and reconstructed signing input. |
 | `Payload Missing` | The bootstrap cannot be opened with the supplied receiver private key, including a pristine carrier or wrong receiver key. |
 | `Wrong Start Location` | Numerically valid geometry recovered from the opened bootstrap produces a footprint outside the carrier or overlaps the reserved bootstrap span. |
@@ -157,10 +134,10 @@ Version 1 preferred the deepest failure among discovered candidates. Stage 4b ch
 - Overwritten cover LSBs are destroyed and cannot be recovered or authenticated.
 - The alignment padding zero-check is a format check, not a cryptographic one.
 - RSA-PSS is randomised, so verification proves the signed input is intact, not that the signature bytes are byte-for-byte original.
-- Preserved bits depend mainly on packet size, with LSB depth able to shift the count through alignment: `preserved_bits = 8*total_units - bootstrap_span - k*footprint`, and `k*footprint` equals the packet bit count plus up to `k - 1` alignment bits. The refreshed demonstration's `k = 1` and `k = 8` cases have no alignment bits and therefore preserve the same 48,163,528 bits. At `k = 8` with a full-carrier footprint, packet bits equal all carrier bits and the media hash witnesses nothing; the reported `preserved_bits` says so.
+- Preserved bits depend mainly on packet size, with LSB depth able to shift the count through alignment: `preserved_bits = 8*total_units - bootstrap_span - k*footprint`, and `k*footprint` equals the packet bit count plus up to `k - 1` alignment bits. The refreshed demonstration's `k = 1` and `k = 8` cases have no alignment bits and therefore preserve the same 48,163,528 bits. At `k = 8` with a full-carrier footprint, packet bits equal all RGB carrier bits (and all 8-bit WAV sample bits), so those streams give no integrity evidence. RGBA alpha and the non-LSB bytes of multi-byte WAV samples remain in the fixed stream and are still checked.
 - The bootstrap field values and record are encrypted or authenticated for the receiver; the fixed bootstrap span still reveals the envelope footprint.
 - Container metadata outside the decoded carrier is not covered.
-- For 16-, 24-, and 32-bit WAV, only the least-significant byte of each sample is a carrier unit, so the upper sample bytes, which hold most of the audible signal, are outside the masked hash. A stego WAV whose upper bytes are all changed still verifies as `Authentic`. Closing this needs a protocol change; see the [Streaming Carrier Plan, section 11](STREAMING-CARRIER-PLAN.md#11-known-limits).
+- For 16-, 24-, and 32-bit WAV, the least-significant byte of each sample is the carrier unit. Version 3 also hashes the other declared sample bytes. See the [v3 known limits](PROTOCOL-V3-FULL-MEDIA-HASH.md#6-on-disk-effect-and-known-limits): transparent RGBA pixel colour can change even when alpha is zero, and PNG ancillary chunks such as `tRNS` are outside the hash.
 - Verification reads the file more than once. A file changed during verification can give a verdict that mixes two versions.
 - A timestamp and nonce alone do not prevent replay.
 
@@ -183,13 +160,13 @@ This claim says nothing about a real-world identity. The caller must obtain the 
 
 ## Typed Payload Metadata
 
-Protocol version 2 encrypts the complete payload record inside the library, including `user_payload`. The notebook's typed-payload demonstration uses the existing `metadata` field for the MIME claim and original filename; the file bytes remain raw in `user_payload`. No caller-side seal or nested content header remains.
+Protocol version 3 encrypts the complete payload record inside the library, including `user_payload`. The notebook's typed-payload demonstration uses the existing `metadata` field for the MIME claim and original filename; the file bytes remain raw in `user_payload`. No caller-side seal or nested content header remains.
 
 The working demonstration is in the Confidentiality from the protocol and Typed payloads sections of the [demonstration notebook](../notebooks/FR1-12%20Prototype.ipynb).
 
 ### 1. Record and metadata
 
-Nothing in the payload record stays readable. AES-256-GCM protects the complete record, including the media id, timestamp, record nonce, media hash, user payload, and metadata. RSA-OAEP protects the bootstrap fields, session key, and packet geometry. The receiver decrypts the record, recomputes the masked media hash, and compares it with the recovered value. The [Location Confidentiality Plan, section 3.5](LOCATION-CONFIDENTIALITY-PLAN.md#35-the-whole-payload-record-is-encrypted) records why FR9 requires the comparison.
+Nothing in the payload record stays readable. AES-256-GCM protects the complete record, including the media id, timestamp, record nonce, media hash, user payload, and metadata. RSA-OAEP protects the bootstrap fields, session key, and packet geometry. The receiver decrypts the record, recomputes the v3 full media hash, and compares it with the recovered value. The [Location Confidentiality Plan, section 3.5](LOCATION-CONFIDENTIALITY-PLAN.md#35-the-whole-payload-record-is-encrypted) records why FR9 requires the comparison.
 
 The notebook uses this metadata convention for typed payloads:
 

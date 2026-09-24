@@ -1,14 +1,15 @@
 # INF2005-ACW1
 
 This project is a localhost Flask application for encrypting, signing, embedding,
-decoding, and verifying payloads in strict RGB PNG images and uncompressed PCM
-WAV audio. The retained web layout now uses the reduced protocol version 2 in
-the `stego` package.
+decoding, and verifying payloads in 8-bit RGB or RGBA PNG images and uncompressed
+PCM WAV audio. The retained web layout uses protocol version 3 from the `stego`
+package.
 
 The protocol encrypts the complete payload record with AES-256-GCM, authenticates
 the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
-the intended receiver with RSA-OAEP. Integrity is calculated over every carrier
-bit that embedding intentionally preserves.
+the intended receiver with RSA-OAEP. The version 3 full media hash covers masked RGB units, RGBA alpha, and all bytes
+of each declared PCM sample. PNG ancillary chunks and WAV chunks outside the
+declared samples are not covered.
 
 Requires Python 3.10+.
 
@@ -36,7 +37,7 @@ python -m pip install -r requirements-notebook.txt
 
 Encoding requires:
 
-1. an RGB PNG or uncompressed PCM WAV cover;
+1. an 8-bit RGB or RGBA PNG, or uncompressed PCM WAV cover;
 2. either a UTF-8 message or one arbitrary payload file;
 3. an encrypted sender RSA private key and its password;
 4. the intended receiver's RSA public key;
@@ -44,7 +45,7 @@ Encoding requires:
 6. an LSB count from 1 through 8.
 
 The server validates the inputs, constructs typed authenticated metadata, builds
-the masked-media hash, encrypts the complete payload record, signs the encrypted
+the full media hash, encrypts the complete payload record, signs the encrypted
 record and geometry, embeds the receiver bootstrap and packet, and returns the
 stego media plus the sender public key.
 
@@ -90,9 +91,10 @@ result = verify_png("stego.png", sender_public_key, receiver_private_key)
 ```
 
 All serialised protocol integers use unsigned 64-bit big-endian fields. Existing
-version 1 and legacy web `STG1` files are not accepted by the active version-2
-web routes. The legacy `payload_protocol.py` module and its tests remain for
-historical compatibility; see [Protocol Compatibility](AGENT_docs/PROTOCOL-COMPATIBILITY.md).
+version 1 and version 2 masked-media files are not accepted by the active
+version-3 web routes. A readable version 2 bootstrap returns `Cannot Verify`
+with `unsupported bootstrap version`. The legacy `payload_protocol.py` module
+and its tests remain for historical compatibility; see [Protocol Compatibility](AGENT_docs/PROTOCOL-COMPATIBILITY.md).
 
 ## Documentation
 
@@ -100,5 +102,6 @@ historical compatibility; see [Protocol Compatibility](AGENT_docs/PROTOCOL-COMPA
 - [Documentation index](AGENT_docs/README.md)
 - [Agent navigation map](AGENT_docs/AGENT_MAP.md)
 - [Protocol design](AGENT_docs/PROTOCOL-DESIGN.md)
+- [Protocol version 3 full media hash](AGENT_docs/PROTOCOL-V3-FULL-MEDIA-HASH.md)
 - [Web implementation status](AGENT_docs/IMPLEMENTATION-STATUS.md)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)

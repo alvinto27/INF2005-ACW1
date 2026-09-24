@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from stego import (
+    PROTOCOL_VERSION,
     EmbeddingLayout,
     PayloadRecord,
     VerificationResult,
@@ -59,7 +60,7 @@ class GeneratedKeyPair:
 
 
 class CurrentProtocolService:
-    """Bridge uploaded files and bounded payload bytes to protocol version 2."""
+    """Bridge uploaded files and bounded payload bytes to protocol version 3."""
 
     def generate_key_pair(self, password: str) -> GeneratedKeyPair:
         """Generate one RSA-2048 pair with a password-protected private key."""
@@ -213,7 +214,7 @@ class CurrentProtocolService:
             "message": result.detail,
             "file_size": file_size,
             "media_type": media_type,
-            "frame_version": 2,
+            "frame_version": PROTOCOL_VERSION,
             "payload_extracted": result.payload is not None,
             "signature_valid": signature_valid,
             "integrity_valid": integrity_valid,
@@ -263,7 +264,7 @@ class CurrentProtocolService:
             "message": message,
             "file_size": file_size,
             "media_type": None,
-            "frame_version": 2,
+            "frame_version": PROTOCOL_VERSION,
             "payload_extracted": False,
             "signature_valid": None,
             "integrity_valid": None,
@@ -324,7 +325,7 @@ class CurrentProtocolService:
             return "image", "png"
         if len(signature) >= 12 and signature[:4] == b"RIFF" and signature[8:12] == b"WAVE":
             return "audio", "wav"
-        raise ValueError("unsupported carrier; upload an RGB PNG or uncompressed PCM WAV")
+        raise ValueError("unsupported carrier; upload an RGB or RGBA PNG or uncompressed PCM WAV")
 
     def _build_metadata(
         self,

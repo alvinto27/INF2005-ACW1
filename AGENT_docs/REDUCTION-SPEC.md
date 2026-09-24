@@ -4,7 +4,7 @@
 
 This record defines the agreed reduction scope after reviewing the current protocol against the INF2005 ACW1 brief. It is not a protocol redesign. The goal is to remove infrastructure that is more general than the assignment or the anticipated video extension requires, while preserving security behaviour that exists for a concrete requirement or attack model.
 
-The current version 2 architecture remains the baseline. Reduction work should be surgical. Do not use this review as justification for a broad backend rewrite.
+The current version 3 architecture remains the baseline. Reduction work should be surgical. Do not use this review as justification for a broad backend rewrite.
 
 ## Core decisions
 
