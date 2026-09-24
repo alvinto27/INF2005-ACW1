@@ -58,6 +58,23 @@ def carrier(size=24000):
     return np.arange(size, dtype=np.uint8)
 
 
+def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
+    """Build one PNG chunk with its CRC for small malformed-image tests."""
+    checksum = zlib.crc32(chunk_type + data) & 0xFFFFFFFF
+    return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", checksum)
+
+
+def oversized_rgb_png() -> bytes:
+    """Build a 66-byte RGB PNG whose IHDR exceeds Pillow's bomb error limit."""
+    header = struct.pack(">IIBBBBB", 20_000, 10_000, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", header)
+        + png_chunk(b"IDAT", zlib.compress(b"x"))
+        + png_chunk(b"IEND", b"")
+    )
+
+
 def payload_length(user_payload=b"hello", metadata=b"{}"):
     media_id_length = len("IMG-" + "0" * 32)
     return serialized_record_length(media_id_length, len(user_payload), len(metadata))
@@ -1047,6 +1064,48 @@ class TestMaskedStego(unittest.TestCase):
             encoded[40, 50, 3] ^= np.uint8(1)
             Image.fromarray(encoded, mode="RGBA").save(png_tampered)
             self.assertEqual(verify_png(png_tampered, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Tampered")
+
+    def test_png_decompression_bomb_has_clear_error(self) -> None:
+        if Image.MAX_IMAGE_PIXELS is None:
+            self.skipTest("Pillow image limit is disabled")
+        pixel_count = 20_000 * 10_000
+        limit = 2 * Image.MAX_IMAGE_PIXELS
+        if pixel_count <= limit:
+            self.skipTest("test PNG does not exceed Pillow's configured error threshold")
+        detail = (
+            f"PNG image is too large: {pixel_count:,} pixels exceeds the limit of {limit:,}"
+        )
+        with TemporaryDirectory() as directory_name:
+            input_path = Path(directory_name) / "oversized.png"
+            output_path = Path(directory_name) / "output.png"
+            encoded_png = oversized_rgb_png()
+            self.assertEqual(len(encoded_png), 66)
+            input_path.write_bytes(encoded_png)
+
+            with self.assertRaises(ValueError) as carrier_error:
+                PngCarrier(input_path)
+            self.assertEqual(str(carrier_error.exception), detail)
+
+            with self.assertRaises(ValueError) as loader_error:
+                load_png_from_path(input_path)
+            self.assertEqual(str(loader_error.exception), detail)
+
+            result = verify_png(input_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual((result.verdict, result.detail), ("Cannot Verify", detail))
+
+            with self.assertRaises(ValueError) as encode_error:
+                encode_png(
+                    input_path,
+                    output_path,
+                    PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY,
+                    2048,
+                    1,
+                    b"small payload",
+                    b"",
+                )
+            self.assertEqual(str(encode_error.exception), detail)
+            self.assertFalse(output_path.exists())
 
     def test_png_format_errors_remain_specific(self) -> None:
         with TemporaryDirectory() as directory_name:

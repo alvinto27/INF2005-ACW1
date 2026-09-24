@@ -3,9 +3,11 @@
 import io
 import json
 import os
+import struct
 import tempfile
 import unittest
 import wave
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -47,6 +49,21 @@ def sample_palette_png() -> bytes:
     output = io.BytesIO()
     Image.new("P", (96, 96)).save(output, format="PNG")
     return output.getvalue()
+
+
+def oversized_rgb_png() -> bytes:
+    """Build a 66-byte RGB PNG above Pillow's decompression bomb error limit."""
+    def chunk(chunk_type: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(chunk_type + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", checksum)
+
+    header = struct.pack(">IIBBBBB", 20_000, 10_000, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(b"x"))
+        + chunk(b"IEND", b"")
+    )
 
 
 def sample_wav() -> bytes:
@@ -294,6 +311,56 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "Cannot Verify")
         self.assertEqual(report["message"], detail)
         self.assertEqual(report["frame_version"], PROTOCOL_VERSION)
+
+    def test_oversized_png_errors_reach_encode_and_verify(self) -> None:
+        """Pillow's bomb error becomes a clear encode error and verify report."""
+        if Image.MAX_IMAGE_PIXELS is None:
+            self.skipTest("Pillow image limit is disabled")
+        pixel_count = 20_000 * 10_000
+        limit = 2 * Image.MAX_IMAGE_PIXELS
+        if pixel_count <= limit:
+            self.skipTest("test PNG does not exceed Pillow's configured error threshold")
+        detail = (
+            f"PNG image is too large: {pixel_count:,} pixels exceeds the limit of {limit:,}"
+        )
+        png_bytes = oversized_rgb_png()
+        self.assertEqual(len(png_bytes), 66)
+
+        encoded = self.encode(png_bytes, "oversized.png")
+        self.assertEqual(encoded.status_code, 400)
+        self.assertTrue(encoded.is_json)
+        self.assertEqual(
+            encoded.get_json(),
+            {"ok": False, "error": detail},
+        )
+
+        decoded = self.decode_bytes(png_bytes, "oversized.png")
+        self.assertEqual(decoded.status_code, 200)
+        self.assertTrue(decoded.is_json)
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Cannot Verify")
+        self.assertEqual(report["message"], detail)
+
+    def test_unexpected_route_errors_return_safe_json(self) -> None:
+        """Unexpected failures return generic JSON; HTTP errors keep their status."""
+        self.client.application.config["PROPAGATE_EXCEPTIONS"] = False
+        with patch(
+            "stego_web.routes.protocol_service.encode",
+            side_effect=RuntimeError("secret /home/path"),
+        ):
+            response = self.encode(sample_png(), "cover.png")
+        self.assertEqual(response.status_code, 500)
+        self.assertTrue(response.is_json)
+        self.assertEqual(
+            response.get_json(),
+            {"ok": False, "verdict": "Cannot Verify", "error": "internal server error"},
+        )
+        body = response.get_data(as_text=True)
+        self.assertNotIn("secret", body)
+        self.assertNotIn("/home", body)
+
+        missing = self.client.get("/not-a-route")
+        self.assertEqual(missing.status_code, 404)
 
     def test_wav_binary_payload_round_trip(self) -> None:
         """WAV carriers preserve an arbitrary binary payload and type claim."""
@@ -668,6 +735,7 @@ class WebApplicationTests(unittest.TestCase):
             "/decode", data={"stego": (io.BytesIO(b"x" * 200), "file")}
         )
         self.assertEqual(response.status_code, 413)
+        self.assertTrue(response.is_json)
         self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
 
 

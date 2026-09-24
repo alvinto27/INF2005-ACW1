@@ -74,6 +74,7 @@ The adapter must not hide a specific format error behind a general "unreadable o
 | PNG mode is not RGB or RGBA, including palette and grayscale | `PNG must be RGB or RGBA; palette and grayscale images are not supported` |
 | PNG IHDR does not describe 8-bit RGB or RGBA samples | `PNG must use 8-bit RGB or RGBA samples` |
 | PNG has more than one frame | `animated PNG images are not supported` |
+| PNG pixel count exceeds twice Pillow's configured limit | `PNG image is too large: {pixels:,} pixels exceeds the limit of {limit:,}` |
 | File is not a PNG | Keep `UnSupportedFileType` and its `unsupported file type: ...` message. |
 
 Do not catch these known `ValueError` messages and replace them with a generic RGB-only error. The verify adapter reports a clear carrier-format failure as `Cannot Verify` with that detail.

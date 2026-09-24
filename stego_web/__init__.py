@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Flask, Response, jsonify
-from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
+from flask import Flask, Response, current_app, jsonify
+from werkzeug.exceptions import BadRequest, HTTPException, RequestEntityTooLarge
 
 
 def create_app(test_config: dict | None = None) -> Flask:
@@ -32,6 +32,20 @@ def create_app(test_config: dict | None = None) -> Flask:
     ) -> tuple[Response, int]:
         """Keep malformed and oversized request errors JSON-readable."""
         return jsonify(ok=False, verdict="Cannot Verify", message=error.description), error.code
+
+    @app.errorhandler(Exception)
+    def unexpected_error(
+        error: Exception,
+    ) -> Response | HTTPException | tuple[Response, int]:
+        """Log unexpected failures and return a safe JSON response."""
+        if isinstance(error, HTTPException):
+            return error
+        current_app.logger.exception("Unexpected error while handling request")
+        return jsonify(
+            ok=False,
+            verdict="Cannot Verify",
+            error="internal server error",
+        ), 500
 
     @app.after_request
     def no_store(response: Response) -> Response:

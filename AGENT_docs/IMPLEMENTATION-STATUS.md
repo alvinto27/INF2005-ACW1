@@ -53,6 +53,14 @@ the legacy `STG1` encoding and verification pipelines.
     anyone who can read the instance folder can read them. Responses carry
     `Cache-Control: no-store`.
 
+## Error handling
+
+Carrier and form validation errors return JSON with HTTP 400. A failed carrier
+verification returns its `Cannot Verify` report with HTTP 200. Unexpected errors
+are logged on the server and return a generic JSON HTTP 500; the response does
+not include exception details. Werkzeug HTTP errors keep their normal statuses,
+including 404, 405, and 413. The browser shows the JSON error text.
+
 ## Carrier size
 
 The library reads WAV carriers in bounded chunks. The 64 MiB whole-file WAV cap
@@ -65,7 +73,8 @@ payloads are stored as plaintext files in `instance/recovered-payloads` and
 served through `payload_url`; these files also stay until manual deletion. WAV
 headers are checked with `read_pcm_wav_info`, and verify reports use the file
 size from `stat()`. Pillow still decodes each PNG into a full image array, so PNG
-working memory grows with image dimensions. See the
+working memory grows with image dimensions. An image above Pillow's configured
+error threshold returns a clear size error. See the
 [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#12-web-boundary-follow-up).
 
 `/keys/generate` is an explicit local setup helper for either sender or receiver.

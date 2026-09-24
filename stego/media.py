@@ -54,7 +54,9 @@ def _validate_png_array(image_array: np.ndarray) -> np.ndarray:
     return image_array
 
 
-def _validate_rgb_png_header(image_path: str | bytes | PathLike[str]) -> None:
+def _validate_rgb_png_header(
+    image_path: str | bytes | PathLike[str],
+) -> tuple[int, int]:
     """Check that a PNG file has the supported 8-bit RGB or RGBA format."""
     with open(image_path, "rb") as image_file:
         header = image_file.read(33)
@@ -63,13 +65,16 @@ def _validate_rgb_png_header(image_path: str | bytes | PathLike[str]) -> None:
     chunk_length = struct.unpack(">I", header[8:12])[0]
     if chunk_length != 13:
         raise ValueError("invalid PNG IHDR chunk")
-    _, _, _, _, bit_depth, colour_type, compression, filter_method, _ = struct.unpack(">I4sIIBBBBB", header[8:29])
+    _, _, width, height, bit_depth, colour_type, compression, filter_method, _ = struct.unpack(
+        ">I4sIIBBBBB", header[8:29]
+    )
     if colour_type not in (2, 6):
         raise ValueError("PNG must be RGB or RGBA; palette and grayscale images are not supported")
     if bit_depth != 8:
         raise ValueError("PNG must use 8-bit RGB or RGBA samples")
     if compression != 0 or filter_method != 0:
         raise ValueError("unsupported PNG encoding")
+    return width, height
 
 
 def _load_png_buffer_from_path(
@@ -110,6 +115,16 @@ def _load_png_buffer_from_path(
             pixel_buffer = memoryview(pixels).toreadonly()
             shape = (height, width, channels)
         return pixel_buffer, shape
+    except Image.DecompressionBombError as error:
+        max_image_pixels = Image.MAX_IMAGE_PIXELS
+        if max_image_pixels is None:
+            raise
+        width, height = _validate_rgb_png_header(image_path)
+        pixels = width * height
+        limit = 2 * max_image_pixels
+        raise ValueError(
+            f"PNG image is too large: {pixels:,} pixels exceeds the limit of {limit:,}"
+        ) from error
     except UnSupportedFileType:
         raise
     except ValueError:
