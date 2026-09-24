@@ -14,8 +14,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from stego import (
     EmbeddingLayout,
+    GCM_TAG_SIZE,
     PayloadRecord,
     VerificationResult,
+    bootstrap_span,
     encode_png,
     encode_wav,
     generate_rsa_keypair,
@@ -26,7 +28,9 @@ from stego import (
     verify_png,
     verify_wav,
 )
+from stego.constants import MEDIA_ID_SIZE
 from stego.crypto import validate_rsa_private_key, validate_rsa_public_key
+from stego.layout import build_embedding_layout
 from stego.packet import serialized_record_length
 
 
@@ -58,6 +62,21 @@ class GeneratedKeyPair:
 
     private_key_pem: bytes
     public_key_pem: bytes
+
+
+@dataclass(frozen=True)
+class WebLayoutEstimate:
+    """Describe one exact, pre-encode carrier layout for the web map."""
+
+    media_type: str
+    total_units: int
+    width: int | None
+    height: int | None
+    layout: EmbeddingLayout
+    payload_bytes: int
+    payload_capacity: int
+    preserved_bits: int
+    preserved_ratio: float
 
 
 class CurrentProtocolService:
@@ -150,6 +169,88 @@ class CurrentProtocolService:
             layout,
             payload,
             self._public_key_pem(sender_private_key.public_key()),
+            capacity,
+            kept_bits,
+            kept_bits / total_bits if total_bits else 0.0,
+        )
+
+    def estimate_layout(
+        self,
+        cover_bytes: bytes,
+        receiver_public_key_pem: bytes,
+        start_unit: int,
+        lsb_count: int,
+        user_payload: bytes,
+        payload_mime: str,
+        payload_name: str,
+        team_id: str,
+        sender: str,
+        extra_metadata: str,
+    ) -> WebLayoutEstimate:
+        """Calculate the exact packet footprint without encrypting or altering media."""
+        media_type, suffix = self._detect_carrier(cover_bytes)
+        if not isinstance(user_payload, bytes):
+            raise TypeError("user payload must be bytes")
+        metadata = self._build_metadata(
+            team_id,
+            sender,
+            payload_mime,
+            payload_name,
+            extra_metadata,
+        )
+        receiver_public_key = self._load_public_key(
+            receiver_public_key_pem, "receiver public key"
+        )
+        with tempfile.TemporaryDirectory(prefix="inf2005-web-layout-") as temporary:
+            input_path = Path(temporary) / f"cover.{suffix}"
+            input_path.write_bytes(cover_bytes)
+            if media_type == "image":
+                carrier = load_png_from_path(input_path)
+                height = int(carrier.shape[0])
+                width = int(carrier.shape[1])
+                total_units = int(carrier.size)
+            else:
+                wav_data = load_pcm_wav_from_path(input_path)
+                height = None
+                width = None
+                total_units = len(wav_data.frame_bytes) // wav_data.sample_width
+
+        span = bootstrap_span(receiver_public_key)
+        record_length = serialized_record_length(
+            MEDIA_ID_SIZE,
+            len(user_payload),
+            len(metadata),
+        )
+        ciphertext_length = record_length + GCM_TAG_SIZE
+        layout = build_embedding_layout(
+            total_units,
+            start_unit,
+            lsb_count,
+            ciphertext_length,
+            span,
+        )
+        record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, len(metadata))
+        capacity = max_user_payload_length(
+            total_units,
+            start_unit,
+            span,
+            lsb_count,
+            record_overhead,
+        )
+        kept_bits = preserved_bit_count(
+            total_units,
+            layout.footprint,
+            lsb_count,
+            span,
+        )
+        total_bits = total_units * 8
+        return WebLayoutEstimate(
+            media_type,
+            total_units,
+            width,
+            height,
+            layout,
+            len(user_payload),
             capacity,
             kept_bits,
             kept_bits / total_bits if total_bits else 0.0,

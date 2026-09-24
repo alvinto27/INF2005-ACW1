@@ -2,8 +2,11 @@
 
 import base64
 import io
+import shutil
+import subprocess
 import unittest
 import wave
+from pathlib import Path
 
 import numpy as np
 from cryptography.hazmat.primitives import serialization
@@ -70,6 +73,7 @@ class WebApplicationTests(unittest.TestCase):
         cover: bytes,
         filename: str,
         lsb_bits: int = 1,
+        start_unit: int = 2048,
         message: str = "authenticated message",
         payload: tuple[bytes, str] | None = None,
         payload_mime: str = "",
@@ -90,7 +94,7 @@ class WebApplicationTests(unittest.TestCase):
             "sender": "Test User",
             "secret_message": message,
             "metadata": "project=verification;sequence=1",
-            "start_unit": "2048",
+            "start_unit": str(start_unit),
             "lsb_bits": str(lsb_bits),
         }
         if payload is not None:
@@ -100,6 +104,33 @@ class WebApplicationTests(unittest.TestCase):
             data["payload_mime"] = payload_mime
         return self.client.post(
             "/encode", data=data, content_type="multipart/form-data"
+        )
+
+    def estimate(
+        self,
+        cover: bytes,
+        filename: str,
+        lsb_bits: int = 1,
+        start_unit: int = 2049,
+        message: str = "authenticated message",
+    ) -> object:
+        """Post the map's pre-encode layout request."""
+        return self.client.post(
+            "/layout/estimate",
+            data={
+                "cover": (io.BytesIO(cover), filename),
+                "receiver_public_key": (
+                    io.BytesIO(self.receiver_public_pem),
+                    "receiver-public.pem",
+                ),
+                "team_id": "P1-4",
+                "sender": "Test User",
+                "secret_message": message,
+                "metadata": "project=verification;sequence=1",
+                "start_unit": str(start_unit),
+                "lsb_bits": str(lsb_bits),
+            },
+            content_type="multipart/form-data",
         )
 
     def decode(
@@ -143,6 +174,112 @@ class WebApplicationTests(unittest.TestCase):
         self.assertNotIn(b"start_secret", response.data)
         self.assertNotIn(b"original_cover", response.data)
         self.assertIn(b"gsap@3.15", response.data)
+        self.assertEqual(response.data.count(b'class="file-picker"'), 6)
+        self.assertIn(b"Browse media", response.data)
+        self.assertIn(b"Browse key", response.data)
+        self.assertIn(b'id="stego-map-stage"', response.data)
+        self.assertIn(b'id="manual-placement"', response.data)
+        self.assertIn(b"vendor/three/three.module.min.js", response.data)
+        self.assertIn(b"stego-map.js", response.data)
+
+    def test_png_layout_estimate_matches_encoded_packet_geometry(self) -> None:
+        """The map receives the same authoritative footprint as the encoder."""
+        estimated_response = self.estimate(
+            sample_png(), "cover.png", lsb_bits=3, start_unit=2049
+        )
+        self.assertEqual(
+            estimated_response.status_code,
+            200,
+            estimated_response.get_data(as_text=True),
+        )
+        estimated = estimated_response.get_json()
+        encoded_response = self.encode(
+            sample_png(), "cover.png", lsb_bits=3, start_unit=2049
+        )
+        self.assertEqual(
+            encoded_response.status_code,
+            200,
+            encoded_response.get_data(as_text=True),
+        )
+        encoded = encoded_response.get_json()
+        self.assertEqual(estimated["media_type"], "image")
+        self.assertEqual((estimated["width"], estimated["height"]), (96, 96))
+        self.assertEqual(estimated["total_units"], 96 * 96 * 3)
+        self.assertEqual(estimated["bootstrap_span"], 2048)
+        self.assertEqual(estimated["start_unit"], encoded["start_location"])
+        self.assertEqual(estimated["footprint"], encoded["footprint"])
+        self.assertEqual(estimated["capacity_bytes"], encoded["capacity_bytes"])
+        self.assertEqual(
+            estimated["remaining_units"],
+            estimated["total_units"]
+            - estimated["start_unit"]
+            - estimated["footprint"],
+        )
+
+    def test_layout_estimate_tracks_lsb_capacity_and_rejects_bad_starts(self) -> None:
+        """LSB changes update geometry, while reserved and overflowing starts fail."""
+        one_lsb = self.estimate(sample_png(), "cover.png", lsb_bits=1).get_json()
+        four_lsb = self.estimate(sample_png(), "cover.png", lsb_bits=4).get_json()
+        self.assertLess(four_lsb["footprint"], one_lsb["footprint"])
+        self.assertGreater(four_lsb["capacity_bytes"], one_lsb["capacity_bytes"])
+        larger_payload = self.estimate(
+            sample_png(), "cover.png", lsb_bits=4, message="x" * 1000
+        ).get_json()
+        self.assertGreater(larger_payload["footprint"], four_lsb["footprint"])
+
+        reserved = self.estimate(
+            sample_png(), "cover.png", start_unit=2047
+        )
+        self.assertEqual(reserved.status_code, 400)
+        self.assertIn("bootstrap", reserved.get_json()["error"])
+
+        overflowing = self.estimate(
+            sample_png(), "cover.png", start_unit=(96 * 96 * 3) - 1
+        )
+        self.assertEqual(overflowing.status_code, 400)
+        self.assertRegex(overflowing.get_json()["error"], r"carrier|footprint")
+
+    def test_wav_layout_estimate_keeps_linear_manual_geometry(self) -> None:
+        """WAV estimation remains supported without pretending samples are pixels."""
+        response = self.estimate(sample_wav(), "cover.wav", lsb_bits=2)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        estimated = response.get_json()
+        self.assertEqual(estimated["media_type"], "audio")
+        self.assertIsNone(estimated["width"])
+        self.assertIsNone(estimated["height"])
+        self.assertEqual(estimated["total_units"], 8000)
+
+    @unittest.skipUnless(
+        shutil.which("node"), "Node.js is needed for ES-module helper tests"
+    )
+    def test_stego_map_coordinate_helpers(self) -> None:
+        """The actual browser helpers preserve pixel order, Y origin, and row spans."""
+        script = """
+          import * as map from './stego_web/static/stego-map-geometry.js';
+          const same = (actual, expected, label) => {
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+              throw new Error(`${label}: ${JSON.stringify(actual)}`);
+            }
+          };
+          same(map.pixelToStartUnit(10, 5, 100, 20), 1530, 'reserved example');
+          same(map.pixelToStartUnit(200, 100, 1000, 200), 300600, 'valid example');
+          same(map.startUnitToPixel(300600, 1000, 200), {x: 200, y: 100, pixelIndex: 100200, channel: 0}, 'inverse');
+          same(map.uvToPixel(0, 1, 100, 20), {x: 0, y: 0}, 'top left');
+          same(map.uvToPixel(1, 0, 100, 20), {x: 99, y: 19}, 'bottom right');
+          same(map.firstSelectablePixelUnit(2048, 96, 96), 2049, 'bootstrap boundary');
+          same(map.carrierRangeToPixelRectangles(29, 12, 10, 10), [
+            {x: 9, y: 0, width: 1, height: 1},
+            {x: 0, y: 1, width: 4, height: 1},
+          ], 'partial rows');
+        """
+        completed = subprocess.run(
+            [str(shutil.which("node")), "--input-type=module", "-e", script],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_png_message_round_trip_recovers_geometry_and_metadata(self) -> None:
         """PNG encoding and receiver-gated decoding expose authenticated data."""

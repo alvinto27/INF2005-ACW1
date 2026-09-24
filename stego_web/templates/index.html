@@ -45,28 +45,73 @@
           <label id="cover-drop" class="drop-zone" for="cover-input" tabindex="0"><span class="drop-icon" aria-hidden="true">+</span><strong id="cover-name">Drop a PNG or WAV here</strong><small>or click to browse; the backend performs strict validation</small><span id="cover-meta" class="file-meta">Maximum request size is controlled by the local server.</span><input id="cover-input" name="cover" type="file" accept=".png,.wav,image/png,audio/wav" required></label>
           <div class="field-grid"><label>Team ID<input name="team_id" value="P1-4" required></label><label>Sender<input name="sender" placeholder="Your name" required></label></div>
           <label>Secret message<textarea id="secret-message" name="secret_message" rows="3" placeholder="Enter a message, or leave blank and upload a payload file below"></textarea></label>
-          <label>Payload file<input id="payload-file" name="payload_file" type="file"></label>
+          <label class="file-field"><span class="field-label">Payload file</span><span class="file-picker"><input id="payload-file" name="payload_file" type="file"><span class="file-picker-action" aria-hidden="true">Browse file</span><span class="file-picker-name">No file selected</span></span></label>
           <div class="field-grid"><label>Payload MIME claim<input id="payload-mime" name="payload_mime" placeholder="Derived automatically, e.g. image/png"></label><label>Payload filename claim<input id="payload-name" name="payload_name" placeholder="Derived automatically"></label></div>
           <label>Additional authenticated metadata<textarea name="metadata" rows="2" placeholder="Optional key=value entries, e.g. project=INF2005;case=demo"></textarea></label>
           <div class="wizard-actions"><span></span><button type="button" class="next">Validate input <span>-&gt;</span></button></div>
         </section>
         <section class="wizard-card" data-step="1" aria-labelledby="step-2-title" hidden>
           <span class="step-kicker">02 / SENDER AUTHENTICATION</span><h3 id="step-2-title">Load the sender signing key</h3><p class="hint">The sender private key creates the RSA-PSS signature. Its public half is exported with the stego file.</p>
-          <label>Sender encrypted private key (.pem)<input name="sender_private_key" type="file" accept=".pem,application/x-pem-file,text/plain" required></label>
+          <label class="file-field"><span class="field-label">Sender encrypted private key (.pem)</span><span class="file-picker"><input id="sender-private-key" name="sender_private_key" type="file" accept=".pem,application/x-pem-file,text/plain" required><span class="file-picker-action" aria-hidden="true">Browse key</span><span class="file-picker-name">No key selected</span></span></label>
           <label>Sender private-key password<input id="sender-key-password" name="sender_key_password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label>
           <button type="button" class="secondary generate-keys" data-role="sender" data-password="sender-key-password" data-result="sender-key-result">Generate sender key pair</button><div id="sender-key-result" class="result" aria-live="polite"></div>
           <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Sender key ready <span>-&gt;</span></button></div>
         </section>
         <section class="wizard-card" data-step="2" aria-labelledby="step-3-title" hidden>
           <span class="step-kicker">03 / RECEIVER GATE</span><h3 id="step-3-title">Select the intended receiver</h3><p class="hint">The receiver public key encrypts the bootstrap. Only its matching private key can recover the packet location and AES session material.</p>
-          <label>Receiver public key (.pem)<input name="receiver_public_key" type="file" accept=".pem,application/x-pem-file,text/plain" required></label>
+          <label class="file-field"><span class="field-label">Receiver public key (.pem)</span><span class="file-picker"><input id="receiver-public-key" name="receiver_public_key" type="file" accept=".pem,application/x-pem-file,text/plain" required><span class="file-picker-action" aria-hidden="true">Browse key</span><span class="file-picker-name">No key selected</span></span></label>
           <label>New receiver-key password (generation only)<input id="receiver-setup-password" type="password" minlength="8" autocomplete="new-password" placeholder="Needed only when generating a pair"></label>
           <button type="button" class="secondary generate-keys" data-role="receiver" data-password="receiver-setup-password" data-result="receiver-key-result">Generate receiver key pair</button><div id="receiver-key-result" class="result" aria-live="polite"></div>
           <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Receiver key ready <span>-&gt;</span></button></div>
         </section>
         <section class="wizard-card" data-step="3" aria-labelledby="step-4-title" hidden>
-          <span class="step-kicker">04 / EMBEDDING GEOMETRY</span><h3 id="step-4-title">Choose the protected layout</h3><p class="hint">Units 0-2047 hold the RSA-2048 bootstrap. Choose a packet start at or after unit 2048; the receiver recovers both values automatically.</p>
-          <label>Packet start unit<input id="start-unit" name="start_unit" type="number" min="2048" step="1" value="2048" required></label>
+          <span class="step-kicker">04 / EMBEDDING GEOMETRY</span><h3 id="step-4-title">Choose the protected layout</h3><p class="hint">For PNG covers, click the technical image plane to place the contiguous packet. Units 0-2047 remain reserved for the receiver bootstrap.</p>
+          <section id="stego-map-panel" class="stego-map-panel" aria-labelledby="stego-map-title" hidden>
+            <div class="map-heading">
+              <div><span class="map-kicker">PNG CARRIER MAP</span><h4 id="stego-map-title">Spatial embedding inspector</h4></div>
+              <span class="local-badge">LOCAL THREE.JS</span>
+            </div>
+            <div class="map-modes" role="group" aria-label="Map display mode">
+              <button type="button" class="map-mode is-active" data-map-mode="normal" aria-pressed="true">Normal</button>
+              <button type="button" class="map-mode" data-map-mode="embedding" aria-pressed="false">Embedding map</button>
+              <button type="button" class="map-mode" data-map-mode="difference" aria-pressed="false" disabled>Difference</button>
+            </div>
+            <p id="map-mode-note" class="map-mode-note">Normal view keeps the exact packet footprint subtle.</p>
+            <div class="map-workspace">
+              <div id="stego-map-stage" class="stego-map-stage" role="application" tabindex="0" aria-label="Interactive PNG carrier plane. Drag to rotate, scroll to zoom, right-drag to pan, and click to select a start pixel.">
+                <p id="stego-map-fallback" class="map-fallback">Loading local 3D viewer… Manual placement remains available below.</p>
+              </div>
+              <aside class="pixel-inspector" aria-label="Pixel inspector">
+                <span class="map-kicker">HOVER INSPECTOR</span>
+                <dl>
+                  <div><dt>Pixel</dt><dd id="map-hover-pixel">—</dd></div>
+                  <div><dt>Pixel index</dt><dd id="map-hover-index">—</dd></div>
+                  <div><dt>Start unit</dt><dd id="map-hover-unit">—</dd></div>
+                  <div><dt>RGB</dt><dd id="map-hover-rgb">—</dd></div>
+                </dl>
+                <p id="map-bit-plane" class="bit-plane">Move over the image to inspect its RGB channels.</p>
+              </aside>
+            </div>
+            <div class="map-legend" aria-label="Carrier map legend"><span class="legend-reserved">Bootstrap / reserved</span><span class="legend-packet">Packet footprint</span><span class="legend-marker">Selected pixel</span></div>
+            <div class="map-stats" aria-label="Embedding statistics">
+              <div><small>Carrier units</small><strong id="map-total-units">—</strong></div>
+              <div><small>Selected pixel</small><strong id="map-selected-pixel">—</strong></div>
+              <div><small>Selected start</small><strong id="map-selected-start">—</strong></div>
+              <div><small>Packet footprint</small><strong id="map-footprint">—</strong></div>
+              <div><small>Available after start</small><strong id="map-available">—</strong></div>
+              <div><small>Remaining units</small><strong id="map-remaining">—</strong></div>
+              <div><small>Payload / capacity</small><strong id="map-capacity">—</strong></div>
+              <div><small>Carrier usage</small><strong id="map-usage">—</strong></div>
+              <div><small>Preserved carrier bits</small><strong id="map-preserved">—</strong></div>
+            </div>
+            <div class="map-status-row"><p id="stego-map-status" class="map-status" role="status" aria-live="polite">Choose a PNG cover to initialise the map.</p><button id="stego-map-reset" type="button" class="secondary compact">Reset view &amp; position</button></div>
+          </section>
+          <p id="wav-layout-note" class="wav-layout-note" hidden>WAV carriers use linear PCM sample units, so placement remains a numeric start unit below.</p>
+          <details id="manual-placement" class="manual-placement" open>
+            <summary>Manual start-unit fallback</summary>
+            <label>Packet start unit<input id="start-unit" name="start_unit" type="number" min="2048" step="1" value="2048" required></label>
+            <small>Use this field when WebGL is unavailable or when an exact channel-level start is required. PNG map clicks select the first RGB channel of a pixel.</small>
+          </details>
           <label class="range-label"><span class="range-heading">Least Significant Bits <output id="encode-lsb-output">1</output></span><input id="encode-lsb" type="range" name="lsb_bits" min="1" max="8" value="1"><span class="range-scale"><span>Subtle</span><span>Maximum capacity</span></span></label>
           <div class="lsb-insight"><span class="insight-dot" aria-hidden="true"></span><div><strong id="lsb-impact">Lowest visual impact</strong><small id="lsb-guidance">Best first choice when the cover has enough capacity.</small></div></div>
           <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Validate layout <span>-&gt;</span></button></div>
@@ -84,17 +129,17 @@
         <section class="wizard-card success-card" data-step="6" aria-labelledby="success-title" hidden>
           <div class="success-mark">OK</div><span class="step-kicker">07 / OUTPUT</span><h3 id="success-title">Your stego object is ready</h3><p class="hint" id="success-summary">The encrypted signed payload was embedded successfully.</p>
           <div class="comparison"><figure><figcaption>Original cover</figcaption><div id="cover-preview" class="preview">Awaiting file</div></figure><figure><figcaption>Stego output</figcaption><div id="stego-preview" class="preview">Awaiting encode</div></figure></div>
-          <div id="download-links" class="download-links"></div><button id="start-over" type="button" class="secondary">Encode another file</button>
+          <div id="download-links" class="download-links"></div><div class="success-actions"><button id="inspect-map" type="button" class="secondary" hidden>Inspect PNG map</button><button id="start-over" type="button" class="secondary">Encode another file</button></div>
         </section>
       </form>
     </section>
     <details id="verify-panel" class="decode-panel"><summary><span class="summary-icon" aria-hidden="true">V</span><span><small>RECEIVED A STEGO FILE?</small>Decode and verify media</span><span class="summary-arrow" aria-hidden="true">+</span></summary>
       <div class="decode-intro"><p class="hint">Use the trusted sender public key and intended receiver private key. The encrypted bootstrap recovers the start unit, LSB count, record length, and AES session material.</p><div class="mini-flow" aria-label="Verification sequence"><span>Open bootstrap</span><i></i><span>Verify signature</span><i></i><span>Decrypt and check integrity</span></div></div>
       <form id="decode-form" enctype="multipart/form-data">
-        <label>Received stego file<input id="decode-file" name="stego" type="file" accept=".png,.wav,image/png,audio/wav" required></label>
+        <label class="file-field"><span class="field-label">Received stego file</span><span class="file-picker"><input id="decode-file" name="stego" type="file" accept=".png,.wav,image/png,audio/wav" required><span class="file-picker-action" aria-hidden="true">Browse media</span><span class="file-picker-name">No file selected</span></span></label>
         <div class="field-grid">
-          <label>Sender public key (.pem)<input name="sender_public_key" type="file" accept=".pem,text/plain" required></label>
-          <label>Receiver encrypted private key (.pem)<input name="receiver_private_key" type="file" accept=".pem,text/plain" required></label>
+          <label class="file-field"><span class="field-label">Sender public key (.pem)</span><span class="file-picker"><input id="decode-sender-public-key" name="sender_public_key" type="file" accept=".pem,text/plain" required><span class="file-picker-action" aria-hidden="true">Browse key</span><span class="file-picker-name">No key selected</span></span></label>
+          <label class="file-field"><span class="field-label">Receiver encrypted private key (.pem)</span><span class="file-picker"><input id="decode-receiver-private-key" name="receiver_private_key" type="file" accept=".pem,text/plain" required><span class="file-picker-action" aria-hidden="true">Browse key</span><span class="file-picker-name">No key selected</span></span></label>
         </div>
         <label>Receiver private-key password<input name="receiver_key_password" type="password" minlength="8" required autocomplete="off"></label>
         <p class="hint">Version 2 does not request the original cover, start secret, start unit, or LSB count. Integrity is checked from the masked stego carrier after the bootstrap is opened.</p>
@@ -109,4 +154,6 @@
   <script src="{{ url_for('static', filename='motion.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   <script src="{{ url_for('static', filename='verify.js') }}" defer></script>
+  <script type="importmap">{"imports":{"three":"{{ url_for('static', filename='vendor/three/three.module.min.js') }}"}}</script>
+  <script type="module" src="{{ url_for('static', filename='stego-map.js') }}"></script>
 </body></html>

@@ -156,6 +156,26 @@ coverDrop.addEventListener('drop', event => {
   handleCoverFile(file);
 });
 
+function updateFilePicker(input) {
+  const picker = input.closest('.file-picker');
+  if (!picker) return;
+  const name = picker.querySelector('.file-picker-name');
+  if (!picker.dataset.emptyLabel) picker.dataset.emptyLabel = name.textContent;
+  const file = input.files[0];
+  picker.classList.toggle('has-file', Boolean(file));
+  name.textContent = file?.name || picker.dataset.emptyLabel;
+  name.title = file?.name || '';
+}
+
+function resetFilePickers() {
+  document.querySelectorAll('.file-picker input[type="file"]').forEach(updateFilePicker);
+}
+
+document.querySelectorAll('.file-picker input[type="file"]').forEach(input => {
+  updateFilePicker(input);
+  input.addEventListener('change', () => updateFilePicker(input));
+});
+
 payloadFile.addEventListener('change', () => {
   const file = payloadFile.files[0];
   secretMessage.setCustomValidity('');
@@ -237,6 +257,12 @@ encodeForm.addEventListener('submit', async event => {
       downloadLink(stegoUrl, data.filename, 'Download stego media'),
       downloadLink(textUrl(data.sender_public_key_pem), 'sender-public-key.pem', 'Download sender public key'),
     );
+    document.querySelector('#inspect-map').hidden = data.media_type !== 'image';
+    window.dispatchEvent(new CustomEvent('stego:encoded', {detail: {
+      mediaType: data.media_type,
+      mimeType: data.mime_type,
+      stegoBase64: data.stego_base64,
+    }}));
     resultBox.textContent = '';
     await showStep(6);
   } catch (error) {
@@ -250,12 +276,21 @@ encodeForm.addEventListener('submit', async event => {
 
 document.querySelector('#start-over').addEventListener('click', async () => {
   encodeForm.reset();
+  resetFilePickers();
   handleCoverFile(null);
   document.querySelector('#stego-preview').textContent = 'Awaiting encode';
   document.querySelector('#download-links').replaceChildren();
+  document.querySelector('#inspect-map').hidden = true;
   document.querySelector('#start-unit').value = '2048';
+  window.dispatchEvent(new Event('stego:reset'));
   updateLsb();
   await showStep(0);
+});
+
+document.querySelector('#inspect-map').addEventListener('click', async () => {
+  await showStep(3);
+  const differenceButton = document.querySelector('[data-map-mode="difference"]');
+  if (!differenceButton.disabled) differenceButton.click();
 });
 
 function renderMedia(container, url, mime) {

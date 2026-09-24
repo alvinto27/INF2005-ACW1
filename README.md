@@ -43,6 +43,19 @@ Encoding requires:
 5. a packet start unit at or after the 2,048-unit RSA-2048 bootstrap span; and
 6. an LSB count from 1 through 8.
 
+For PNG covers, Step 4 provides a local Three.js carrier map. Click a pixel to
+set the existing `start_unit`, hover to inspect its RGB carrier values, and use
+Normal or Embedding Map mode to see the exact contiguous packet footprint. The
+first 2,048 bootstrap units are visibly reserved. Capacity, remaining units,
+usage, and preserved-bit estimates update when the location, payload, or LSB
+depth changes. After encoding, Difference mode can highlight changed pixels.
+The numeric start-unit field remains available for exact channel-level entry or
+when WebGL is unavailable. WAV placement remains a linear numeric sample unit.
+
+The map's Three.js modules are bundled locally, so this feature does not require
+internet access. Its preflight request uses the same server-side layout
+calculations as encoding; `/encode` repeats validation and remains authoritative.
+
 The server validates the inputs, constructs typed authenticated metadata, builds
 the masked-media hash, encrypts the complete payload record, signs the encrypted
 record and geometry, embeds the receiver bootstrap and packet, and returns the
@@ -89,4 +102,5 @@ historical compatibility; see [Protocol Compatibility](AGENT_docs/PROTOCOL-COMPA
 - [Agent navigation map](AGENT_docs/AGENT_MAP.md)
 - [Protocol design](AGENT_docs/PROTOCOL-DESIGN.md)
 - [Web implementation status](AGENT_docs/IMPLEMENTATION-STATUS.md)
+- [Three.js steganography map](AGENT_docs/STEGANOGRAPHY-MAP.md)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)

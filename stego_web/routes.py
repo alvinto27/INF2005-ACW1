@@ -69,6 +69,50 @@ def encode() -> Response | tuple[Response, int]:
     )
 
 
+@web.post("/layout/estimate")
+def estimate_layout() -> Response | tuple[Response, int]:
+    """Return authoritative packet geometry for the interactive carrier map."""
+    try:
+        user_payload, payload_mime, payload_name = _payload_input()
+        result = protocol_service.estimate_layout(
+            _required_upload("cover"),
+            _required_upload("receiver_public_key"),
+            _integer_form_value("start_unit", minimum=0),
+            _lsb_bits(),
+            user_payload,
+            payload_mime,
+            payload_name,
+            _required_form_value("team_id"),
+            _required_form_value("sender"),
+            request.form.get("metadata", "").strip(),
+        )
+    except (OSError, TypeError, ValueError) as error:
+        return _error(str(error), 400)
+
+    layout = result.layout
+    remaining_units = result.total_units - layout.start_unit - layout.footprint
+    return jsonify(
+        ok=True,
+        media_type=result.media_type,
+        total_units=result.total_units,
+        width=result.width,
+        height=result.height,
+        start_unit=layout.start_unit,
+        lsb_bits=layout.lsb_count,
+        bootstrap_span=layout.bootstrap_span,
+        footprint=layout.footprint,
+        packet_end_unit=layout.start_unit + layout.footprint,
+        ciphertext_bytes=layout.ciphertext_length,
+        payload_bytes=result.payload_bytes,
+        capacity_bytes=result.payload_capacity,
+        available_after_start=result.total_units - layout.start_unit,
+        remaining_units=remaining_units,
+        usage_ratio=layout.footprint / result.total_units,
+        preserved_bits=result.preserved_bits,
+        preserved_ratio=result.preserved_ratio,
+    )
+
+
 @web.post("/keys/generate")
 def generate_keys() -> Response | tuple[Response, int]:
     """Generate a sender or receiver RSA pair as an explicit setup action."""

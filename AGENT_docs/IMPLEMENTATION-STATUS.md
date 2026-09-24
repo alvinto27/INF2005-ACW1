@@ -13,13 +13,13 @@ the legacy `STG1` encoding and verification pipelines.
 | FR2 audio input | Implemented | Uncompressed PCM/WAV upload, validation, playback, encoding, decoding, and comparison. |
 | FR3 payload generation | Implemented | Encrypted record contains media ID, timestamp, nonce, masked-media hash, raw user payload, and typed team metadata. |
 | FR4 digital signature | Implemented | RSA-2048 RSA-PSS/SHA-256 covers protocol version, media context, layout, and ciphertext. |
-| FR5 image LSB embedding | Implemented | PNG adapter and GUI support 1-8 LSBs. |
+| FR5 image LSB embedding | Implemented | PNG adapter and GUI support 1-8 LSBs; the Step 4 map visualizes the exact contiguous packet footprint. |
 | FR6 audio LSB embedding | Implemented | WAV adapter embeds into the least-significant byte of each PCM sample and supports 1-8 LSBs. |
-| FR7 variable start location | Implemented | GUI accepts a start unit outside the receiver bootstrap; the encrypted bootstrap hides and transports it. |
+| FR7 variable start location | Implemented | GUI accepts a manual unit or maps a clicked PNG pixel to its first RGB unit; the encrypted bootstrap hides and transports the selected value. |
 | FR8 extraction and decoding | Implemented | Receiver private key opens the bootstrap and recovers start unit, LSB count, record length, and AES material. |
 | FR9 hash verification | Implemented | Receiver recomputes the masked-media hash directly from the stego carrier; no original cover is required. |
 | FR10 verdict generation | Implemented | Protocol verdicts are returned without substituting weaker web-specific outcomes. |
-| FR11 positive/negative cases | Automated coverage present | PNG/WAV round trips, all LSB counts, wrong sender/receiver keys, preserved-bit tampering, MIME mismatch, invalid inputs, and upload limits are tested. Captured demonstration evidence is still needed. |
+| FR11 positive/negative cases | Automated coverage present | PNG/WAV round trips, all LSB counts, authoritative map estimates, coordinate helpers, wrong sender/receiver keys, preserved-bit tampering, MIME mismatch, invalid inputs, and upload limits are tested. Captured demonstration evidence is still needed. |
 | FR12 evidence/reproducibility | Partially implemented | README, setup, tests, notebook, and GUI are present; the final submission still needs selected screenshots/logs and sample transfer evidence. |
 | FR13 innovation | Candidate implemented | Receiver-gated location confidentiality and encrypted typed payloads are available; the team must finalize its explanation. |
 
@@ -28,21 +28,24 @@ the legacy `STG1` encoding and verification pipelines.
 1. `run.py` calls `stego_web.create_app()` and serves the retained seven-card GUI.
 2. `/encode` accepts a strict cover, raw message/file payload, sender private key
    and password, receiver public key, explicit start unit, and LSB count.
-3. `CurrentProtocolService` detects the carrier, loads both RSA key roles, builds
+3. Step 4 may call `/layout/estimate`; it validates the cover and receiver key
+   and runs the same packet sizing, capacity, and preserved-bit calculations
+   without encrypting or modifying the cover.
+4. `CurrentProtocolService` detects the carrier, loads both RSA key roles, builds
    delimiter-checked typed metadata, and creates a request-scoped temporary workspace.
-4. `stego.encode_png` or `stego.encode_wav` calculates geometry and masked-media
+5. `stego.encode_png` or `stego.encode_wav` calculates geometry and masked-media
    integrity, encrypts the record with AES-256-GCM, signs it with RSA-PSS, encrypts
    the bootstrap with RSA-OAEP, and writes the stego object.
-5. The response returns stego bytes, sender public key, authenticated record
+6. The response returns stego bytes, sender public key, authenticated record
    summary, capacity, geometry, and preserved-bit measurements. It never returns
    either private key.
-6. `/decode` accepts the stego object, trusted sender public key, receiver private
+7. `/decode` accepts the stego object, trusted sender public key, receiver private
    key, and receiver-key password.
-7. `stego.verify_png` or `stego.verify_wav` opens one receiver bootstrap, verifies
+8. `stego.verify_png` or `stego.verify_wav` opens one receiver bootstrap, verifies
    the signature, decrypts and parses the record, and checks the masked-media hash.
-8. Authenticated payload bytes are returned for download. The browser previews
+9. Authenticated payload bytes are returned for download. The browser previews
    only supported media whose signed MIME claim agrees with recognized magic bytes.
-9. The temporary workspace is removed at the end of each request and responses
+10. The temporary workspace is removed at the end of each request and responses
    carry `Cache-Control: no-store`.
 
 `/keys/generate` is an explicit local setup helper for either sender or receiver.

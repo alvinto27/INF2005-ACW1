@@ -19,6 +19,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
 | Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
 | Active web integration status and verification flow | [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md), [DECODING-VERIFICATION.md](DECODING-VERIFICATION.md) |
+| Interactive PNG placement and layout-estimate contract | [STEGANOGRAPHY-MAP.md](STEGANOGRAPHY-MAP.md) |
 | Current and legacy protocol boundary | [PROTOCOL-COMPATIBILITY.md](PROTOCOL-COMPATIBILITY.md) |
 
 ## Implementation locations
@@ -37,7 +38,8 @@ Use this map before editing an unfamiliar part of the repository.
 | End-to-end encrypted encode, receiver-gated verification, and reduced protocol format | [stego/core.py](../stego/core.py) |
 | Flask application factory and HTTP routes | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
 | Flask-to-protocol-v2 byte/file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
-| Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
+| Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [stego-map.js](../stego_web/static/stego-map.js), [stego-map-geometry.js](../stego_web/static/stego-map-geometry.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
+| Locally bundled Three.js viewer dependency | [Three.js vendor directory](../stego_web/static/vendor/three/), including [VERSION.txt](../stego_web/static/vendor/three/VERSION.txt) and [LICENSE](../stego_web/static/vendor/three/LICENSE) |
 | Retained legacy web protocol | [payload_protocol.py](../payload_protocol.py) and legacy modules under [stego_web/services/](../stego_web/services/) |
 | FR1–FR12 demonstration notebook and Stage 5 verdict/fidelity evidence | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol tests | [test_stego.py](../test_stego.py) |

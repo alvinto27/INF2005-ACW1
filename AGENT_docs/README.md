@@ -28,5 +28,6 @@ For repository structure and implementation entry points, see [Agent Navigation 
 - [KISS Reduction Specification](REDUCTION-SPEC.md) — the approved reduction goals and constraints.
 - [KISS Reduction Record](KISS-REDUCTION-RECORD.md) — the committed reduction outcome, measurements, decisions, and lessons.
 - [Flask Application Status](IMPLEMENTATION-STATUS.md) — current web inputs, protocol-v2 integration, requirement coverage, and request flow.
+- [Three.js Steganography Map](STEGANOGRAPHY-MAP.md) — PNG coordinate mapping, authoritative layout estimation, viewer modes, local dependency, fallback behavior, and tests.
 - [Flask Decoding and Verification](DECODING-VERIFICATION.md) — receiver-gated verification inputs, response fields, payload-preview controls, tests, and limitations.
 - [Protocol Compatibility](PROTOCOL-COMPATIBILITY.md) — the boundary between active version-2 web files and retained legacy `STG1` files.
