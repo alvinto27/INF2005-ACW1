@@ -8,6 +8,7 @@ It holds no payload, cryptography, or protocol policy. The protocol core in
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
+from os import PathLike
 
 import numpy as np
 
@@ -197,6 +198,27 @@ class CarrierSource(ABC):
     def fixed_byte_count(self) -> int:
         """Return the number of fixed media bytes paired with all unit chunks."""
         return 0
+
+    @property
+    def media_code(self) -> int:
+        """Return the protocol media code for media-specific carrier backends."""
+        raise NotImplementedError("this carrier does not define a media code")
+
+    @property
+    def media_context(self) -> bytes:
+        """Return the signed media context for media-specific carrier backends."""
+        raise NotImplementedError("this carrier does not define a media context")
+
+    @property
+    def requires_output_check(self) -> bool:
+        """Return whether this medium requests validation of its rewritten output."""
+        return False
+
+    def open_rewritten_output(
+        self, path: str | bytes | PathLike[str]
+    ) -> CarrierSource:
+        """Open a rewritten carrier for optional read-back validation."""
+        raise NotImplementedError("this carrier does not support output checks")
 
     @abstractmethod
     def read_units(self, start_unit: int, count: int) -> np.ndarray:

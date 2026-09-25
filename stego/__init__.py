@@ -33,6 +33,7 @@ from .constants import (
     SESSION_KEY_SIZE,
     SIGNING_DOMAIN,
     SUPPORTED_LSB_COUNTS,
+    VIDEO_MEDIA_CODE,
 )
 from .core import (
     CarrierEncoding,
@@ -49,6 +50,13 @@ from .core import (
     verify_png_to_payload_path,
     verify_wav,
     verify_wav_to_payload_path,
+)
+from .video import (
+    VideoCarrier,
+    encode_video,
+    encode_video_from_payload_path,
+    verify_video,
+    verify_video_to_payload_path,
 )
 from .crypto import (
     aead_open,
@@ -110,10 +118,12 @@ __all__ = [
     "SESSION_KEY_SIZE",
     "SIGNING_DOMAIN",
     "SUPPORTED_LSB_COUNTS",
+    "VIDEO_MEDIA_CODE",
     "UnSupportedFileType",
     "PayloadFileRecord",
     "PayloadRecord",
     "VerificationResult",
+    "VideoCarrier",
     "WavCarrier",
     "WavPcmInfo",
     "aead_open",
@@ -127,6 +137,8 @@ __all__ = [
     "display_rsa_public_key_fingerprint",
     "encode_bootstrap_aad",
     "encode_png",
+    "encode_video",
+    "encode_video_from_payload_path",
     "encode_png_from_payload_path",
     "encode_signing_input",
     "encode_wav",
@@ -153,6 +165,8 @@ __all__ = [
     "serialize_payload",
     "verify_png",
     "verify_png_to_payload_path",
+    "verify_video",
+    "verify_video_to_payload_path",
     "verify_wav",
     "verify_wav_to_payload_path",
     "write_lsb_bits",

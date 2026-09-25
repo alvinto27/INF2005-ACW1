@@ -419,9 +419,16 @@ class CarrierEncoding:
         session: _StagingSession,
         owns_session: bool,
         fixed_byte_count: int = 0,
+        media_context: bytes = b"",
+        requires_output_check: bool = False,
     ) -> None:
         """Keep staged ciphertext and bounded packet readers for embedding."""
         self.layout = layout
+        self._media_code = media_code
+        self._media_context = media_context
+        self._fixed_byte_count = fixed_byte_count
+        self._requires_output_check = requires_output_check
+        self._output_checked = False
         self.payload = payload
         self._media_hash = media_hash
         self._ciphertext = ciphertext
@@ -479,9 +486,50 @@ class CarrierEncoding:
             raise ValueError("fixed bytes must match the current carrier chunk")
         self._rehash.update_fixed_bytes(_require_bytes(fixed_bytes, "fixed_bytes"))
 
+    def check_output(self, source: CarrierSource) -> None:
+        """Verify a rewritten carrier against its context, transforms, and masked hash."""
+        source = _validate_carrier_source(source)
+        if source.media_code != self._media_code:
+            raise ValueError("output media code does not match the encoded context")
+        if source.media_context != self._media_context:
+            raise ValueError("output media context does not match the encoded context")
+        if source.total_units != self.layout.total_units:
+            raise ValueError("output unit count does not match the encoded carrier")
+        if source.fixed_byte_count != self._fixed_byte_count:
+            raise ValueError("output fixed-byte count does not match the encoded carrier")
+
+        hasher = _new_masked_hasher(
+            self._media_code, self.layout, self._fixed_byte_count
+        )
+        consumed_units = 0
+        consumed_fixed_bytes = 0
+        for units, fixed_bytes in source.iter_chunks_with_fixed_bytes():
+            expected = self._packet_transform(
+                consumed_units, self._bootstrap_transform(consumed_units, units)
+            )
+            if not np.array_equal(units, expected):
+                raise ValueError("output carrier chunks do not match the embedded transforms")
+            hasher.update(units, fixed_bytes)
+            consumed_units += int(units.size)
+            consumed_fixed_bytes += len(fixed_bytes)
+        if consumed_units != self.layout.total_units:
+            raise ValueError(
+                f"output supplied {consumed_units} units; expected {self.layout.total_units}"
+            )
+        if consumed_fixed_bytes != self._fixed_byte_count:
+            raise ValueError(
+                "output supplied "
+                f"{consumed_fixed_bytes} fixed bytes; expected {self._fixed_byte_count}"
+            )
+        if hasher.digest() != self._media_hash:
+            raise ValueError("output masked media hash does not match the encoded carrier")
+        self._output_checked = True
+
     def finish(self) -> None:
-        """Check that the second pass covered unchanged carrier data, then close."""
+        """Check both encoding passes and release staged ciphertext."""
         try:
+            if self._requires_output_check and not self._output_checked:
+                raise ValueError("this carrier requires an output check before finish")
             if self._rehash.digest() != self._media_hash:
                 raise ValueError(
                     "carrier changed between encoding passes; the output is not valid"
@@ -497,6 +545,30 @@ class CarrierEncoding:
         if self._owns_session:
             self._session.close()
         self._closed = True
+
+
+def _rewrite_checked(
+    source: CarrierSource,
+    encoding: CarrierEncoding,
+    path: str | bytes | PathLike[str],
+) -> None:
+    """Rewrite one carrier, optionally check its output, then finish encoding."""
+    try:
+        source.rewrite_to_path(
+            path, encoding.embed_chunk, encoding.update_fixed_bytes
+        )
+        if source.requires_output_check:
+            output_source = source.open_rewritten_output(path)
+            try:
+                encoding.check_output(output_source)
+            finally:
+                close = getattr(output_source, "close", None)
+                if close is not None:
+                    close()
+        encoding.finish()
+    except BaseException:
+        _remove_incomplete_output(path)
+        raise
 
 
 def _byte_chunks(data: bytes) -> Iterator[bytes]:
@@ -634,6 +706,8 @@ def _prepare_carrier_encoding(
         session,
         owns_session,
         source.fixed_byte_count,
+        media_context,
+        source.requires_output_check,
     )
 
 
@@ -1049,12 +1123,8 @@ def encode_png(input_path: str | bytes | PathLike[str], output_path: str | bytes
         receiver_public_key, start_unit, lsb_count, user_payload, metadata,
     )
     try:
-        source.rewrite_to_path(output_path, encoding.embed_chunk, encoding.update_fixed_bytes)
-        encoding.finish()
+        _rewrite_checked(source, encoding, output_path)
         return encoding.layout, encoding.payload
-    except BaseException:
-        _remove_incomplete_output(output_path)
-        raise
     finally:
         encoding.close()
 
@@ -1091,18 +1161,14 @@ def encode_wav(input_path: str | bytes | PathLike[str], output_path: str | bytes
         receiver_public_key, start_unit, lsb_count, user_payload, metadata,
     )
     try:
-        source.rewrite_to_path(output_path, encoding.embed_chunk, encoding.update_fixed_bytes)
-        encoding.finish()
+        _rewrite_checked(source, encoding, output_path)
         return encoding.layout, encoding.payload
-    except BaseException:
-        _remove_incomplete_output(output_path)
-        raise
     finally:
         encoding.close()
 
 
 def _encode_file_from_payload_path(
-    source: PngCarrier | WavCarrier,
+    source: CarrierSource,
     output_path: str | bytes | PathLike[str],
     signing_private_key: rsa.RSAPrivateKey,
     receiver_public_key: rsa.RSAPublicKey,
@@ -1135,10 +1201,7 @@ def _encode_file_from_payload_path(
         )
         staged_carrier = session.new_path("carrier")
         try:
-            source.rewrite_to_path(
-                staged_carrier, encoding.embed_chunk, encoding.update_fixed_bytes
-            )
-            encoding.finish()
+            _rewrite_checked(source, encoding, staged_carrier)
             os.replace(staged_carrier, output_file_path)
             return encoding.layout, encoding.payload
         finally:

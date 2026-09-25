@@ -37,6 +37,16 @@ PNG input must be a single-frame, 8-bit RGB or RGBA image. RGB and RGBA have thr
 
 PNG media context is `struct.pack(">IIB", width, height, channel_count)`, with channel count 3 or 4. WAV context is `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 
+### Video-plus-audio media code 3
+
+The optional video carrier uses media code **3** and media-ID prefix **`VID-`**. It keeps the version-3 wire format unchanged. Its 30-byte media context is `struct.pack(">IIQIHQ", width, height, frame_count, audio_sample_rate, audio_channels, audio_frames_per_channel)`. With no audio, all three audio fields are zero. Version 1 accepts mono or stereo audio only.
+
+Carrier units have this order: every decoded RGB byte of every video frame in presentation order, followed by the low byte of every decoded interleaved signed 16-bit little-endian audio sample. The fixed-byte digest receives one signed big-endian i64 millisecond tick at each frame's first RGB chunk; if audio exists, it then receives one signed i64 audio-start tick followed by one high byte per audio sample. Fixed-byte ordering follows the carrier stream, but chunk boundaries have no meaning and do not affect the hash.
+
+Timestamp seconds are calculated exactly as `pts * time_base`. The first video frame is time zero. Each video timestamp and the audio-start offset from that origin are rounded to the nearest millisecond, with ties away from zero. Missing, non-increasing, or colliding video ticks are refused. Audio continuity compares frame timestamps with the expected sample position; it allows only half a millisecond, rounded up to a whole sample, because Matroska block timestamps have millisecond precision. Larger gaps or overlaps are refused. The writer converts audio sample format to s16 but does not change sample rate or channel layout.
+
+Video authenticity covers the signed context, decoded RGB bytes, canonical timing ticks, decoded s16 sample bytes, audio timing, masked media hash, and embedded packet. It does not cover container bytes, title or other tags, chapters, subtitles, attachments, rotation/display matrix, display aspect metadata, or additional tracks. Version 1 drops tags and extra streams; a file with unsupported extra streams is refused rather than silently selected. Decoder threading uses FFmpeg automatic mode for speed and does not alter the protocol. Tested FFV1 decoding is lossless, and tested H.264/AAC decoding produced identical RGB/s16 and fixed bytes under automatic and single-slice thread settings. If any input decode differs between passes, its hash check fails; if read-back differs, output validation fails. Both failures stop encoding before publication. See [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) for limits and measurements.
+
 The encoder and verifier mask the same carrier regions before hashing. The hash therefore stays reproducible when only the bits used for embedding change. A start unit below the reserved bootstrap span is rejected.
 
 ## Carrier units

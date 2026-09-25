@@ -10,7 +10,8 @@ For repository structure and implementation entry points, see the [Agent Navigat
 
 - [README](../README.md) — setup and protocol use.
 - [stego package](../stego/__init__.py) — public API.
-- [test_stego.py](../test_stego.py) — protocol and carrier tests.
+- [test_stego.py](../test_stego.py) — protocol and PNG/WAV carrier tests.
+- [test_video.py](../test_video.py) — video protocol and carrier tests; PyAV-backed tests skip when PyAV is unavailable.
 - [Flask application](../run.py) — localhost entry point.
 - [test_webapp.py](../test_webapp.py) — Flask integration tests.
 - [AGENTS](../AGENTS.md) — agent working instructions.
@@ -19,7 +20,7 @@ For repository structure and implementation entry points, see the [Agent Navigat
 
 - [Current Protocol](CURRENT-PROTOCOL.md) — active version 3 hash, wire format, typed metadata, discovery behavior, verdicts, capacity, and compatibility.
 - [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) — bounded carrier access, payload APIs, staging cleanup, measurements, and file boundary.
-- [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) — approved design for one bounded-memory video-plus-audio carrier (media code 3, `VID-`); Stage 1 prototype gates closed, with no implementation.
+- [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) — approved design, implementation details, test record, and video performance measurements for media code 3 (`VID-`).
 - [Web Application Guide](WEB-APPLICATION-GUIDE.md) — request contracts, response handling, payload previews, and requirement coverage.
 
 ## Historical records and project status

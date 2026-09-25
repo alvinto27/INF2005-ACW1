@@ -41,6 +41,16 @@ Pillow's `PngInfo.add()` is not used: Pillow moves or drops chunks that come thr
 
 These rules apply only to encoding. `PngCarrier` loading and verification do not read ancillary chunks. A stego file that later gets a `tRNS` chunk or other metadata verifies as before.
 
+## Video carrier backend
+
+`VideoCarrier` is the file-backed media-code-3 backend in `stego/video.py`. It performs a bounded scan, then reopens and decodes for range reads, hashing, and rewriting. It exposes ordered RGB and audio-low-byte carrier units and the matching fixed timing/audio-high-byte stream. PyAV imports stay inside video operations; importing `stego` and using PNG/WAV do not require PyAV.
+
+Only video sources that set `requires_output_check=True` use the additive `CarrierSource.open_rewritten_output(path)` hook. `CarrierEncoding.check_output(source)` verifies output context, embedded transforms, unit/fixed-byte counts, and the masked hash. Core `_rewrite_checked()` owns the sequence: rewrite, open and validate the output reader, close it, then call `finish()`. Any failure removes the incomplete output. Existing PNG/WAV sources use the default no-check behavior.
+
+`encode_video()` writes one FFV1 `bgr0` video stream and optional PCM s16le audio directly to a same-directory `.stego-staging-*` Matroska file. `encode_video_from_payload_path()` uses a private same-directory `.stego-staging-*` directory. Both publish with `os.replace` only after read-back checks and `finish()`. No extra track files or remux stage are used. Failure leaves the destination unpublished and removes the stage.
+
+Video caps are 1920×1080, 15 seconds, 450 frames, mono/stereo audio, 1 GiB final output, and 3 GiB minimum free space at the destination. Dimensions, duration, and frame caps are checked during the bounded scan. The final output cap is enforced while muxing. The old 2 GiB intermediate-byte cap was removed because the direct single-file mux has no intermediate media files; final-file size is the applicable byte limit. The test suite monkeypatches free-space requirements so it does not depend on host disk capacity.
+
 ## 4. Protocol flow
 
 ### Encode

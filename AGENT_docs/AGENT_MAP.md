@@ -18,7 +18,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Historical protocol version 2 design; stages 0 through 6b complete; 6c cancelled | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
 | Chunked carrier access, payload APIs, staging cleanup, measurements, and known limits | [CARRIER-AND-PAYLOAD-FLOW.md](CARRIER-AND-PAYLOAD-FLOW.md#4-protocol-flow) |
-| Approved video carrier design (Stage 1 gates closed; no implementation) | [VIDEO-CARRIER-DESIGN.md](VIDEO-CARRIER-DESIGN.md) |
+| Video carrier design, implementation details, and measurements | [VIDEO-CARRIER-DESIGN.md](VIDEO-CARRIER-DESIGN.md) |
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
 | Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
 | Web request contracts, response handling, payload previews, and requirement coverage | [WEB-APPLICATION-GUIDE.md](WEB-APPLICATION-GUIDE.md) |
@@ -38,13 +38,14 @@ Use this map before editing an unfamiliar part of the repository.
 | RSA-PSS keys, signatures, fingerprints, and PEM | [stego/crypto.py](../stego/crypto.py) |
 | Carrier capacity and fixed-width protocol fields | [stego/layout.py](../stego/layout.py) |
 | Public `PngCarrier`, `WavCarrier`, WAV header reader, and PNG/WAV file adapters, including the writers that keep PNG ancillary chunks and WAV chunks outside the samples | [stego/media.py](../stego/media.py) |
+| Public video carrier reader/writer, canonical timing, bounded reads, and video APIs | [stego/video.py](../stego/video.py) |
 | Two-pass encode, receiver-gated verification over a carrier backend, and file wrappers | [stego/core.py](../stego/core.py) |
 | Flask application factory, disk-backed carrier and payload uploads, streaming encode/verify routes, validated downloads, and `/payload/<id>` recovered-payload downloads; runtime files use `instance/stego-outputs` and `instance/recovered-payloads` | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
 | Flask-to-protocol-v3 streaming file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
 | Active Flask-to-protocol-v3 service | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | FR1–FR12 demonstration notebook: verdict/fidelity evidence; file-backed PNG/WAV carriers and payload API demo | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
-| Masked-media protocol and chunked-carrier tests | [test_stego.py](../test_stego.py) |
+| Masked-media protocol and chunked-carrier tests | [test_stego.py](../test_stego.py), [test_video.py](../test_video.py) |
 | Flask integration and current protocol tests | [test_webapp.py](../test_webapp.py) and [test_stego.py](../test_stego.py) |
 | Runtime and test dependencies | [requirements.txt](../requirements.txt) |
 | Optional demonstration-notebook dependency | [requirements-notebook.txt](../requirements-notebook.txt) |
