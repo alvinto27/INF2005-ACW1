@@ -1,6 +1,6 @@
 # Video Carrier Design
 
-**Status: Implemented (library) — CP-A/CP-B/CP-C complete; protocol v3 remains unchanged**
+**Status: Implemented (library + notebook) — CP-A/CP-B/CP-C and V7 complete; protocol v3 remains unchanged**
 
 The user approved one combined video-plus-audio carrier, media code 3 with `VID-`, protocol v3 with no wire-format or version change, FFV1 `bgr0` and PCM s16le output in Matroska, bounded memory, and library/notebook work before optional web work. The v3 wire format, cryptography, and packet placement stay unchanged; the core gets one additive read-back check (see PASS 3). Video is optional in the assignment. See [Current Protocol](CURRENT-PROTOCOL.md) and [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) for the existing hash, carrier, and payload rules.
 
@@ -215,7 +215,9 @@ The implementation checks stream count before decode and rechecks decoded dimens
 
 ## Implementation status
 
-Stage 1 design experiments and CP-A/CP-B/CP-C library work are complete. Notebook demonstration and optional web integration remain future work; video is library-only. The bundled FFV1 encoder accepted the requested level 3 option: the 5-second output encoded and decoded exactly with `level=3`, 16 slices, and AUTO encoder threads. Each enforced cap has cleanup coverage. PyAV 15.1 cannot write Matroska display-matrix rotation metadata through its supported API, so that test is explicitly skipped; title metadata is tested and remains outside the hash.
+Stage 1 design experiments, CP-A/CP-B/CP-C library work, and the V7 notebook demonstration are complete. Optional web integration remains future work; video is optional in the assignment. The bundled FFV1 encoder accepted the requested level 3 option: the 5-second output encoded and decoded exactly with `level=3`, 16 slices, and AUTO encoder threads. Each enforced cap has cleanup coverage. PyAV 15.1 cannot write Matroska display-matrix rotation metadata through its supported API, so that test is explicitly skipped; title metadata is tested and remains outside the hash.
+
+**Notebook:** The optional demo builds and removes a temporary 5-second H.264/AAC clip and shows carrier facts, encode/verify, tampering, metadata, lossy re-encode, stream refusal, limits, and verdicts.
 
 ## References
 
