@@ -176,7 +176,7 @@ Flask accepts requests up to 256 MiB. Carrier and payload uploads go to request-
 
 ## Limits and risks
 
-- Memory is bounded by chunks for carrier and file payload processing, but it is not constant: payload and cryptographic buffers grow with packet size, and PNG requires a full decoded image plus an output image during rewrite.
+- Application-side carrier and file-payload buffers use chunks. For normal decoder frame sizes, video process memory does not grow in proportion to total duration: the 640×360 video-plus-audio RSS test measured 182,648 KiB at 5 seconds and 219,328 KiB at 15 seconds (about 36 MiB more). This is not an absolute guarantee against hostile media. Video dimensions are capped at 1920×1080, but audio sample rate, samples per decoded audio frame, and compressed packet size have no explicit caps before FFmpeg/PyAV allocates decoded data. Payload and cryptographic buffers grow with packet size, and PNG requires a full decoded image plus an output image during rewrite.
 - Verification is not a snapshot. A file changed between targeted reads and the final hash pass can yield a verdict based on more than one state. WAV headers are checked on reopen, but frame data is not locked.
 - GCM emits unauthenticated plaintext before the tag check; private staging and delayed publication are mandatory.
 - Temporary disk space is proportional to encrypted and staged plaintext payload sizes. A crash may leave plaintext staging as described by the cleanup rule.

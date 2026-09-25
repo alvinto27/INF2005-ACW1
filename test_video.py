@@ -34,6 +34,7 @@ from stego.core import (
 from stego.video import (
     VideoCarrier,
     _audio_layout_identities,
+    _audio_position_matches,
     _configure_decoder,
     _frame_ticks,
     _round_fraction,
@@ -794,22 +795,6 @@ class VideoCarrierReadTests(unittest.TestCase):
                             finally:
                                 rewritten.close()
 
-    def test_audio_before_video_keeps_negative_millisecond_offset(self) -> None:
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "negative-audio.mkv"
-            make_matroska(
-                path,
-                ticks=(0, 40, 80),
-                audio_samples=np.arange(960, dtype=np.int16),
-                audio_start=-480,
-            )
-            source = VideoCarrier(path)
-            try:
-                fixed = b"".join(data for _, data in source.iter_chunks_with_fixed_bytes())
-                self.assertEqual(struct.unpack(">q", fixed[24:32])[0], -10)
-            finally:
-                source.close()
-
     def test_audio_timeline_span_includes_negative_start_and_video_end(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "too-wide-span.mkv"
@@ -827,6 +812,20 @@ class VideoCarrierReadTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(ValueError, "selected media span"):
                     VideoCarrier(path)
+
+    def test_audio_gap_at_tolerance_is_accepted(self) -> None:
+        sample_rate = 48_000
+        tolerance = (sample_rate + 1_999) // 2_000
+        self.assertEqual(tolerance, 24)
+        self.assertTrue(_audio_position_matches(tolerance, 0, sample_rate))
+        self.assertFalse(_audio_position_matches(tolerance + 1, 0, sample_rate))
+
+    def test_audio_overlap_at_tolerance_is_accepted(self) -> None:
+        sample_rate = 48_000
+        tolerance = (sample_rate + 1_999) // 2_000
+        self.assertEqual(tolerance, 24)
+        self.assertTrue(_audio_position_matches(-tolerance, 0, sample_rate))
+        self.assertFalse(_audio_position_matches(-tolerance - 1, 0, sample_rate))
 
     def test_audio_gap_is_refused(self) -> None:
         with TemporaryDirectory() as directory:

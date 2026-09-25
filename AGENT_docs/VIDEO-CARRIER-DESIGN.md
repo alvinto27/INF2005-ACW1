@@ -2,7 +2,7 @@
 
 **Status: Implemented (library + notebook) — CP-A/CP-B/CP-C and V8 complete; protocol v3 remains unchanged**
 
-The user approved one combined video-plus-audio carrier, media code 3 with `VID-`, protocol v3 with no wire-format or version change, FFV1 `bgr0` and PCM s16le output in Matroska, bounded memory, and library/notebook work before optional web work. The v3 wire format, cryptography, and packet placement stay unchanged; the core gets one additive read-back check (see PASS 3). Video is optional in the assignment. See [Current Protocol](CURRENT-PROTOCOL.md) and [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) for the existing hash, carrier, and payload rules.
+The user approved one combined video-plus-audio carrier, media code 3 with `VID-`, protocol v3 with no wire-format or version change, FFV1 `bgr0` and PCM s16le output in Matroska, streamed carrier processing, and library/notebook work before optional web work. The v3 wire format, cryptography, and packet placement stay unchanged; the core gets one additive read-back check (see PASS 3). Video is optional in the assignment. See [Current Protocol](CURRENT-PROTOCOL.md) and [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) for the existing hash, carrier, and payload rules.
 
 This design builds on the PyAV work by **smn-sit10 / Sitt Min Naing**, commit `c56e0ea` (“Add video frame and audio steganography support”).
 
@@ -10,7 +10,7 @@ This design builds on the PyAV work by **smn-sit10 / Sitt Min Naing**, commit `c
 
 `Authentic` covers decoded RGB values, canonical video frame-start presentation timestamps, decoded canonical s16 samples, canonical audio timing, the signed context, and the encrypted payload and metadata.
 
-It does **not** cover the last frame's display duration, stream duration, container duration, or the FFV1 stream's nominal `rate=25`. The canonical frame-start ticks are signed; a changed last-frame display duration or duration field alone is outside this boundary. It also does not cover container bytes, tags, titles, comments, chapters, subtitles, attachments, rotation/display matrix, sample aspect ratio, colour metadata, or unselected tracks. These are like PNG ancillary chunks and WAV non-sample chunks: they are outside the authenticity model. Version 1 drops container and stream tags. A later version may keep a small, defined tag whitelist, but tags will remain unauthenticated.
+It does **not** cover the last frame's display duration, stream duration, container duration, or the FFV1 stream's nominal `rate=25`. The canonical frame-start ticks are signed; a changed last-frame display duration or duration field alone is outside this boundary. It also does not cover container bytes, tags, titles, comments, chapters, subtitles, attachments, rotation/display matrix, sample aspect ratio, colour metadata, or unselected tracks. These are like PNG ancillary chunks and WAV non-sample chunks: they are outside the authenticity model. The current video carrier drops container and stream tags. A later video carrier version may keep a small, defined tag whitelist, but tags will remain unauthenticated.
 
 ## Carrier and context
 
@@ -30,7 +30,7 @@ struct.pack(">IIQIHQ", width, height, frame_count,
 
 The fields are width u32, height u32, frame count u64, audio sample rate u32, audio channel count u16, and audio frames per channel u64. All audio fields are zero together when audio is absent; otherwise all are valid and non-zero. RGB24, millisecond timing, and the one-video/at-most-one-audio rule are fixed by media code 3, not repeated in context.
 
-Version 1 accepts one channel only with FC identity or unspecified identity (`NONE`), and two channels only with FL, FR identities in that order or two unspecified identities (`NONE`, `NONE`). Matroska PCM stores channel count but not the channel mask, so the library's own FFV1/PCM output reads back with unspecified identities. Treat unspecified one- and two-channel layouts as mono and stereo. Refuse a specified non-mono/non-stereo identity, swapped order, mixed specified/unspecified identities, or other channel layout with `unsupported audio channel layout`. Refuse counts other than one or two with `unsupported audio channel count`. Channel identities are not in the signed media context. Future multichannel support needs canonical channel identity in the context.
+The current video carrier accepts one channel only with FC identity or unspecified identity (`NONE`), and two channels only with FL, FR identities in that order or two unspecified identities (`NONE`, `NONE`). Matroska PCM stores channel count but not the channel mask, so the library's own FFV1/PCM output reads back with unspecified identities. Treat unspecified one- and two-channel layouts as mono and stereo. Refuse a specified non-mono/non-stereo identity, swapped order, mixed specified/unspecified identities, or other channel layout with `unsupported audio channel layout`. Refuse counts other than one or two with `unsupported audio channel count`. Channel identities are not in the signed media context. Future multichannel support needs canonical channel identity in the context.
 
 ## Timing and audio rules
 
@@ -38,7 +38,7 @@ Do not sign source PTS integers or source time bases. For each timestamp, calcul
 
 ### Audio before video: Stage 1 result
 
-The Matroska muxer may shift absolute timestamps, including when audio starts before video. Every reader uses its own first decoded video timestamp as time zero. PASS 3 does not copy the source's absolute video origin: it checks output frame-start ticks from the output's own origin and audio-start time relative to that same origin. The tested FFV1/PCM path kept relative offsets exact at -40 ms, -1 ms, and +40 ms, so it retains a negative audio-start tick when needed. Version 1 has only this one mux path. PASS 3 compares the read-back ticks, so a muxer change that alters the relative offset makes encode fail instead of publishing wrong timing. Matroska quantizes audio frame timestamps to milliseconds; continuity checks therefore allow at most half a millisecond (rounded up to a sample), while still rejecting larger gaps or overlaps.
+The Matroska muxer may shift absolute timestamps, including when audio starts before video. Every reader uses its own first decoded video timestamp as time zero. PASS 3 does not copy the source's absolute video origin: it checks output frame-start ticks from the output's own origin and audio-start time relative to that same origin. The tested FFV1/PCM path kept relative offsets exact at -40 ms, -1 ms, and +40 ms, so it retains a negative audio-start tick when needed. The current video carrier uses only this mux path. PASS 3 compares the read-back ticks, so a muxer change that alters the relative offset makes encode fail instead of publishing wrong timing. Matroska quantizes audio frame timestamps to milliseconds. Audio frame timestamp deviations of at most half a millisecond (rounded up to a whole sample) are treated as container timestamp quantization. A real gap or overlap within that tolerance cannot be distinguished and is accepted; larger ones are refused.
 
 ### Audio continuity
 
@@ -49,7 +49,7 @@ actual_start_i   = pts_i * time_base_i
 expected_start_i = audio_start + samples_before_i / sample_rate
 ```
 
-Use exact rational arithmetic. Convert each value to its nearest sample position at the declared sample rate, with ties away from zero. The audio frame is continuous when its timestamp is within half a millisecond (rounded up to a whole sample) of the expected sample position. This bounded tolerance is required because Matroska stores timestamps at millisecond precision; it accepts only timestamp quantization, not a real sample gap or overlap. Refuse larger differences; do not insert, remove, or resample samples.
+Use exact rational arithmetic. Convert each value to its nearest sample position at the declared sample rate, with ties away from zero. The audio frame is continuous when its timestamp is within half a millisecond (rounded up to a whole sample) of the expected sample position. Audio frame timestamp deviations of at most half a millisecond (rounded up to a whole sample) are treated as container timestamp quantization. A real gap or overlap within that tolerance cannot be distinguished and is accepted; larger ones are refused. Do not insert, remove, or resample samples.
 
 Convert decoded sample format to signed 16-bit PCM only. Do not resample or change channel sample order. Check the channel identities in the stream header and every decoded frame. Refuse a sample-rate or accepted channel-layout change during a stream. Store the audio start tick once in fixed bytes. The canonical audio sample clock then advances by exactly `1 / sample_rate` per sample.
 
@@ -66,7 +66,7 @@ A generated H.264 MP4 at 30 fps used time base `1/15360` and PTS `0, 512, 1024, 
 - `media_code` is 3; `media_context` is the 30-byte value above. `read_units` returns bounded ranges, including across the track boundary.
 - `iter_chunks_with_fixed_bytes` yields ordered units and matching fixed bytes from the same decode. `rewrite_to_path` calls `embed_chunk` and `fixed_bytes_callback` in order and directly encodes FFV1/PCM frames into one Matroska output.
 
-One video frame is not one chunk. A 1920×1080 RGB frame is 6,220,800 bytes; a 3840×2160 frame is about 23.7 MiB. Decode one frame, then yield bounded RGB slices (target about 1 MiB). Put the frame's 8-byte timestamp with its **first** slice; later slices have empty fixed bytes. The first audio chunk carries the 8-byte audio-start tick plus its sample high bytes; later audio chunks carry only high bytes.
+One video frame is not one chunk. A 1920×1080 RGB frame is 6,220,800 bytes; a 3840×2160 frame is about 23.7 MiB. Decode one frame, then yield bounded RGB slices (target about 1 MiB). For normal decoder frame sizes, memory does not grow in proportion to total duration; the 640×360 video-plus-audio RSS test measured 182,648 KiB at 5 seconds and 219,328 KiB at 15 seconds (about 36 MiB more). This is not an absolute guarantee against hostile media: dimensions are capped at 1920×1080, but there is no explicit cap on audio sample rate, samples per decoded audio frame, or compressed packet size before FFmpeg/PyAV allocates decoded data. Put the frame's 8-byte timestamp with its **first** slice; later slices have empty fixed bytes. The first audio chunk carries the 8-byte audio-start tick plus its sample high bytes; later audio chunks carry only high bytes.
 
 This is valid because the v3 core hashes units and fixed bytes as two separate incremental streams. Chunk boundaries do not need to match. The order and total counts must match exactly.
 
@@ -74,7 +74,7 @@ Frame count and audio sample count come from decoding, not container duration or
 
 ### Bounded random reads
 
-Do not use indexed/seek-efficient FFV1 decoding, seekable intermediates, or temporary verification copies in version 1. Keep a bounded monotonic-read cache:
+Do not use indexed/seek-efficient FFV1 decoding, seekable intermediates, or temporary verification copies in the current video carrier. Keep a bounded monotonic-read cache:
 
 - If a read continues from the previous range, continue the current decoder.
 - Otherwise reopen the input, decode from the start, and discard units up to `start`.
@@ -92,12 +92,12 @@ CP-C implements the path-based encode APIs. Video output uses an exclusively cre
 2. **PASS 1 — hash.** Run the existing v3 media hash over ordered units and fixed bytes.
 3. **Build packet.** Use the existing v3 core unchanged.
 4. **PASS 2 — embed and mux.** Re-decode the source, re-hash original units and fixed bytes, embed the bootstrap and packet, and encode FFV1 `bgr0` plus PCM s16le directly into one staged `.mkv`. `finish()` must confirm the source matches PASS 1. There are no temporary track files and no second remux pass; the input has no extra streams or tags to carry.
-6. **PASS 3 — read back.** The encoder has no receiver private key, so it cannot call `verify`. Make one bounded sequential decode of the staged `.mkv` and check:
+5. **PASS 3 — read back.** The encoder has no receiver private key, so it cannot call `verify`. Make one bounded sequential decode of the staged `.mkv` and check:
    - rebuilt `media_context` equals the input context;
    - recomputed masked media hash equals the payload record's media hash;
    - bootstrap-region bits equal the generated OAEP envelope bits;
    - packet-region bits equal `ciphertext || signature || zero padding`.
-7. **Publish.** Any mismatch or error removes all temporary files and never publishes output. On success, atomically publish with `os.replace`, like the existing file APIs.
+6. **Publish.** Any mismatch or error removes all temporary files and never publishes output. On success, atomically publish with `os.replace`, like the existing file APIs.
 
 These checks cover the complete selected-media representation: the masked hash covers preserved carrier bits and fixed bytes; exact region comparisons cover the embedded bits; context comparison covers the signed interpretation.
 
@@ -111,7 +111,7 @@ A lossless re-mux verifies only if decoded RGB, canonical timing, s16 samples, a
 
 ## Output and limits
 
-Output is `.mkv` with FFV1 `bgr0` video and PCM s16le audio. A local experiment decoded FFV1 `bgr0` back to exactly the same RGB bytes. Other streams and tags are not carried in version 1.
+Output is `.mkv` with FFV1 `bgr0` video and PCM s16le audio. A local experiment decoded FFV1 `bgr0` back to exactly the same RGB bytes. Other streams and tags are not carried by the current video carrier.
 
 Implemented limits: **1920×1080**, **15 seconds nominal**, **16 seconds maximum selected span including decoder tail**, **450 frames**, audio channels **0/1/2** under the identity rule above, **1 GiB final Matroska output**, and **3 GiB minimum free space**. The video-only last frame-start tick must be at or before 15 seconds. During the audio scan, require `max(last_video_tick, audio_end_tick) - min(0, audio_start_tick) ≤ 16 seconds`; stop the scan when it exceeds this span. Dimensions, duration, frame count, and channels are enforced during the scan; the output size is checked during mux. The planned 2 GiB intermediate-byte cap was removed: direct mux has no media intermediates, so the one final-output cap is sufficient. A cap trip aborts, cleans up, and never publishes. Embedding makes FFV1 output larger, because changed LSBs are harder to compress: G6 measured 139,729,881 bytes for 5 seconds without embedding, but G7 measured 217,163,362 bytes for 5 seconds with LSB changes (about 1.55×). At 15 seconds the G7 figure gives about 651 MB (about 621 MiB), below the 1 GiB cap for this test content. Complex video may exceed the cap.
 
@@ -185,7 +185,7 @@ The PyAV video tests skip when PyAV is absent; API import and PNG/WAV tests do n
 | G4 — channels | PASS. Accept FC mono and FL/FR stereo, plus fully unspecified mono/stereo identities required by Matroska PCM read-back. Refuse FL+LFE and other specified non-canonical orders. PyAV 15.1's AVI writer normalizes FR+FL to NONE/NONE, so the swapped-order media test is skipped; the identity helper rejects it. | Keep one FC-or-unspecified channel or FL/FR-or-unspecified stereo; channel identity is not in context. |
 | G5/V6 — decoder threading | PASS. The tiny H.264/AAC source and FFV1/PCM rewrite produced identical RGB units, fixed bytes, and context under `1`/SLICE and `0`/AUTO. | Use approved automatic threads (`thread_count=0`, `thread_type="AUTO"`) for speed. A decode difference fails safe through hash/read-back checks before output publication. |
 | G6 — FFV1 | PASS. All six settings decoded RGB-exact over 150 frames. See measurements below. The level 3 option is accepted by the bundled encoder. | Use 16 slices, AUTO threads, level 3, GOP 1; fastest tested encode. FFV1 is intra-frame, so GOP 1 is not expected to change its prediction. |
-| G7 — bounded memory | PASS. Frame-by-frame RGB slicing (≤1 MiB), LSB modification, and encoding used peak RSS 420.6 MiB for 5 s and 421.2 MiB for 10 s. Output grew from 217,163,362 to 434,326,161 bytes. | Keep one-frame decode plus bounded slices; memory did not grow with duration in this test. |
+| G7 — memory profile | PASS. The 640×360 video-plus-audio RSS test peaked at 182,648 KiB for 5 s and 219,328 KiB for 15 s, about 36 MiB more for 3× duration. | For normal decoder frame sizes, process memory does not grow in proportion to total duration. This is not a hostile-media memory guarantee; see the limits below. |
 | G8 — PASS 3 | PASS. One sequential scan of the 5-second FFV1 file rebuilt 150 frames, dimensions, and ticks in 2.41–2.44 s. The 4-frame idempotence probe had 0 mismatches normally; one flipped embedded LSB produced 1 mismatch in under 1 ms. | `CarrierEncoding.check_output(source)` is feasible; retain it before `finish()` and publication. |
 | G9 — limits | PASS. Dimensions, selected-span duration, frame count, minimum disk, and output size caps were forced in tests; failed writes removed staging and did not publish. | Keep 1920×1080, 15 s nominal/16 s total selected span including decoder tail, 450 frames, 1 GiB final output, and 3 GiB free. Direct mux makes a separate intermediate-byte cap unnecessary. |
 | G10 — tags | PASS. Changing the Matroska title left decoded RGB, s16, and PTS unchanged. Leaving output metadata unset dropped the source title; Matroska added its own `ENCODER` tag. | Tags/rotation remain outside the authenticity model; do not copy source metadata. |
