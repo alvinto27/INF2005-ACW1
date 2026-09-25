@@ -1,6 +1,6 @@
 # Protocol Version 3: Full Media Hash and RGBA PNG
 
-**Status: implemented.** This note defines the protocol version 3 change. It replaces version 2; it does not add a second encode or verify format. The legacy `STG1` module is separate and remains unchanged.
+**Status: implemented.** This note defines the protocol version 3 change. It replaces version 2; it does not add a second encode or verify format. The earlier `STG1` module was separate from this change and was later removed; see the [Merge Leftover Removal record](MERGE-LEFTOVER-REMOVAL.md).
 
 ## 1. Goals and unchanged rules
 
@@ -154,6 +154,6 @@ Stage 3 changed the web, notebook, current documentation, and project instructio
 - Notebook: `notebooks/FR1-12 Prototype.ipynb`.
 - Current docs and instructions: `AGENTS.md`, `README.md`, `AGENT_docs/README.md`, `AGENT_docs/AGENT_MAP.md`, `AGENT_docs/PROTOCOL-DESIGN.md`, `AGENT_docs/PROTOCOL-COMPATIBILITY.md`, `AGENT_docs/DECODING-VERIFICATION.md`, `AGENT_docs/IMPLEMENTATION-STATUS.md`, and `AGENT_docs/STREAMING-CARRIER-PLAN.md`.
 - Current-state records checked and updated: `AGENT_docs/WORK-NOT-BUILT.md` and `AGENT_docs/REDUCTION-SPEC.md`.
-- Keep `payload_protocol.py` and `test_payload_protocol.py` unchanged. Keep historical records, including `KISS-REDUCTION-RECORD.md`, `PROTOCOL-V2-STAGE-RECORD.md`, and `LOCATION-CONFIDENTIALITY-PLAN.md`, unchanged.
+- At the time of this version-3 change, the separate `STG1` files were left unchanged. Stage B later removed that implementation and its tests, as recorded in [Merge Leftover Removal](MERGE-LEFTOVER-REMOVAL.md). Historical protocol records remain historical.
 
 Stages 1, 2, and 3 are complete. The active library and web application use protocol version 3. This record describes the implemented format and its known limits.

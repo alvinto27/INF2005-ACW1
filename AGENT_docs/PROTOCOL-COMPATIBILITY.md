@@ -1,42 +1,39 @@
-# Current and legacy protocol compatibility
+# Protocol compatibility
 
 ## Active web format
 
-The Flask routes now use masked-media protocol version 3 from the
-`stego` package through `stego_web/services/current_protocol.py`. The retained
-browser layout was adapted to its actual key and geometry flow:
+The Flask routes use masked-media protocol version 3 from the `stego` package
+through `stego_web/services/current_protocol.py`. The active web flow uses
+separate sender and receiver keys:
 
-- encoding uses the sender private key and receiver public key;
-- the sender explicitly selects a start unit at or after the bootstrap span and
-  an LSB count from 1 through 8;
-- verification uses the sender public key and receiver private key/password; and
-- verification recovers geometry from the RSA-OAEP bootstrap and does not need
-  the original cover or a shared start-location secret.
+- Encoding uses the sender private key and receiver public key.
+- The sender selects a start unit at or after the bootstrap span and an LSB count
+  from 1 through 8.
+- Verification uses the sender public key and receiver private key/password.
+- The encrypted receiver bootstrap recovers the packet geometry. The original
+  cover and a shared start-location secret are not required.
 
-`test_webapp.py` exercises this active path for PNG and WAV carriers.
+`test_webapp.py` covers this active path, and `test_stego.py` covers the protocol
+library.
 
-## Retained legacy format
+## Older formats
 
-`payload_protocol.py` and the earlier services under `stego_web/services/`
-retain the legacy `STG1` implementation for its existing unit tests and design
-history. They are not called by `stego_web/routes.py`.
+The earlier `STG1` implementation used signed canonical JSON, a public frame
+marker, and a start location derived from a shared secret. It was a separate,
+legacy format: it did not use the version-3 receiver bootstrap and was not
+interoperable with the masked-media protocol. Its implementation and dedicated
+tests have been removed. The [Merge Leftover Removal record](MERGE-LEFTOVER-REMOVAL.md)
+records its behavior, authors, source permalinks, and removal evidence.
 
-| Property | Active web protocol v3 | Retained legacy `STG1` |
-| --- | --- | --- |
-| Packet | Encrypted binary payload record, RSA-PSS signature, and encrypted receiver bootstrap | Public `STG1` frame containing canonical JSON and an RSA signature |
-| Start location | Selected during encoding; encrypted in the receiver bootstrap | Derived from a shared secret with PBKDF2-HMAC |
-| Integrity hash | V3 full media hash over masked carrier units and fixed sample bytes, with layout context | SHA-256 over exact original cover-file bytes |
-| Encode keys | Sender private and receiver public | Sender private only |
-| Verify inputs | Stego file, sender public, receiver private/password | Stego file, sender public, shared secret, and exact original cover for full integrity |
-| Active tests | `test_stego.py`, `test_webapp.py` | `test_payload_protocol.py` |
+Version 1 and version 2 masked-media files are also not accepted by the active
+version-3 routes. A readable version 2 bootstrap returns `Cannot Verify` with
+detail `unsupported bootstrap version`; the verifier does not fall back to an
+older protocol.
 
 ## Compatibility rule
 
-The formats are not interoperable. Version 2 masked-media files are not accepted:
-a readable version 2 bootstrap returns `Cannot Verify` with detail
-`unsupported bootstrap version`, never `Tampered`. The active `/decode` route also
-rejects legacy `STG1` media instead of guessing a format or weakening the
-receiver-private-key gate. RSA keys can share a PEM representation, but packet
-structures, signing inputs, PSS policies, hashes, and discovery rules differ. A
-future legacy importer must be explicitly versioned and isolated from the active
-protocol-3 verdict path.
+The active Flask routes accept protocol version 3 only. They reject older
+masked-media files and do not import or guess the historical `STG1` format. Do
+not present these formats as interoperable. Any future importer must be
+explicitly versioned and isolated from the protocol-3 verdict path. Preserve the
+receiver-private-key gate and the documented version-3 verification verdicts.

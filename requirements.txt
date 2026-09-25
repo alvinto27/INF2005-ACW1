@@ -1,4 +1,4 @@
-# Runtime and test dependencies for the Flask application and both protocol implementations.
+# Runtime and test dependencies for the Flask application and masked-media protocol.
 Flask==3.1.2
 cffi==2.1.1
 cryptography==50.0.1

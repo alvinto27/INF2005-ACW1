@@ -1,6 +1,6 @@
 # Documentation — INF2005-ACW1
 
-This index lists durable documentation for the Flask application and both retained signed payload protocols. The `docs/` directory holds the supplied assignment specification; `AGENT_docs/` holds records maintained by the project.
+This index lists durable documentation for the Flask application and the current signed masked-media protocol. The `docs/` directory holds the supplied assignment specification; `AGENT_docs/` holds records maintained by the project.
 
 ## Navigation
 
@@ -13,7 +13,6 @@ For repository structure and implementation entry points, see [Agent Navigation 
 - [test_stego.py](../test_stego.py) — masked-media protocol implementation tests.
 - [Flask application](../run.py) — localhost GUI entry point.
 - [test_webapp.py](../test_webapp.py) — Flask pipeline and verification tests.
-- [test_payload_protocol.py](../test_payload_protocol.py) — retained legacy `STG1` payload protocol tests.
 - [AGENTS](../AGENTS.md) — agent working instructions.
 
 ## Records
@@ -32,4 +31,5 @@ For repository structure and implementation entry points, see [Agent Navigation 
 - [KISS Reduction Record](KISS-REDUCTION-RECORD.md) — the committed reduction outcome, measurements, decisions, and lessons.
 - [Flask Application Status](IMPLEMENTATION-STATUS.md) — current web inputs, protocol-v3 integration, requirement coverage, and request flow.
 - [Flask Decoding and Verification](DECODING-VERIFICATION.md) — receiver-gated verification inputs, response fields, payload-preview controls, tests, and limitations.
-- [Protocol Compatibility](PROTOCOL-COMPATIBILITY.md) — the boundary between active version-3 web files, rejected version-2 files, and retained legacy `STG1` files.
+- [Protocol Compatibility](PROTOCOL-COMPATIBILITY.md) — the active version-3 format and the status of older masked-media and `STG1` files.
+- [Merge Leftover Removal](MERGE-LEFTOVER-REMOVAL.md) — removed legacy files, import evidence, authorship, and merge history.

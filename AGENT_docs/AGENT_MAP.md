@@ -14,6 +14,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
 | Current protocol, fixed-width fields, typed-payload metadata, and design history | [PROTOCOL-DESIGN.md](PROTOCOL-DESIGN.md#protocol-design) |
 | Implemented version 3 hash, RGBA, compatibility, and limits | [PROTOCOL-V3-FULL-MEDIA-HASH.md](PROTOCOL-V3-FULL-MEDIA-HASH.md) |
+| Removal of imported legacy files, the old `STG1` stack, and duplicate assignment PDF | [MERGE-LEFTOVER-REMOVAL.md](MERGE-LEFTOVER-REMOVAL.md) |
 | Historical protocol version 2 design; stages 0 through 6b complete; 6c cancelled | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
 | Chunked carrier access, file-backed payload uploads, staging cleanup, chunk size, memory claim, and web tests | [STREAMING-CARRIER-PLAN.md](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) |
@@ -42,10 +43,10 @@ Use this map before editing an unfamiliar part of the repository.
 | Flask application factory, disk-backed carrier and payload uploads, streaming encode/verify routes, validated downloads, and `/payload/<id>` recovered-payload downloads; runtime files use `instance/stego-outputs` and `instance/recovered-payloads` | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
 | Flask-to-protocol-v3 streaming file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
-| Retained legacy web protocol | [payload_protocol.py](../payload_protocol.py) and legacy modules under [stego_web/services/](../stego_web/services/) |
+| Active Flask-to-protocol-v3 service | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | FR1–FR12 demonstration notebook: verdict/fidelity evidence; file-backed PNG/WAV carriers and payload API demo | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol and chunked-carrier tests | [test_stego.py](../test_stego.py) |
-| Flask integration and legacy-protocol tests | [test_webapp.py](../test_webapp.py) and [test_payload_protocol.py](../test_payload_protocol.py) |
+| Flask integration and current protocol tests | [test_webapp.py](../test_webapp.py) and [test_stego.py](../test_stego.py) |
 | Runtime and test dependencies | [requirements.txt](../requirements.txt) |
 | Optional demonstration-notebook dependency | [requirements-notebook.txt](../requirements-notebook.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |

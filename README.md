@@ -103,8 +103,10 @@ result = verify_png("stego.png", sender_public_key, receiver_private_key)
 All serialised protocol integers use unsigned 64-bit big-endian fields. Existing
 version 1 and version 2 masked-media files are not accepted by the active
 version-3 web routes. A readable version 2 bootstrap returns `Cannot Verify`
-with `unsupported bootstrap version`. The legacy `payload_protocol.py` module
-and its tests remain for historical compatibility; see [Protocol Compatibility](AGENT_docs/PROTOCOL-COMPATIBILITY.md).
+with `unsupported bootstrap version`. The separate legacy `STG1` implementation
+has been removed and is not interoperable with this protocol. See [Protocol
+Compatibility](AGENT_docs/PROTOCOL-COMPATIBILITY.md) and the [merge-leftover
+removal record](AGENT_docs/MERGE-LEFTOVER-REMOVAL.md).
 
 ## Documentation
 

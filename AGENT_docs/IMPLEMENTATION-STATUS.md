@@ -1,9 +1,10 @@
 # Flask application implementation status
 
 The localhost entry point `run.py` creates the application from `stego_web`.
-The active routes adapt uploaded bytes to the reduced masked-media protocol
-version 3 through `stego_web/services/current_protocol.py`; they no longer use
-the legacy `STG1` encoding and verification pipelines.
+The active routes adapt uploaded files to the reduced masked-media protocol
+version 3 through `stego_web/services/current_protocol.py`. The earlier `STG1`
+encoding and verification services have been removed; the active routes do not
+import a legacy protocol.
 
 ## Requirement coverage
 
@@ -32,7 +33,8 @@ the legacy `STG1` encoding and verification pipelines.
    A text message is written to a small temporary file. Key PEMs remain byte inputs.
 4. `CurrentProtocolService` detects the carrier from its first 12 bytes, loads both
    RSA key roles, and builds delimiter-checked typed metadata.
-5. `stego.encode_png` or `stego.encode_wav` calculates geometry and full media
+5. `stego.encode_png_from_payload_path` or
+   `stego.encode_wav_from_payload_path` calculates geometry and full media
    integrity, encrypts the record with AES-256-GCM, signs it with RSA-PSS, encrypts
    the bootstrap with RSA-OAEP, and writes directly to `instance/stego-outputs`.
 6. The response returns a `stego_url`, filename, MIME type, sender public key,
