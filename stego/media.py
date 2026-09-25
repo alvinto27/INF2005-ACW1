@@ -12,8 +12,10 @@ import io
 import os
 import struct
 import wave
+import zlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from os import PathLike, fspath
 
 import numpy as np
@@ -177,12 +179,36 @@ def encode_png_media_context(image_shape: tuple[int, int, int], carrier_unit_cou
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _PNG_IMAGE_CHUNKS = frozenset((b"IHDR", b"IDAT", b"IEND"))
-# Known chunks copied to the output. PLTE is only a suggested palette in the
-# truecolour PNGs that this package accepts.
+# Known chunks copied unchanged. They stay true after embedding because only
+# low bits change. PLTE is only a suggested palette in truecolour PNGs.
 _PNG_KNOWN_COPIED_CHUNKS = frozenset((
     b"PLTE", b"tEXt", b"zTXt", b"iTXt", b"iCCP", b"sRGB", b"gAMA", b"cHRM",
-    b"sBIT", b"pHYs", b"tIME", b"eXIf", b"bKGD", b"sPLT", b"hIST", b"tRNS",
+    b"pHYs", b"eXIf", b"bKGD", b"sPLT",
 ))
+# sBIT would mark the embedded low bits as not significant, and hIST counts the
+# old pixels, so both are dropped. tRNS is handled by colour type; tIME is
+# replaced with the encode time.
+_PNG_RGB_COLOUR_TYPE = 2
+_PNG_RGB_TRNS_ERROR = "RGB PNG with a tRNS colour key is not supported; convert the image to RGBA"
+
+
+def _utc_now() -> datetime:
+    """Return the current UTC time. Tests patch this function."""
+    return datetime.now(timezone.utc)
+
+
+def _png_chunk_bytes(chunk_type: bytes, data: bytes) -> bytes:
+    """Build one whole PNG chunk with a new CRC."""
+    return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", zlib.crc32(chunk_type + data))
+
+
+def _png_time_chunk() -> bytes:
+    """Build a tIME chunk with the current UTC time."""
+    now = _utc_now().astimezone(timezone.utc)
+    return _png_chunk_bytes(
+        b"tIME",
+        struct.pack(">HBBBBB", now.year, now.month, now.day, now.hour, now.minute, now.second),
+    )
 
 
 def _copy_file_bytes(source_file: io.BufferedIOBase, output_file: io.BufferedIOBase, offset: int, count: int | None) -> None:
@@ -199,21 +225,26 @@ def _copy_file_bytes(source_file: io.BufferedIOBase, output_file: io.BufferedIOB
             count -= len(block)
 
 
-def _png_copied_chunks(source_file: io.BufferedIOBase) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    """Return the (offset, size) of each chunk to copy, before and after IDAT.
+def _png_copied_chunks(source_file: io.BufferedIOBase) -> tuple[list[tuple[int, int] | bytes], list[tuple[int, int] | bytes]]:
+    """Return the chunks to write before and after IDAT.
 
-    Known chunks and unknown ancillary safe-to-copy chunks are copied. Unknown
-    unsafe-to-copy chunks are dropped. An unknown critical chunk stops the
-    rewrite, as the PNG specification requires of PNG editors.
+    An item is a source (offset, size) range to copy, or new chunk bytes.
+    Known chunks that stay true and unknown ancillary safe-to-copy chunks are
+    copied. A tIME chunk is replaced with the encode time. sBIT, hIST, the
+    tRNS of an RGBA PNG, and unknown unsafe-to-copy chunks are dropped. An RGB
+    PNG with tRNS, more than one tIME, or an unknown critical chunk stops the
+    encode, as the PNG specification requires of PNG editors.
     """
     file_size = os.fstat(source_file.fileno()).st_size
     source_file.seek(0)
     if source_file.read(8) != _PNG_SIGNATURE:
         raise ValueError("invalid PNG header")
-    before: list[tuple[int, int]] = []
-    after: list[tuple[int, int]] = []
+    before: list[tuple[int, int] | bytes] = []
+    after: list[tuple[int, int] | bytes] = []
     offset = 8
     seen_idat = False
+    seen_time = False
+    colour_type = None
     while True:
         source_file.seek(offset)
         header = source_file.read(8)
@@ -225,8 +256,20 @@ def _png_copied_chunks(source_file: io.BufferedIOBase) -> tuple[list[tuple[int, 
             raise ValueError("invalid PNG chunk structure")
         if chunk_type == b"IEND":
             return before, after
-        if chunk_type == b"IDAT":
+        if (chunk_type == b"IHDR") != (offset == 8):
+            raise ValueError("invalid PNG chunk structure")
+        if chunk_type == b"IHDR":
+            colour_type = source_file.read(10)[9:10]
+        elif chunk_type == b"IDAT":
             seen_idat = True
+        elif chunk_type == b"tIME":
+            if seen_time:
+                raise ValueError("PNG has more than one tIME chunk")
+            seen_time = True
+            (after if seen_idat else before).append(_png_time_chunk())
+        elif chunk_type == b"tRNS":
+            if colour_type == bytes((_PNG_RGB_COLOUR_TYPE,)):
+                raise ValueError(_PNG_RGB_TRNS_ERROR)
         elif chunk_type in _PNG_KNOWN_COPIED_CHUNKS or (
             chunk_type not in _PNG_IMAGE_CHUNKS and chunk_type[0:1].islower() and chunk_type[3:4].islower()
         ):
@@ -244,8 +287,8 @@ class _PngChunkSplicer:
     no chunk type is written twice. Memory does not grow with the image size.
     """
 
-    def __init__(self, output_file: io.BufferedIOBase, source_file: io.BufferedIOBase, before: list[tuple[int, int]], after: list[tuple[int, int]]) -> None:
-        """Keep the output, the source, and the chunk ranges to insert."""
+    def __init__(self, output_file: io.BufferedIOBase, source_file: io.BufferedIOBase, before: list[tuple[int, int] | bytes], after: list[tuple[int, int] | bytes]) -> None:
+        """Keep the output, the source, and the chunks to insert."""
         self._output = output_file
         self._source = source_file
         self._before = before
@@ -299,10 +342,13 @@ class _PngChunkSplicer:
         self._output.write(header)
         self._remaining = length + 4
 
-    def _copy_chunks(self, ranges: list[tuple[int, int]]) -> None:
-        """Copy whole source chunks, including their original CRC fields."""
-        for offset, size in ranges:
-            _copy_file_bytes(self._source, self._output, offset, size)
+    def _copy_chunks(self, chunks: list[tuple[int, int] | bytes]) -> None:
+        """Write new chunk bytes, or copy whole source chunks with their original CRC."""
+        for chunk in chunks:
+            if isinstance(chunk, bytes):
+                self._output.write(chunk)
+            else:
+                _copy_file_bytes(self._source, self._output, chunk[0], chunk[1])
 
     def flush(self) -> None:
         """Flush the output file."""

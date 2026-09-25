@@ -8,6 +8,7 @@ import unittest
 import wave
 import zlib
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -1679,14 +1680,20 @@ class TestMaskedStego(unittest.TestCase):
             pixels = np.random.default_rng(7).integers(0, 256, (100, 100, 3), dtype=np.uint8)
             Image.fromarray(pixels, mode="RGB").save(plain_path)
             plain_chunks = png_chunk_list(plain_path.read_bytes())
+            old_time = png_chunk(b"tIME", struct.pack(">HBBBBB", 2026, 5, 17, 12, 30, 0))
+            encode_time = datetime(2031, 2, 3, 4, 5, 6, tzinfo=timezone.utc)
+            new_time = png_chunk(b"tIME", struct.pack(">HBBBBB", 2031, 2, 3, 4, 5, 6))
             before_idat = [
                 png_chunk(b"iCCP", b"profile\x00\x00" + zlib.compress(b"icc bytes")),
+                png_chunk(b"sBIT", b"\x08\x08\x08"),
                 png_chunk(b"tEXt", b"Author\x00Alice"),
                 png_chunk(b"iTXt", b"Title\x00\x00\x00en\x00Title\x00Caf\xc3\xa9"),
                 png_chunk(b"zTXt", b"Comment\x00\x00" + zlib.compress(b"zipped text")),
                 png_chunk(b"pHYs", struct.pack(">IIB", 11811, 11811, 1)),
                 png_chunk(b"eXIf", b"MM\x00*\x00\x00\x00\x08\x00\x00"),
-                png_chunk(b"tIME", struct.pack(">HBBBBB", 2026, 5, 17, 12, 30, 0)),
+                old_time,
+                png_chunk(b"PLTE", bytes(range(6))),
+                png_chunk(b"hIST", b"\x00\x01\x00\x02"),
                 png_chunk(b"prIv", b"safe private data"),
                 png_chunk(b"prIV", b"unsafe private data"),
             ]
@@ -1696,7 +1703,8 @@ class TestMaskedStego(unittest.TestCase):
                 b"\x89PNG\r\n\x1a\n" + plain_chunks[0][1] + b"".join(before_idat)
                 + b"".join(idat) + b"".join(after_idat) + png_chunk(b"IEND", b"")
             )
-            encode_png(cover_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"metadata", b"")
+            with patch("stego.media._utc_now", return_value=encode_time):
+                encode_png(cover_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"metadata", b"")
 
             output_chunks = png_chunk_list(output_path.read_bytes())
             types = [chunk_type for chunk_type, _ in output_chunks]
@@ -1704,13 +1712,22 @@ class TestMaskedStego(unittest.TestCase):
             last_idat = len(types) - 1 - types[::-1].index(b"IDAT")
             self.assertEqual(types[0], b"IHDR")
             self.assertEqual(types[-1], b"IEND")
-            self.assertEqual(
-                [chunk for _, chunk in output_chunks[1:first_idat]],
-                [chunk for chunk in before_idat if chunk[4:8] != b"prIV"],
-            )
+            # tIME is replaced in its position; sBIT, hIST, and prIV are dropped.
+            expected_before = [
+                new_time if chunk == old_time else chunk
+                for chunk in before_idat
+                if chunk[4:8] not in (b"sBIT", b"hIST", b"prIV")
+            ]
+            self.assertEqual([chunk for _, chunk in output_chunks[1:first_idat]], expected_before)
             self.assertEqual([chunk for _, chunk in output_chunks[last_idat + 1:-1]], after_idat)
-            self.assertNotIn(b"prIV", types)
+            for dropped in (b"prIV", b"sBIT", b"hIST"):
+                self.assertNotIn(dropped, types)
             self.assertEqual(types.count(b"IHDR"), 1)
+            time_chunk = output_chunks[types.index(b"tIME")][1]
+            self.assertEqual(struct.unpack(">I", time_chunk[-4:])[0], zlib.crc32(time_chunk[4:-4]))
+            with Image.open(output_path) as image:
+                image.load()
+                self.assertEqual(image.info["Author"], "Alice")
             self.assertEqual(verify_png(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
 
             # The ancillary chunks are not hashed: a changed tEXt value still verifies.
@@ -1734,6 +1751,70 @@ class TestMaskedStego(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unknown critical PNG chunk: CRIT"):
                 encode_png(critical_path, critical_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
             self.assertFalse(critical_output.exists())
+
+    def test_png_time_is_not_added_and_duplicate_time_is_refused(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            plain_path = directory / "plain.png"
+            output_path = directory / "output.png"
+            Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8), mode="RGB").save(plain_path)
+            encode_png(plain_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            types = {chunk_type for chunk_type, _ in png_chunk_list(output_path.read_bytes())}
+            self.assertEqual(types, {b"IHDR", b"IDAT", b"IEND"})
+
+            chunks = png_chunk_list(plain_path.read_bytes())
+            time_chunk = png_chunk(b"tIME", struct.pack(">HBBBBB", 2026, 1, 1, 0, 0, 0))
+            twice_path = directory / "two-times.png"
+            twice_output = directory / "two-times-output.png"
+            twice_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + chunks[0][1] + time_chunk + time_chunk
+                + b"".join(chunk for _, chunk in chunks[1:])
+            )
+            with self.assertRaisesRegex(ValueError, "more than one tIME chunk"):
+                encode_png(twice_path, twice_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse(twice_output.exists())
+
+    def test_png_trns_is_refused_for_rgb_dropped_for_rgba_and_ignored_by_verify(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            pixels = np.random.default_rng(11).integers(0, 256, (100, 100, 4), dtype=np.uint8)
+            rgb_key_path = directory / "rgb-key.png"
+            rgb_key_output = directory / "rgb-key-output.png"
+            Image.fromarray(pixels[:, :, :3], mode="RGB").save(rgb_key_path, transparency=(1, 2, 3))
+            self.assertIn(b"tRNS", rgb_key_path.read_bytes())
+            with self.assertRaisesRegex(
+                ValueError,
+                "^RGB PNG with a tRNS colour key is not supported; convert the image to RGBA$",
+            ):
+                encode_png(rgb_key_path, rgb_key_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse(rgb_key_output.exists())
+
+            # tRNS is not allowed with RGBA; the encoder drops it.
+            rgba_plain = directory / "rgba-plain.png"
+            rgba_path = directory / "rgba-trns.png"
+            rgba_output = directory / "rgba-output.png"
+            Image.fromarray(pixels, mode="RGBA").save(rgba_plain)
+            chunks = png_chunk_list(rgba_plain.read_bytes())
+            rgba_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + chunks[0][1] + png_chunk(b"tRNS", b"\x00\x01\x00\x02\x00\x03")
+                + b"".join(chunk for _, chunk in chunks[1:])
+            )
+            encode_png(rgba_path, rgba_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertNotIn(b"tRNS", [chunk_type for chunk_type, _ in png_chunk_list(rgba_output.read_bytes())])
+            self.assertEqual(verify_png(rgba_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+            # Verification ignores a tRNS chunk added to an RGB stego file later.
+            rgb_plain = directory / "rgb-plain.png"
+            rgb_output = directory / "rgb-output.png"
+            rgb_added = directory / "rgb-added-trns.png"
+            Image.fromarray(pixels[:, :, :3], mode="RGB").save(rgb_plain)
+            encode_png(rgb_plain, rgb_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            stego_chunks = png_chunk_list(rgb_output.read_bytes())
+            rgb_added.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + stego_chunks[0][1] + png_chunk(b"tRNS", b"\x00\x01\x00\x02\x00\x03")
+                + b"".join(chunk for _, chunk in stego_chunks[1:])
+            )
+            self.assertEqual(verify_png(rgb_added, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
 
     def test_wav_output_copies_every_byte_outside_the_samples(self) -> None:
         with TemporaryDirectory() as directory_name:

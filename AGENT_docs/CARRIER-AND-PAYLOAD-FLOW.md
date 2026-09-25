@@ -20,19 +20,26 @@ WAV output is a copy of the input file with only the declared sample bytes patch
 
 The header, `LIST`/`INFO`, `cue `, `bext`, other chunks before or after `data`, pad bytes, and data bytes after the last whole frame stay byte-for-byte the same. The output length equals the input length. The callbacks run in the same order as before, and `fixed_bytes_callback` receives the original fixed bytes.
 
-PNG output uses Pillow for IHDR, IDAT, and IEND. `_png_copied_chunks()` reads the input chunk list and selects chunks by the PNG rule for editors that change image data:
+PNG output uses Pillow for IHDR, IDAT, and IEND. `_png_copied_chunks()` reads the input chunk list and selects chunks by the PNG rule for editors that change image data. Embedding changes only low bits; width, height, colour type, and bit depth stay the same. A chunk is kept only if it stays true after that change:
 
 | Input chunk | Output |
 | --- | --- |
-| Known chunk: `PLTE` (a suggested palette for truecolour), `tEXt`, `zTXt`, `iTXt`, `iCCP`, `sRGB`, `gAMA`, `cHRM`, `sBIT`, `pHYs`, `tIME`, `eXIf`, `bKGD`, `sPLT`, `hIST`, `tRNS` | Copied |
+| `tEXt`, `zTXt`, `iTXt`, `eXIf`, `pHYs`, `iCCP`, `sRGB`, `gAMA`, `cHRM`, `bKGD`, `sPLT`, `PLTE` (a suggested palette for truecolour) | Copied unchanged |
+| `tIME` | Replaced in the same position with the encode time in UTC (7 bytes: year u16 big-endian, month, day, hour, minute, second) and a new CRC. The encoder does not add `tIME` when the input has none. |
+| More than one `tIME` (not allowed by the PNG specification) | Encode stops with `ValueError` |
+| `sBIT`, `hIST` | Dropped: `sBIT` would mark the embedded low bits as not significant, and `hIST` counts the old pixels |
+| `tRNS` in an RGB PNG (colour key) | Encode stops with `ValueError`: "RGB PNG with a tRNS colour key is not supported; convert the image to RGBA". Embedding can move pixels onto or off the key colour and change the visible transparency. |
+| `tRNS` in an RGBA PNG (not allowed by the PNG specification) | Dropped |
 | Unknown ancillary chunk with the safe-to-copy bit set (fourth letter lowercase) | Copied |
 | Unknown ancillary chunk that is not safe to copy (fourth letter uppercase), for example APNG or newer colour chunks | Dropped |
 | Unknown critical chunk (first letter uppercase) | Encode stops with `ValueError`, as the PNG specification requires |
 | `IHDR`, `IDAT`, `IEND` | Taken from the new image |
 
-`_PngChunkSplicer` receives the bytes that Pillow writes, parses them as PNG chunks, and writes them to the output file. It inserts the copied chunks that came before the first input IDAT immediately before the first new IDAT, and the copied chunks that came after IDAT immediately before IEND. The copied chunks keep their order, data, and CRC. If Pillow writes a chunk other than IHDR, IDAT, or IEND, the splicer raises `ValueError`, so no chunk type is written twice.
+`_PngChunkSplicer` receives the bytes that Pillow writes, parses them as PNG chunks, and writes them to the output file. It inserts the copied chunks that came before the first input IDAT immediately before the first new IDAT, and the copied chunks that came after IDAT immediately before IEND. The copied chunks keep their order, data, and CRC; only a replaced `tIME` gets new data and a new CRC. `_utc_now()` supplies the time; tests patch it. The time is read only in the rewrite pass. If Pillow writes a chunk other than IHDR, IDAT, or IEND, the splicer raises `ValueError`, so no chunk type is written twice.
 
-Pillow's `PngInfo.add()` is not used: Pillow moves or drops chunks that come through `pnginfo`. For example, it drops `pHYs`, `iCCP`, `eXIf`, and `tRNS`, and it writes text chunks before IDAT. The splicer holds only chunk offsets and one copy block, so it does not add a decoded-image copy.
+Pillow's `PngInfo.add()` is not used: Pillow moves or drops chunks that come through `pnginfo`. For example, it drops `pHYs`, `iCCP`, `eXIf`, and `tRNS`, and it writes text chunks before IDAT. The splicer holds only chunk offsets, the new `tIME` chunk, and one copy block, so it does not add a decoded-image copy.
+
+These rules apply only to encoding. `PngCarrier` loading and verification do not read ancillary chunks. A stego file that later gets a `tRNS` chunk or other metadata verifies as before.
 
 ## 4. Protocol flow
 

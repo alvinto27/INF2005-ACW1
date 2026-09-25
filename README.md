@@ -12,6 +12,9 @@ of each declared PCM sample. PNG ancillary chunks and WAV chunks outside the
 declared samples are not covered. The encoded file keeps this metadata: PNG
 text, colour, EXIF, and other copyable ancillary chunks, and all WAV chunks
 outside the samples. A change to this metadata does not change the verdict.
+The encoder sets an existing PNG `tIME` to the encode time and drops `sBIT`
+and `hIST`. It refuses an RGB PNG with a `tRNS` colour key; convert that image
+to RGBA first.
 
 Requires Python 3.10+.
 

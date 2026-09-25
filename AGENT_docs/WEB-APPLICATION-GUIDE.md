@@ -61,7 +61,7 @@ The service recognizes PNG, JPEG, WAV, MP3, and PDF magic. It allows inline prev
 
 ## Errors and storage
 
-For `POST /encode`, carrier and form validation errors return JSON with HTTP 400. For `POST /decode`, the status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
+For `POST /encode`, carrier and form validation errors return JSON with HTTP 400. This includes an RGB PNG with a `tRNS` colour key: "RGB PNG with a tRNS colour key is not supported; convert the image to RGBA". For `POST /decode`, the status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
 
 The whole-request limit is `MAX_CONTENT_LENGTH = 256 MiB`; `create_app(test_config)` can override it. Upload files are deleted when the request ends. Encoded carriers and recovered payloads remain in their output directories until users delete them. Private `.stego-staging-*` directories are removed on normal exits. Power loss or `SIGKILL` can leave unauthenticated plaintext staging; stop the server and remove these directories manually after a crash. See [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#cleanup-rule).
 

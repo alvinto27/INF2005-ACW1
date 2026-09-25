@@ -356,6 +356,18 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["message"], detail)
         self.assertIsNone(report["frame_version"])
 
+    def test_rgb_png_with_trns_colour_key_is_refused_at_encode(self) -> None:
+        """An RGB colour-key PNG is refused with HTTP 400 and no output file."""
+        output = io.BytesIO()
+        Image.new("RGB", (96, 96), (46, 112, 99)).save(output, format="PNG", transparency=(0, 0, 0))
+        response = self.encode(output.getvalue(), "keyed.png")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "RGB PNG with a tRNS colour key is not supported; convert the image to RGBA",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
     def test_invalid_carrier_error_precedes_invalid_sender_key(self) -> None:
         """Validate a PNG carrier before reporting an invalid sender key."""
         response = self.client.post(
