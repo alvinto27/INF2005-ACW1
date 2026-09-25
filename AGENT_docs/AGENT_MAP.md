@@ -18,7 +18,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Historical protocol version 2 design; stages 0 through 6b complete; 6c cancelled | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
 | Chunked carrier access, payload APIs, staging cleanup, measurements, and known limits | [CARRIER-AND-PAYLOAD-FLOW.md](CARRIER-AND-PAYLOAD-FLOW.md#4-protocol-flow) |
-| Approved video carrier design (Stage 1 prototype gates open; no implementation) | [VIDEO-CARRIER-DESIGN.md](VIDEO-CARRIER-DESIGN.md) |
+| Approved video carrier design (Stage 1 gates closed; no implementation) | [VIDEO-CARRIER-DESIGN.md](VIDEO-CARRIER-DESIGN.md) |
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
 | Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
 | Web request contracts, response handling, payload previews, and requirement coverage | [WEB-APPLICATION-GUIDE.md](WEB-APPLICATION-GUIDE.md) |

@@ -1,6 +1,6 @@
 # Video Carrier Design
 
-**Status: Approved design — Stage 1 prototype gates open**
+**Status: Approved design — Stage 1 gates closed; Stage 2 not started**
 
 The user approved one combined video-plus-audio carrier, media code 3 with `VID-`, protocol v3 with no wire-format or version change, FFV1 `bgr0` and PCM s16le output in Matroska, bounded memory, and library/notebook work before optional web work. The v3 wire format, cryptography, and packet placement stay unchanged; the core gets one additive read-back check (see PASS 3). Video is optional in the assignment. See [Current Protocol](CURRENT-PROTOCOL.md) and [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) for the existing hash, carrier, and payload rules.
 
@@ -32,18 +32,13 @@ The fields are width u32, height u32, frame count u64, audio sample rate u32, au
 
 Version 1 accepts **mono or stereo only**. Refuse other counts with `unsupported audio channel count`. Future 5.1/7.1 support needs a canonical channel-layout field; channel count alone is not enough.
 
-## Timing and audio rules — Stage 1 gates
+## Timing and audio rules
 
 Do not sign source PTS integers or source time bases. For each timestamp, calculate `pts * time_base` as an exact rational, then round to the nearest millisecond, with ties away from zero. Do not use floats. Refuse missing timestamps, non-increasing video ticks, and distinct video times that round to the same tick.
 
-### Audio before video: open gate
+### Audio before video: Stage 1 result
 
-Stage 1 must test negative audio offsets through the complete FFV1/PCM Matroska write and read path:
-
-- If a negative audio offset round-trips exactly, keep the first video frame as time zero and retain the negative audio-start tick.
-- If the muxer rebases negative times, use the earliest selected-stream timestamp as time zero. All canonical ticks must then be non-negative.
-
-Stage 1 records which rule the muxer supports. Do not select a branch from theory alone.
+The Matroska muxer may shift absolute timestamps to avoid negative values. Compare audio time with the first video time after reading output. The tested FFV1/PCM path kept relative offsets exact at -40 ms, -1 ms, and +40 ms, so use the first video frame as time zero and retain a negative audio-start tick. Version 1 has only this one mux path. PASS 3 compares the read-back ticks, so a muxer change that alters the relative offset makes encode fail instead of publishing wrong timing.
 
 ### Audio continuity
 
@@ -60,7 +55,7 @@ Convert decoded sample format to signed 16-bit PCM only. Do not resample. Refuse
 
 ### Timing evidence
 
-A generated H.264 MP4 at 30 fps used time base `1/15360` and PTS `0, 512, 1024, 1536, ...`; FFV1 Matroska used `1/1000` and PTS `0, 33, 67, 100, ...`. Raw PTS integers differ. The Sitt 12-fps sample used `1/1000` on both sides (`0, 83, 167, 250, ...`). PyAV 15.1.0 produced these results. Stage 1 must confirm VFR and negative-offset read-back.
+A generated H.264 MP4 at 30 fps used time base `1/15360` and PTS `0, 512, 1024, 1536, ...`; FFV1 Matroska used `1/1000` and PTS `0, 33, 67, 100, ...`. Raw PTS integers differ. The Sitt 12-fps sample used `1/1000` on both sides (`0, 83, 167, 250, ...`). PyAV 15.1.0 produced these results. Stage 1 confirmed VFR and negative-offset read-back (G1, G2).
 
 ## `VideoCarrier` and chunking
 
@@ -117,9 +112,7 @@ A lossless re-mux verifies only if decoded RGB, canonical timing, s16 samples, a
 
 Output is `.mkv` with FFV1 `bgr0` video and PCM s16le audio. A local experiment decoded FFV1 `bgr0` back to exactly the same RGB bytes. Other streams and tags are not carried in version 1.
 
-Initial configurable limits: **1920×1080**, **15 seconds**, **450 frames** (15 seconds × 30 fps), audio channels **0/1/2**, temporary files **2 GiB total**, final output **1 GiB**, and free disk **3 GiB minimum**. Enforce dimensions, duration, frames, and channels during PASS 0; require 3 GiB free before staging/output; enforce temporary bytes during staging/mux and output bytes during final mux.
-
-A cap trip aborts, cleans up, and never publishes. These starting limits need Stage 1 tests. The measured FFV1 output was about 32.5× the input for one synthetic pattern; actual size depends on content.
+Proposed defaults: **1920×1080**, **15 seconds**, **450 frames** (15 seconds × 30 fps), audio channels **0/1/2**, working intermediates **2 GiB total**, final output **1 GiB**, and free disk **3 GiB minimum**. Enforce dimensions, duration, frames, and channels during PASS 0; require 3 GiB free before staging/output; enforce intermediate bytes during staging and output bytes during final mux. A cap trip aborts, cleans up, and never publishes. Embedding makes FFV1 output larger, because changed LSBs are harder to compress: G6 measured 139,729,881 bytes for 5 seconds without embedding, but G7 measured 217,163,362 bytes for 5 seconds with LSB changes (about 1.55×). At 15 seconds the G7 figure gives about 651 MB (about 621 MiB), below the 1 GiB cap for this test content. Complex video may exceed the cap.
 
 ## Performance evidence and targets
 
@@ -127,7 +120,9 @@ A generated 5-second 1920×1080, 30-fps H.264/AAC MP4 had 150 frames and size 4,
 
 Decode took 0.386 s and 0.371 s on repeat, with identical RGB/s16 arrays. FFV1 `bgr0` + PCM s16le encode took 4.094 s; output decode took 3.52–4.04 s across three runs. All 150 RGB frames read back exactly. Input/output sizes were 4,261,819/138,461,527 bytes (about 32.5×).
 
-Including PASS 3: `3 × 0.386 + 4.094 + (3.52..4.04) ≈ 8.77–9.29 s` per 5-second clip, before hash work, packet work, mux overhead, and I/O. Linear extrapolation is about **105–112 seconds for 60 seconds at 30 fps**; expect more in practice. A 60-fps estimate is roughly twice this, but has not been measured. The target demo clip is **5–10 seconds**. Stage 1 must measure FFV1 slice and decoder-thread settings.
+Including PASS 3: `3 × 0.386 + 4.094 + (3.52..4.04) ≈ 8.77–9.29 s` per 5-second clip, before hash work, packet work, mux overhead, and I/O. Linear extrapolation is about **105–112 seconds for 60 seconds at 30 fps**; expect more in practice. A 60-fps estimate is roughly twice this, but has not been measured. The target demo clip is **5–10 seconds**.
+
+With the Stage 1 FFV1 setting (G6: 16 slices, AUTO threads), the same sum is about `3 × 0.386 + 2.631 + 2.032 ≈ 5.82 s` per 5-second clip, or about **70 seconds for 60 seconds at 30 fps**, with the same exclusions. G6 encode time already includes an input decode and the mux, so this estimate is conservative in that part. Stage 2 must measure the real encode and verify times.
 
 Repeated decoding of the bundled MPEG-4/AAC sample and generated H.264/AAC MP4 produced identical RGB and s16 arrays within this environment. Set decoder threading explicitly and test supported builds.
 
@@ -152,6 +147,46 @@ Reuse Sitt's deterministic fixture, round-trip, wrong-key, capacity, stream, and
 
 Notebook: encode a 5–10 second clip; show `Authentic`; tamper one frame, one audio sample, then canonical timing and show `Tampered`; change a tag/rotation and show `Authentic` with the unprotected-data warning; show an extra-stream refusal and explain the limits.
 
+## Stage 1 results
+
+**Environment:** PyAV 15.1.0; bundled FFmpeg libraries libavcodec 61.19.101 and libavformat 61.7.100. Synthetic inputs were deterministic H.264/AAC MP4 and small PCM/Matroska files, all at or below 10 seconds and 1080p30.
+
+| Gate | Result and key numbers | Decision |
+| --- | --- | --- |
+| G1 — time origin | PASS. FFV1/PCM Matroska read back relative audio offsets exactly: −40 ms (video PTS 40 ms, audio 0), −1 ms (video 1 ms, audio 0), +40 ms (video 0, audio 40 ms). | Keep first-video-frame origin. Matroska shifted absolute PTS for negative starts but preserved the relative offset. |
+| G2 — VFR | PASS. Source H.264 MP4 time base `1/15360`; input PTS decoded to 0, 33, 70, 71, 200 ms. FFV1 MKV time base `1/1000`; read-back ticks matched. Collision PTS 309 and 313 at `1/15360` became 20 and 20 ms and were rejected. | Keep exact rational conversion and collision refusal. |
+| G3 — audio continuity | PASS. PCM frames at 0/10/20 ms passed. A synthetic gap read at sample 1008 instead of 960; overlap at 912 instead of 960; both failed the nearest-sample test. AAC decoded frames passed. | Keep the specified continuity rule; count decoded output, not nominal stream duration. |
+| G4 — channels | PASS. Mono 2,880 values and stereo 5,760 values round-tripped exactly. Six-channel PCM was detected and refused by the 0/1/2 rule. | Keep mono/stereo-only v1. |
+| G5 — determinism | PASS. Three decodes each with `thread_count=1`/SLICE and default threading gave identical RGB and s16 values (150 frames, 481,280 interleaved audio values). | Set decoder `thread_count=1` for repeatable, bounded resource use; default also matched in this test. |
+| G6 — FFV1 | PASS. All six settings decoded RGB-exact over 150 frames. See measurements below. | Use 16 slices, AUTO threads, level 3 requested, GOP 1; fastest tested encode. FFV1 is intra-frame, so GOP 1 is not expected to change its prediction. |
+| G7 — bounded memory | PASS. Frame-by-frame RGB slicing (≤1 MiB), LSB modification, and encoding used peak RSS 420.6 MiB for 5 s and 421.2 MiB for 10 s. Output grew from 217,163,362 to 434,326,161 bytes. | Keep one-frame decode plus bounded slices; memory did not grow with duration in this test. |
+| G8 — PASS 3 | PASS. One sequential scan of the 5-second FFV1 file rebuilt 150 frames, dimensions, and ticks in 2.41–2.44 s. The 4-frame idempotence probe had 0 mismatches normally; one flipped embedded LSB produced 1 mismatch in under 1 ms. | `CarrierEncoding.check_output(source)` is feasible; retain it before `finish()` and publication. |
+| G9 — limits | PASS for check-point design; no cap trip was forced. Stream count, dimensions, pixel format, audio rate, and channels were available from headers without decoding; recheck actual frames during PASS 0. Count frames/timeline there; use a counted writer or per-packet file-size checks for intermediate and final output bytes. | Keep 1920×1080, 15 s, 450 frames, 2 GiB intermediates, 1 GiB output, and 3 GiB free as initial defaults. |
+| G10 — tags | PASS. Changing the Matroska title left decoded RGB, s16, and PTS unchanged. Leaving output metadata unset dropped the source title; Matroska added its own `ENCODER` tag. | Tags/rotation remain outside the authenticity model; do not copy source metadata. |
+
+### G6 FFV1 settings
+
+Each run used `bgr0`, level 3 requested, GOP 1, and a 5-second 1080p30 H.264 input. Encode time includes input decode and mux; matching decode time compares all source/output frames.
+
+| Slices | Threads | Encode s | Decode/compare s | Output bytes | RGB exact |
+| ---: | --- | ---: | ---: | ---: | --- |
+| 4 | 1 | 10.581 | 3.805 | 137,616,375 | Yes |
+| 4 | AUTO | 4.110 | 3.960 | 137,616,375 | Yes |
+| 16 | 1 | 11.029 | 2.015 | 139,729,881 | Yes |
+| 16 | AUTO | 2.631 | 2.032 | 139,729,881 | Yes |
+| 24 | 1 | 11.182 | 3.073 | 141,324,536 | Yes |
+| 24 | AUTO | 2.666 | 3.027 | 141,324,536 | Yes |
+
+The `slices` option changed output size. FFprobe did not report an FFV1 profile for these files, so Stage 2 must confirm that the level 3 option is accepted by the bundled encoder. Slice/thread results are one local run; repeat before treating small timing differences as stable.
+
+### G3 AAC details
+
+The generated MP4 AAC stream declared 240,000 samples per channel (5 seconds). Its first AAC packet had PTS −1024 and `Skip Samples: 1024`; the first decoded audio frame began at PTS 0 and had 1,024 samples. PyAV decoded 235 frames × 1,024 = **240,640 samples per channel**, with no discard-padding side data. All decoded frame timestamps passed continuity. PCM s16le Matroska read back all **481,280 interleaved values** exactly; the PCM muxer added or dropped none. This file includes 640 decoded tail samples beyond the nominal stream duration, so the carrier count must use decoded samples.
+
+### G9 check points
+
+Read stream count, dimensions, codec pixel format, sample rate, and channel count from headers before decoding. Recheck decoded dimensions/audio format on every frame. Enforce duration, frame count, units, and continuity during PASS 0. Enforce the 2 GiB working-intermediate cap with a counted writer (or file-size check after each write/mux packet); enforce the 1 GiB final Matroska cap during mux; require 3 GiB free before staging. Cap trips were not forced in Stage 1. Clean up and do not publish on any trip.
+
 ## Stages and remaining gates
 
 | Stage | Work | Effort |
@@ -161,7 +196,7 @@ Notebook: encode a 5–10 second clip; show `Authentic`; tamper one frame, one a
 | 3 | Notebook demonstration and evidence | 0.5–1 day |
 | 4 | Optional web integration and resource controls | 2–4 days |
 
-Only these decisions remain open: Stage 1 gate results (including the negative-offset time origin) and final values for the resource limits. The assignment makes video optional; required PNG/WAV work stays the priority.
+Stage 1 closed all gates (see Stage 1 results). Stage 2 must still confirm: that the bundled FFV1 encoder accepts the level 3 option; forced trips of each resource cap, with cleanup; and a rotation/display-matrix change (G10 tested only a title tag). The limit values above are the initial defaults. The assignment makes video optional; required PNG/WAV work stays the priority.
 
 ## References
 
