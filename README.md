@@ -9,7 +9,9 @@ The protocol encrypts the complete payload record with AES-256-GCM, authenticate
 the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
 the intended receiver with RSA-OAEP. The version 3 full media hash covers masked RGB units, RGBA alpha, and all bytes
 of each declared PCM sample. PNG ancillary chunks and WAV chunks outside the
-declared samples are not covered.
+declared samples are not covered. The encoded file keeps this metadata: PNG
+text, colour, EXIF, and other copyable ancillary chunks, and all WAV chunks
+outside the samples. A change to this metadata does not change the verdict.
 
 Requires Python 3.10+.
 

@@ -2,8 +2,14 @@
 
 PNG images are decoded whole by Pillow, then exposed through bounded chunks by
 ``PngCarrier``. PCM WAV files are read in bounded chunks by ``WavCarrier``.
+
+Rewrites keep carrier metadata that is outside the masked media hash: PNG
+ancillary chunks that a PNG editor may copy, and every WAV byte outside the
+declared PCM samples.
 """
 
+import io
+import os
 import struct
 import wave
 from collections.abc import Callable, Iterator
@@ -169,16 +175,182 @@ def encode_png_media_context(image_shape: tuple[int, int, int], carrier_unit_cou
     return struct.pack(PNG_MEDIA_CONTEXT_FORMAT, width, height, channels)
 
 
-def _save_png_array_to_path(image_array: np.ndarray, output_path: str | bytes | PathLike[str]) -> None:
-    """Save a checked RGB or RGBA image array as a PNG file."""
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_PNG_IMAGE_CHUNKS = frozenset((b"IHDR", b"IDAT", b"IEND"))
+# Known chunks copied to the output. PLTE is only a suggested palette in the
+# truecolour PNGs that this package accepts.
+_PNG_KNOWN_COPIED_CHUNKS = frozenset((
+    b"PLTE", b"tEXt", b"zTXt", b"iTXt", b"iCCP", b"sRGB", b"gAMA", b"cHRM",
+    b"sBIT", b"pHYs", b"tIME", b"eXIf", b"bKGD", b"sPLT", b"hIST", b"tRNS",
+))
+
+
+def _copy_file_bytes(source_file: io.BufferedIOBase, output_file: io.BufferedIOBase, offset: int, count: int | None) -> None:
+    """Copy count bytes, or all bytes to the end when count is None, in bounded blocks."""
+    source_file.seek(offset)
+    while count is None or count > 0:
+        block = source_file.read(DEFAULT_CHUNK_BYTES if count is None else min(DEFAULT_CHUNK_BYTES, count))
+        if not block:
+            if count is None:
+                return
+            raise ValueError("file ended before the bytes to copy")
+        output_file.write(block)
+        if count is not None:
+            count -= len(block)
+
+
+def _png_copied_chunks(source_file: io.BufferedIOBase) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Return the (offset, size) of each chunk to copy, before and after IDAT.
+
+    Known chunks and unknown ancillary safe-to-copy chunks are copied. Unknown
+    unsafe-to-copy chunks are dropped. An unknown critical chunk stops the
+    rewrite, as the PNG specification requires of PNG editors.
+    """
+    file_size = os.fstat(source_file.fileno()).st_size
+    source_file.seek(0)
+    if source_file.read(8) != _PNG_SIGNATURE:
+        raise ValueError("invalid PNG header")
+    before: list[tuple[int, int]] = []
+    after: list[tuple[int, int]] = []
+    offset = 8
+    seen_idat = False
+    while True:
+        source_file.seek(offset)
+        header = source_file.read(8)
+        if len(header) != 8:
+            raise ValueError("PNG chunk list ends before IEND")
+        length, chunk_type = struct.unpack(">I4s", header)
+        size = length + 12
+        if length > 0x7FFFFFFF or offset + size > file_size or not chunk_type.isalpha():
+            raise ValueError("invalid PNG chunk structure")
+        if chunk_type == b"IEND":
+            return before, after
+        if chunk_type == b"IDAT":
+            seen_idat = True
+        elif chunk_type in _PNG_KNOWN_COPIED_CHUNKS or (
+            chunk_type not in _PNG_IMAGE_CHUNKS and chunk_type[0:1].islower() and chunk_type[3:4].islower()
+        ):
+            (after if seen_idat else before).append((offset, size))
+        elif chunk_type[0:1].isupper() and chunk_type not in _PNG_IMAGE_CHUNKS:
+            raise ValueError(f"unknown critical PNG chunk: {chunk_type.decode('ascii')}")
+        offset += size
+
+
+class _PngChunkSplicer:
+    """Pass Pillow's PNG bytes to a file and insert copied source chunks.
+
+    The copied chunks go immediately before the first IDAT chunk and
+    immediately before IEND. Pillow must write only IHDR, IDAT, and IEND, so
+    no chunk type is written twice. Memory does not grow with the image size.
+    """
+
+    def __init__(self, output_file: io.BufferedIOBase, source_file: io.BufferedIOBase, before: list[tuple[int, int]], after: list[tuple[int, int]]) -> None:
+        """Keep the output, the source, and the chunk ranges to insert."""
+        self._output = output_file
+        self._source = source_file
+        self._before = before
+        self._after = after
+        self._pending = bytearray()
+        self._remaining = 0
+        self._signature_done = False
+        self._types: list[bytes] = []
+        self._written = 0
+
+    def write(self, data: bytes) -> int:
+        """Parse Pillow's PNG stream in any write size and copy it through."""
+        view = memoryview(data).cast("B")
+        size = len(view)
+        while view:
+            if self._remaining:
+                count = min(self._remaining, len(view))
+                self._output.write(view[:count])
+                self._remaining -= count
+                view = view[count:]
+                continue
+            count = min(8 - len(self._pending), len(view))
+            self._pending += view[:count]
+            view = view[count:]
+            if len(self._pending) == 8:
+                self._take_header(bytes(self._pending))
+                self._pending.clear()
+        self._written += size
+        return size
+
+    def _take_header(self, header: bytes) -> None:
+        """Handle the PNG signature or one chunk header from Pillow."""
+        if not self._signature_done:
+            if header != _PNG_SIGNATURE:
+                raise ValueError("the PNG encoder did not write a PNG signature")
+            self._signature_done = True
+            self._output.write(header)
+            return
+        length, chunk_type = struct.unpack(">I4s", header)
+        if (
+            chunk_type not in _PNG_IMAGE_CHUNKS
+            or (chunk_type == b"IHDR") != (not self._types)
+            or self._types[-1:] == [b"IEND"]
+        ):
+            raise ValueError(f"unexpected PNG chunk from the encoder: {chunk_type!r}")
+        if chunk_type == b"IDAT" and b"IDAT" not in self._types:
+            self._copy_chunks(self._before)
+        elif chunk_type == b"IEND":
+            self._copy_chunks(self._after)
+        self._types.append(chunk_type)
+        self._output.write(header)
+        self._remaining = length + 4
+
+    def _copy_chunks(self, ranges: list[tuple[int, int]]) -> None:
+        """Copy whole source chunks, including their original CRC fields."""
+        for offset, size in ranges:
+            _copy_file_bytes(self._source, self._output, offset, size)
+
+    def flush(self) -> None:
+        """Flush the output file."""
+        self._output.flush()
+
+    def tell(self) -> int:
+        """Return the number of bytes received from the encoder."""
+        return self._written
+
+    def finish(self) -> None:
+        """Check that the encoder wrote a whole PNG with IDAT and IEND."""
+        if self._remaining or self._pending or self._types[-1:] != [b"IEND"] or b"IDAT" not in self._types:
+            raise ValueError("the PNG encoder did not write a complete image")
+
+
+def _save_png_array_to_path(image_array: np.ndarray, output_path: str | bytes | PathLike[str], chunk_source_path: str | bytes | PathLike[str] | None = None) -> None:
+    """Save a checked RGB or RGBA image array as a PNG file.
+
+    When chunk_source_path is given, copy its ancillary chunks into the new
+    file as described in ``_png_copied_chunks``. IHDR, IDAT, and IEND always
+    come from the new image.
+    """
     image_array = _validate_png_array(image_array)
     if not isinstance(output_path, (str, bytes, PathLike)):
         raise TypeError("output_path must be a filesystem path")
     mode = PNG_CARRIER_MODE if image_array.shape[2] == RGB_CHANNEL_COUNT else PNG_ALPHA_CARRIER_MODE
+    if chunk_source_path is None:
+        try:
+            Image.fromarray(image_array, mode=mode).save(output_path, format="PNG")
+        except (OSError, ValueError) as error:
+            raise ValueError("could not save PNG") from error
+        return
     try:
-        Image.fromarray(image_array, mode=mode).save(output_path, format="PNG")
-    except (OSError, ValueError) as error:
-        raise ValueError("could not save PNG") from error
+        source_file = open(chunk_source_path, "rb")
+    except OSError as error:
+        raise ValueError("could not reopen the PNG carrier") from error
+    with source_file:
+        try:
+            before, after = _png_copied_chunks(source_file)
+        except OSError as error:
+            raise ValueError("could not read the PNG carrier chunks") from error
+        try:
+            with open(output_path, "wb") as output_file:
+                splicer = _PngChunkSplicer(output_file, source_file, before, after)
+                Image.fromarray(image_array, mode=mode).save(splicer, format="PNG")
+                splicer.finish()
+        except (OSError, ValueError) as error:
+            raise ValueError("could not save PNG") from error
 
 
 class PngCarrier(CarrierSource):
@@ -304,7 +476,7 @@ class PngCarrier(CarrierSource):
                 ] = np.frombuffer(fixed_bytes, dtype=np.uint8)
             unit_offset += original.size
             pixel_offset += pixel_count
-        _save_png_array_to_path(output_image, output_path)
+        _save_png_array_to_path(output_image, output_path, self._path)
 
 
 def _validate_wav_format(channels: int, sample_width: int, frame_rate: int, frame_count: int) -> tuple[int, int, int, int]:
@@ -510,27 +682,84 @@ class WavCarrier(CarrierSource):
         transform: Callable[[int, np.ndarray], np.ndarray],
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
     ) -> None:
-        """Copy the WAV, transform units, and preserve high sample bytes exactly."""
+        """Copy the WAV byte for byte and change only the declared sample LSBs.
+
+        All chunks before and after the data chunk, the header, pad bytes, and
+        data bytes after the last whole frame stay the same. The file is read
+        and written in chunks of whole frames.
+        """
         if not isinstance(output_path, (str, bytes, PathLike)):
             raise TypeError("output_path must be a filesystem path")
         sample_width = self.info.sample_width
+        chunk_bytes = self.frames_per_chunk * self.info.bytes_per_frame
+        sample_bytes = self.info.frame_count * self.info.bytes_per_frame
         try:
-            with wave.open(fspath(output_path), "wb") as wav_file:
-                wav_file.setnchannels(self.info.channels)
-                wav_file.setsampwidth(sample_width)
-                wav_file.setframerate(self.info.frame_rate)
-                wav_file.setnframes(self.info.frame_count)
-                unit_offset = 0
-                for raw in self._iter_raw_chunks():
-                    original, fixed_bytes = self._units_and_fixed_from_frames(raw)
-                    if fixed_bytes_callback is not None:
-                        fixed_bytes_callback(unit_offset, original, fixed_bytes)
-                    replaced = _validate_transformed_units(
-                        transform(unit_offset, original), original.size
-                    )
-                    frame_bytes = bytearray(raw)
-                    frame_bytes[0::sample_width] = replaced.tobytes()
-                    wav_file.writeframesraw(frame_bytes)
-                    unit_offset += original.size
+            with open(fspath(self._path), "rb") as source_file:
+                data_offset = self._checked_data_offset(source_file)
+                with open(fspath(output_path), "wb") as output_file:
+                    _copy_file_bytes(source_file, output_file, 0, data_offset)
+                    source_file.seek(data_offset)
+                    unit_offset = 0
+                    remaining = sample_bytes
+                    while remaining:
+                        read_size = min(chunk_bytes, remaining)
+                        raw = source_file.read(read_size)
+                        if len(raw) != read_size:
+                            raise CarrierAccessError("WAV data ended before its declared frame count")
+                        original, fixed_bytes = self._units_and_fixed_from_frames(raw)
+                        if fixed_bytes_callback is not None:
+                            fixed_bytes_callback(unit_offset, original, fixed_bytes)
+                        replaced = _validate_transformed_units(
+                            transform(unit_offset, original), original.size
+                        )
+                        frame_bytes = bytearray(raw)
+                        frame_bytes[0::sample_width] = replaced.tobytes()
+                        output_file.write(frame_bytes)
+                        unit_offset += original.size
+                        remaining -= read_size
+                    _copy_file_bytes(source_file, output_file, data_offset + sample_bytes, None)
         except _WAV_READ_ERRORS as error:
             raise CarrierAccessError("could not save uncompressed PCM WAV") from error
+
+    def _checked_data_offset(self, source_file: io.BufferedIOBase) -> int:
+        """Find the data chunk and check it against the wave module.
+
+        The wave reader stops just after the data chunk header, so its file
+        position must equal the parsed data offset. The declared data size
+        must give the same whole-frame count.
+        """
+        data_offset, data_size = _find_wav_data_chunk(source_file)
+        source_file.seek(0)
+        wav_file = wave.open(source_file, "rb")
+        try:
+            info = _read_wav_info(wav_file)
+            wave_data_offset = source_file.tell()
+        finally:
+            wav_file.close()
+        if info != self.info:
+            raise CarrierAccessError("WAV carrier header changed after it was opened")
+        if data_offset != wave_data_offset or data_size // info.bytes_per_frame != info.frame_count:
+            raise ValueError("WAV data chunk location does not match the wave module")
+        return data_offset
+
+
+def _find_wav_data_chunk(source_file: io.BufferedIOBase) -> tuple[int, int]:
+    """Return the offset and declared size of the first RIFF data chunk.
+
+    RIFF chunk headers are an ID and a little-endian u32 size. A chunk with an
+    odd size is followed by one pad byte.
+    """
+    source_file.seek(0)
+    header = source_file.read(12)
+    if len(header) != 12 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+        raise ValueError("WAV file does not start with a RIFF WAVE header")
+    offset = 12
+    while True:
+        source_file.seek(offset)
+        chunk_header = source_file.read(8)
+        if len(chunk_header) != 8:
+            raise ValueError("WAV file has no data chunk")
+        chunk_id, chunk_size = struct.unpack("<4sI", chunk_header)
+        if chunk_id == b"data":
+            return offset + 8, chunk_size
+        offset += 8 + chunk_size + (chunk_size & 1)

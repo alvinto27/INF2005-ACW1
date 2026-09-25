@@ -36,7 +36,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Payload records and serialisation | [stego/packet.py](../stego/packet.py) |
 | RSA-PSS keys, signatures, fingerprints, and PEM | [stego/crypto.py](../stego/crypto.py) |
 | Carrier capacity and fixed-width protocol fields | [stego/layout.py](../stego/layout.py) |
-| Public `PngCarrier`, `WavCarrier`, WAV header reader, and PNG/WAV file adapters | [stego/media.py](../stego/media.py) |
+| Public `PngCarrier`, `WavCarrier`, WAV header reader, and PNG/WAV file adapters, including the writers that keep PNG ancillary chunks and WAV chunks outside the samples | [stego/media.py](../stego/media.py) |
 | Two-pass encode, receiver-gated verification over a carrier backend, and file wrappers | [stego/core.py](../stego/core.py) |
 | Flask application factory, disk-backed carrier and payload uploads, streaming encode/verify routes, validated downloads, and `/payload/<id>` recovered-payload downloads; runtime files use `instance/stego-outputs` and `instance/recovered-payloads` | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
 | Flask-to-protocol-v3 streaming file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |

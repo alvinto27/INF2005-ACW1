@@ -77,6 +77,22 @@ def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", checksum)
 
 
+def png_chunk_list(data: bytes) -> list[tuple[bytes, bytes]]:
+    """Split PNG bytes into (chunk type, whole chunk bytes) pairs."""
+    chunks = []
+    offset = 8
+    while offset < len(data):
+        length, chunk_type = struct.unpack(">I4s", data[offset:offset + 8])
+        chunks.append((chunk_type, data[offset:offset + length + 12]))
+        offset += length + 12
+    return chunks
+
+
+def riff_chunk(chunk_id: bytes, data: bytes) -> bytes:
+    """Build one RIFF chunk with its pad byte when the size is odd."""
+    return chunk_id + struct.pack("<I", len(data)) + data + (b"\x00" if len(data) % 2 else b"")
+
+
 def oversized_rgb_png() -> bytes:
     """Build a 66-byte RGB PNG whose IHDR exceeds Pillow's bomb error limit."""
     header = struct.pack(">IIBBBBB", 20_000, 10_000, 8, 2, 0, 0, 0)
@@ -1653,6 +1669,128 @@ class TestMaskedStego(unittest.TestCase):
             self.assertIsNone(result.preserved_bits)
             self.assertIsNone(result.payload)
             self.assertEqual(result.key_fingerprint, display_rsa_public_key_fingerprint(PUBLIC_KEY))
+
+    def test_png_output_keeps_copyable_ancillary_chunks_outside_the_hash(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            plain_path = directory / "plain.png"
+            cover_path = directory / "cover.png"
+            output_path = directory / "output.png"
+            pixels = np.random.default_rng(7).integers(0, 256, (100, 100, 3), dtype=np.uint8)
+            Image.fromarray(pixels, mode="RGB").save(plain_path)
+            plain_chunks = png_chunk_list(plain_path.read_bytes())
+            before_idat = [
+                png_chunk(b"iCCP", b"profile\x00\x00" + zlib.compress(b"icc bytes")),
+                png_chunk(b"tEXt", b"Author\x00Alice"),
+                png_chunk(b"iTXt", b"Title\x00\x00\x00en\x00Title\x00Caf\xc3\xa9"),
+                png_chunk(b"zTXt", b"Comment\x00\x00" + zlib.compress(b"zipped text")),
+                png_chunk(b"pHYs", struct.pack(">IIB", 11811, 11811, 1)),
+                png_chunk(b"eXIf", b"MM\x00*\x00\x00\x00\x08\x00\x00"),
+                png_chunk(b"tIME", struct.pack(">HBBBBB", 2026, 5, 17, 12, 30, 0)),
+                png_chunk(b"prIv", b"safe private data"),
+                png_chunk(b"prIV", b"unsafe private data"),
+            ]
+            after_idat = [png_chunk(b"tEXt", b"Late\x00after IDAT"), png_chunk(b"prAv", b"x")]
+            idat = [chunk for chunk_type, chunk in plain_chunks if chunk_type == b"IDAT"]
+            cover_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + plain_chunks[0][1] + b"".join(before_idat)
+                + b"".join(idat) + b"".join(after_idat) + png_chunk(b"IEND", b"")
+            )
+            encode_png(cover_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"metadata", b"")
+
+            output_chunks = png_chunk_list(output_path.read_bytes())
+            types = [chunk_type for chunk_type, _ in output_chunks]
+            first_idat = types.index(b"IDAT")
+            last_idat = len(types) - 1 - types[::-1].index(b"IDAT")
+            self.assertEqual(types[0], b"IHDR")
+            self.assertEqual(types[-1], b"IEND")
+            self.assertEqual(
+                [chunk for _, chunk in output_chunks[1:first_idat]],
+                [chunk for chunk in before_idat if chunk[4:8] != b"prIV"],
+            )
+            self.assertEqual([chunk for _, chunk in output_chunks[last_idat + 1:-1]], after_idat)
+            self.assertNotIn(b"prIV", types)
+            self.assertEqual(types.count(b"IHDR"), 1)
+            self.assertEqual(verify_png(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+            # The ancillary chunks are not hashed: a changed tEXt value still verifies.
+            changed_path = directory / "changed-text.png"
+            changed = output_path.read_bytes().replace(
+                png_chunk(b"tEXt", b"Author\x00Alice"), png_chunk(b"tEXt", b"Author\x00Mallory")
+            )
+            self.assertNotEqual(changed, output_path.read_bytes())
+            changed_path.write_bytes(changed)
+            with Image.open(changed_path) as image:
+                self.assertEqual(image.text["Author"], "Mallory")
+            self.assertEqual(verify_png(changed_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+            # A PNG editor must stop at an unknown critical chunk.
+            critical_path = directory / "critical.png"
+            critical_output = directory / "critical-output.png"
+            critical_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + plain_chunks[0][1] + png_chunk(b"CRIT", b"?")
+                + b"".join(idat) + png_chunk(b"IEND", b"")
+            )
+            with self.assertRaisesRegex(ValueError, "unknown critical PNG chunk: CRIT"):
+                encode_png(critical_path, critical_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse(critical_output.exists())
+
+    def test_wav_output_copies_every_byte_outside_the_samples(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            plain_path = directory / "plain.wav"
+            cover_path = directory / "cover.wav"
+            output_path = directory / "output.wav"
+            write_pcm_wav(plain_path, 2, 2, 3000)
+            plain = plain_path.read_bytes()
+            fmt_chunk = plain[12:12 + 8 + 16]
+            frame_bytes = plain[44:]
+            info_list = riff_chunk(b"LIST", b"INFO" + riff_chunk(b"INAM", b"Cover song\x00"))
+            odd_chunk = riff_chunk(b"odd ", b"12345")
+            # The data chunk holds one extra byte after the last whole frame, then a pad byte.
+            data_chunk = riff_chunk(b"data", frame_bytes + b"\x7f")
+            after_chunk = riff_chunk(b"id3 ", b"ID3 tag after data")
+            body = b"WAVE" + fmt_chunk + info_list + odd_chunk + data_chunk + after_chunk
+            cover_path.write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
+            self.assertEqual(read_pcm_wav_info(cover_path).frame_count, 3000)
+
+            encode_wav(cover_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"chunks", b"")
+            cover = cover_path.read_bytes()
+            output = output_path.read_bytes()
+            self.assertEqual(len(output), len(cover))
+            samples_start = 12 + len(fmt_chunk) + len(info_list) + len(odd_chunk) + 8
+            samples_end = samples_start + len(frame_bytes)
+            self.assertEqual(output[:samples_start], cover[:samples_start])
+            self.assertEqual(output[samples_end:], cover[samples_end:])
+            self.assertEqual(output[samples_start + 1:samples_end:2], cover[samples_start + 1:samples_end:2])
+            self.assertNotEqual(output[samples_start:samples_end], cover[samples_start:samples_end])
+            self.assertEqual(verify_wav(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+            # The chunks outside the samples are not hashed: a changed LIST byte still verifies.
+            changed_path = directory / "changed-list.wav"
+            changed = bytearray(output)
+            name_offset = output.index(b"Cover song")
+            changed[name_offset] ^= 0x20
+            changed_path.write_bytes(changed)
+            self.assertEqual(verify_wav(changed_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+    def test_wav_data_chunk_that_disagrees_with_wave_is_rejected(self) -> None:
+        real_find = stego.media._find_wav_data_chunk
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            cover_path = directory / "cover.wav"
+            output_path = directory / "output.wav"
+            write_pcm_wav(cover_path, 1, 2, 6000)
+            for name, change in (("offset", (2, 0)), ("size", (0, 2))):
+                with self.subTest(changed=name):
+                    def disagreeing_find(source_file: object) -> tuple[int, int]:
+                        offset, size = real_find(source_file)
+                        return offset + change[0], size + change[1]
+
+                    with patch("stego.media._find_wav_data_chunk", disagreeing_find):
+                        with self.assertRaisesRegex(ValueError, "does not match the wave module"):
+                            encode_wav(cover_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+                    self.assertFalse(output_path.exists())
 
     def test_failed_png_write_removes_incomplete_output(self) -> None:
         with TemporaryDirectory() as directory_name:

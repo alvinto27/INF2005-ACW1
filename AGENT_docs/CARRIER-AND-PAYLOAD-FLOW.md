@@ -8,6 +8,32 @@
 
 PNG keeps one read-only decoded pixel buffer, about one decoded image size D. Bounded reads avoid full RGB and alpha copies. Rewriting adds one output image, about 2 x D total. Pillow still decodes the whole image. WAV reads whole PCM frames in bounded chunks; carrier working memory does not grow with frame count. One PNG unit is an 8-bit R, G, or B value. One WAV unit is the low byte of one PCM sample.
 
+### Metadata in the output
+
+`rewrite_to_path()` keeps carrier metadata that the masked media hash does not cover. The media hash, media context, carrier units, and fixed bytes do not change, so a file encoded before or after this rule verifies under both versions.
+
+WAV output is a copy of the input file with only the declared sample bytes patched:
+
+1. `_find_wav_data_chunk()` reads the RIFF chunk headers (ID and little-endian u32 size; an odd-sized chunk has one pad byte) and finds the first `data` chunk.
+2. The writer opens the same file with `wave` and compares: the `wave` file position after the header read must equal the parsed data offset, and the declared data size must give the same whole-frame count. If they do not agree, the writer raises `ValueError`. It does not fall back.
+3. The writer copies every byte before the samples, then reads, embeds, and writes the samples in chunks of whole frames, then copies every byte after the last whole frame. The chunk size is `DEFAULT_CHUNK_BYTES`.
+
+The header, `LIST`/`INFO`, `cue `, `bext`, other chunks before or after `data`, pad bytes, and data bytes after the last whole frame stay byte-for-byte the same. The output length equals the input length. The callbacks run in the same order as before, and `fixed_bytes_callback` receives the original fixed bytes.
+
+PNG output uses Pillow for IHDR, IDAT, and IEND. `_png_copied_chunks()` reads the input chunk list and selects chunks by the PNG rule for editors that change image data:
+
+| Input chunk | Output |
+| --- | --- |
+| Known chunk: `PLTE` (a suggested palette for truecolour), `tEXt`, `zTXt`, `iTXt`, `iCCP`, `sRGB`, `gAMA`, `cHRM`, `sBIT`, `pHYs`, `tIME`, `eXIf`, `bKGD`, `sPLT`, `hIST`, `tRNS` | Copied |
+| Unknown ancillary chunk with the safe-to-copy bit set (fourth letter lowercase) | Copied |
+| Unknown ancillary chunk that is not safe to copy (fourth letter uppercase), for example APNG or newer colour chunks | Dropped |
+| Unknown critical chunk (first letter uppercase) | Encode stops with `ValueError`, as the PNG specification requires |
+| `IHDR`, `IDAT`, `IEND` | Taken from the new image |
+
+`_PngChunkSplicer` receives the bytes that Pillow writes, parses them as PNG chunks, and writes them to the output file. It inserts the copied chunks that came before the first input IDAT immediately before the first new IDAT, and the copied chunks that came after IDAT immediately before IEND. The copied chunks keep their order, data, and CRC. If Pillow writes a chunk other than IHDR, IDAT, or IEND, the splicer raises `ValueError`, so no chunk type is written twice.
+
+Pillow's `PngInfo.add()` is not used: Pillow moves or drops chunks that come through `pnginfo`. For example, it drops `pHYs`, `iCCP`, `eXIf`, and `tRNS`, and it writes text chunks before IDAT. The splicer holds only chunk offsets and one copy block, so it does not add a decoded-image copy.
+
 ## 4. Protocol flow
 
 ### Encode
@@ -117,11 +143,13 @@ The same 4341 x 26191 RGBA PNG (about 434 MiB decoded) was used. New encode and 
 | Encode | 8.1 s | 5.47 s | 1,571 MiB | 947.2 MiB |
 | Verify | 1.9 s | 2.16 s | 1,350 MiB | 947.0 MiB |
 
+The PNG chunk carry-over did not change these figures. For each version, three separate-process encode runs of the same PNG gave a median of 5.68 s and about 947 MiB peak RSS. The output kept the input `bKGD` chunk.
+
 A separate fixed-key check on RGB and RGBA carriers compared full carrier-unit reads and identity-rewrite outputs; both matched exactly. The encoded files were not compared because encoding uses random nonce material.
 
 ## 10. Whole-file WAV cap
 
-`WavCarrier` reads whole PCM frames, verifies headers when reopening the file, checks the last declared frame on open, and preserves sample bytes outside the low-byte carrier unit. A short file fails early. File reads and early-end failures become `CarrierAccessError`; verification maps these to `Cannot Verify`. WAV output is chunked. The whole-file `WavPcmData`, `load_pcm_wav_from_path`, and `MAX_WAV_FRAME_BYTES` cap are removed. The optional 72 MiB WAV test passes through the file-backed path with traced peak below 16 MiB.
+`WavCarrier` reads whole PCM frames, verifies headers when reopening the file, checks the last declared frame on open, and preserves sample bytes outside the low-byte carrier unit. A short file fails early. File reads and early-end failures become `CarrierAccessError`; verification maps these to `Cannot Verify`. WAV output is a chunked copy of the input file with only the declared samples patched; see [Metadata in the output](#metadata-in-the-output). For a 96 MiB 16-bit stereo WAV, three separate-process encode runs took about 0.3 s with 54 MiB peak RSS, before and after this change. The whole-file `WavPcmData`, `load_pcm_wav_from_path`, and `MAX_WAV_FRAME_BYTES` cap are removed. The optional 72 MiB WAV test passes through the file-backed path with traced peak below 16 MiB.
 
 Flask accepts requests up to 256 MiB. Carrier and payload uploads go to request-scoped temporary files. Encode outputs go to `instance/stego-outputs`; authenticated recovered payloads and sidecars go to `instance/recovered-payloads`. These files have no expiry and users delete them manually. Recovered payloads are plaintext on disk. The service returns URLs, not carrier or payload Base64. Browser responses use `Cache-Control: no-store`.
 
@@ -137,7 +165,7 @@ Flask accepts requests up to 256 MiB. Carrier and payload uploads go to request-
 ## 12. Web boundary follow-up
 
 - Uploads use request-scoped files; keys remain bounded byte inputs. Carrier detection reads the first 12 bytes.
-- File encode functions write directly to persistent output paths and remove partial outputs on failure.
+- Bytes-API encode functions write directly to the output path and remove partial outputs on failure. File-payload encode functions write to staging and publish with `os.replace`.
 - Verification publishes payload bytes only after `Authentic`; MIME sniffing reads at most 12 bytes and UTF-8 validation uses an incremental decoder.
 - `/download/<id>.<ext>` and `/payload/<id>` validate identifiers and extensions, stream output, and apply browser safety headers. Failed sidecar creation removes the recovered payload.
 - `Cache-Control: no-store` is retained. Stored files have no expiry.
