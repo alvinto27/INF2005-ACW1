@@ -37,12 +37,10 @@ from .core import (
 from .layout import EmbeddingLayout
 from .packet import PayloadFileRecord, PayloadRecord
 
-_MAX_WIDTH = 1920
-_MAX_HEIGHT = 1080
-_MAX_DURATION_MS = 15_000
-_AUDIO_END_SLACK_MS = 1_000
-_MAX_VIDEO_FRAMES = 450
-_MAX_OUTPUT_BYTES = 1024 * 1024 * 1024
+_MAX_CARRIER_UNITS = 4 * 1024**3
+# Match Pillow's PNG-path error threshold: 2 * Image.MAX_IMAGE_PIXELS.
+_MAX_FRAME_PIXELS = 178_956_970
+_MAX_OUTPUT_BYTES = 2 * 1024**3
 _MIN_FREE_BYTES = 3 * 1024 * 1024 * 1024
 _AUDIO_CHANNEL_COUNTS = frozenset((1, 2))
 _VIDEO_CONTEXT_FORMAT = ">IIQIHQ"
@@ -74,6 +72,12 @@ def _check_video_file_size(path: str | bytes | PathLike[str]) -> None:
         output_size = 0
     if output_size > _MAX_OUTPUT_BYTES:
         raise ValueError("video output exceeds configured byte limit")
+
+
+def _check_video_frame_pixels(width: int, height: int) -> None:
+    """Refuse frames above the PNG-compatible decompression-bomb threshold."""
+    if width * height > _MAX_FRAME_PIXELS:
+        raise ValueError("video frame exceeds configured pixel limit")
 
 
 def _round_fraction(value: Fraction) -> int:
@@ -299,18 +303,23 @@ class VideoCarrier(CarrierSource):
             height = video_stream.codec_context.height
             if not width or not height:
                 raise ValueError("invalid video dimensions")
-            if width > _MAX_WIDTH or height > _MAX_HEIGHT:
-                raise ValueError("video dimensions exceed configured limits")
+            _check_video_frame_pixels(width, height)
 
         first_video_time: Fraction | None = None
         frame_count = 0
-        latest_tick = 0
+        total_units = 0
         with self._open() as container:
             video_stream, _ = self._select_streams(container)
             decoder = container.decode(video=0)
-            for frame, tick, exact_time in _frame_ticks(decoder, video_stream):
+            for frame, _tick, exact_time in _frame_ticks(decoder, video_stream):
+                _check_video_frame_pixels(frame.width, frame.height)
                 if frame.width != width or frame.height != height:
                     raise ValueError("video dimensions changed during decode")
+                total_units += frame.width * frame.height * 3
+                if total_units > _MAX_CARRIER_UNITS:
+                    raise ValueError(
+                        "video carrier exceeds configured decoded-size limit"
+                    )
                 if any(
                     component.is_alpha or component.bits > 8
                     for component in frame.format.components
@@ -319,11 +328,6 @@ class VideoCarrier(CarrierSource):
                 if first_video_time is None:
                     first_video_time = exact_time
                 frame_count += 1
-                if frame_count > _MAX_VIDEO_FRAMES:
-                    raise ValueError("video exceeds configured frame limit")
-                latest_tick = tick
-                if latest_tick > _MAX_DURATION_MS:
-                    raise ValueError("video exceeds configured duration limit")
         if not frame_count or first_video_time is None:
             raise ValueError("video stream contains no decoded frames")
 
@@ -350,6 +354,11 @@ class VideoCarrier(CarrierSource):
                         raise ValueError("audio sample rate changed during decode")
                     if _audio_layout_identities(frame.layout) != audio_layout_identities:
                         raise ValueError("unsupported audio channel layout")
+                    total_units += frame.samples * audio_channels
+                    if total_units > _MAX_CARRIER_UNITS:
+                        raise ValueError(
+                            "video carrier exceeds configured decoded-size limit"
+                        )
                     if audio_first_time is None:
                         audio_first_time = exact_time
                         audio_start_tick = _round_fraction(
@@ -361,18 +370,9 @@ class VideoCarrier(CarrierSource):
                     if not _audio_position_matches(actual_position, audio_frames, audio_rate):
                         raise ValueError("audio contains a gap or overlap")
                     audio_frames += frame.samples
-                    audio_end_tick = audio_start_tick + _round_fraction(
-                        Fraction(audio_frames * 1000, audio_rate)
-                    )
-                    selected_start = min(0, audio_start_tick)
-                    selected_end = max(latest_tick, audio_end_tick)
-                    if selected_end - selected_start > _MAX_DURATION_MS + _AUDIO_END_SLACK_MS:
-                        raise ValueError("selected media span exceeds configured duration limit")
             if audio_frames == 0 or audio_first_time is None:
                 raise ValueError("audio stream contains no decoded samples")
 
-        if latest_tick > _MAX_DURATION_MS:
-            raise ValueError("video exceeds configured duration limit")
         self._width = width
         self._height = height
         self._frame_count = frame_count
@@ -383,7 +383,7 @@ class VideoCarrier(CarrierSource):
         self._audio_start_tick = audio_start_tick
         self._video_units = frame_count * width * height * 3
         audio_units = audio_frames * audio_channels
-        self._total_units = self._video_units + audio_units
+        self._total_units = total_units
         self._fixed_byte_count = 8 * frame_count + (
             8 + audio_units if audio_units else 0
         )

@@ -92,7 +92,9 @@ The optional video library API includes `VideoCarrier`, `encode_video`,
 `verify_video_to_payload_path`. Video is available in the library and
 notebook, not in the Flask web application. It writes lossless FFV1 video and
 PCM audio to `.mkv`; this output can be much larger than the compressed input.
-PyAV is a normal install dependency in `requirements.txt`, but the video import
+See the [video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md#output-and-limits)
+for decoded-size, frame-pixel, output-size, and disk-space limits. PyAV is a
+normal install dependency in `requirements.txt`, but the video import
 is lazy, so `import stego` works when PyAV is unavailable. The public
 `CarrierSource` abstraction and `prepare_carrier_encoding` /
 `decode_carrier_source` entry points support backend-level operations. The public

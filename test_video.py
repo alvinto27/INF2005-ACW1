@@ -795,24 +795,6 @@ class VideoCarrierReadTests(unittest.TestCase):
                             finally:
                                 rewritten.close()
 
-    def test_audio_timeline_span_includes_negative_start_and_video_end(self) -> None:
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "too-wide-span.mkv"
-            make_matroska(
-                path,
-                ticks=(0, 50, 100),
-                audio_samples=np.arange(200, dtype=np.int16),
-                audio_rate=1_000,
-                audio_start=-30,
-            )
-            # Old separate checks pass: |-30| <= 100 and audio end 70 <= 120.
-            # The full selected span is 100 - (-30) = 130, above the 120 cap.
-            with patch("stego.video._MAX_DURATION_MS", 100), patch(
-                "stego.video._AUDIO_END_SLACK_MS", 20
-            ):
-                with self.assertRaisesRegex(ValueError, "selected media span"):
-                    VideoCarrier(path)
-
     def test_audio_gap_at_tolerance_is_accepted(self) -> None:
         sample_rate = 48_000
         tolerance = (sample_rate + 1_999) // 2_000
@@ -838,24 +820,6 @@ class VideoCarrierReadTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "gap or overlap"):
                 VideoCarrier(path)
-
-    def test_dimensions_frames_and_duration_limits_are_enforced(self) -> None:
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            wide = root / "wide.mkv"
-            make_matroska(wide, ticks=(0,), width=1921, height=1)
-            with self.assertRaisesRegex(ValueError, "dimensions exceed"):
-                VideoCarrier(wide)
-
-            too_many_frames = root / "too-many.mkv"
-            make_matroska(too_many_frames, ticks=tuple(range(451)))
-            with self.assertRaisesRegex(ValueError, "frame limit"):
-                VideoCarrier(too_many_frames)
-
-            too_long = root / "too-long.mkv"
-            make_matroska(too_long, ticks=(0, 15_001))
-            with self.assertRaisesRegex(ValueError, "duration limit"):
-                VideoCarrier(too_long)
 
     def test_six_channel_audio_is_refused(self) -> None:
         with TemporaryDirectory() as directory:
@@ -971,31 +935,149 @@ class VideoCarrierReadTests(unittest.TestCase):
             )
             self.assertEqual(result.verdict, "Cannot Verify")
 
-    def test_each_resource_cap_failure_leaves_no_output_or_stage(self) -> None:
+    def test_pixel_limit_is_checked_on_stream_header_before_decode(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "too-many-header-pixels.mkv"
+            make_matroska(path, ticks=(0,), width=4, height=3)
+            original_open = VideoCarrier._open
+            open_count = 0
+
+            def counted_open(carrier: VideoCarrier) -> object:
+                nonlocal open_count
+                open_count += 1
+                return original_open(carrier)
+
+            with patch("stego.video._MAX_FRAME_PIXELS", 11), patch.object(
+                VideoCarrier, "_open", counted_open
+            ):
+                with self.assertRaisesRegex(ValueError, "configured pixel limit"):
+                    VideoCarrier(path)
+            self.assertEqual(open_count, 1)
+
+    def test_pixel_limit_is_checked_on_decoded_frames(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "too-many-frame-pixels.mkv"
+            make_matroska(path, ticks=(0,), width=4, height=2)
+            original_frame_ticks = _frame_ticks
+
+            def oversized_frame_ticks(
+                frames: Iterator[object],
+                stream: object,
+                first_time: Fraction | None = None,
+            ) -> Iterator[tuple[object, int, Fraction]]:
+                for frame, tick, exact_time in original_frame_ticks(
+                    frames, stream, first_time
+                ):
+                    yield (
+                        SimpleNamespace(width=4, height=3, format=frame.format),
+                        tick,
+                        exact_time,
+                    )
+
+            with patch("stego.video._MAX_FRAME_PIXELS", 10), patch(
+                "stego.video._frame_ticks", side_effect=oversized_frame_ticks
+            ):
+                with self.assertRaisesRegex(ValueError, "configured pixel limit"):
+                    VideoCarrier(path)
+
+    def test_decoded_size_limit_stops_counting_video_frames_early(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "many-frames.mkv"
+            make_matroska(
+                path,
+                ticks=tuple(index * 40 for index in range(10)),
+                width=16,
+                height=8,
+            )
+            original_frame_ticks = _frame_ticks
+            decoded_count = 0
+
+            def counted_frame_ticks(
+                frames: Iterator[object],
+                stream: object,
+                first_time: Fraction | None = None,
+            ) -> Iterator[tuple[object, int, Fraction]]:
+                nonlocal decoded_count
+                for item in original_frame_ticks(frames, stream, first_time):
+                    decoded_count += 1
+                    yield item
+
+            with patch("stego.video._MAX_CARRIER_UNITS", 2 * 16 * 8 * 3), patch(
+                "stego.video._frame_ticks", side_effect=counted_frame_ticks
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "video carrier exceeds configured decoded-size limit"
+                ):
+                    VideoCarrier(path)
+            self.assertEqual(decoded_count, 3)
+
+    def test_decoded_size_limit_counts_audio_sample_units(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "audio-units.mkv"
+            make_matroska(
+                path,
+                ticks=(0,),
+                audio_samples=np.arange(960, dtype=np.int16),
+                audio_channels=1,
+                width=16,
+                height=8,
+            )
+            with patch("stego.video._MAX_CARRIER_UNITS", 500):
+                with self.assertRaisesRegex(
+                    ValueError, "video carrier exceeds configured decoded-size limit"
+                ):
+                    VideoCarrier(path)
+
+    def test_video_beyond_previous_frame_and_duration_limits_round_trips(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "long-source.mkv"
+            output_path = root / "long-encoded.mkv"
+            make_matroska(
+                source_path,
+                ticks=tuple(index * 40 for index in range(451)),
+                width=64,
+                height=32,
+            )
+            with patch("stego.video._MIN_FREE_BYTES", 0):
+                encode_video(
+                    source_path,
+                    output_path,
+                    SIGNING_PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY,
+                    bootstrap_span(RECEIVER_PUBLIC_KEY),
+                    3,
+                    b"beyond old limits",
+                    b"{}",
+                )
+            result = verify_video(
+                output_path, SIGNING_PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+            )
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload.user_payload, b"beyond old limits")
+
+    def test_minimum_free_space_failure_does_not_create_output_or_stage(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source_path = root / "source.mp4"
+            output_path = root / "insufficient-space.mkv"
             make_tiny_clip(source_path)
-            caps = (
-                ("_MAX_WIDTH", 16),
-                ("_MAX_HEIGHT", 16),
-                ("_MAX_DURATION_MS", 0),
-                ("_MAX_VIDEO_FRAMES", 1),
-                ("_MIN_FREE_BYTES", 1 << 80),
-            )
-            for name, limit in caps:
-                with self.subTest(cap=name):
-                    output_path = root / f"{name}.mkv"
-                    with patch(f"stego.video.{name}", limit):
-                        with self.assertRaises((ValueError, OSError)):
-                            encode_video(
-                                source_path, output_path, SIGNING_PRIVATE_KEY,
-                                RECEIVER_PUBLIC_KEY,
-                                bootstrap_span(RECEIVER_PUBLIC_KEY), 3,
-                                b"cap test", b"{}",
-                            )
-                    self.assertFalse(output_path.exists())
-                    self.assertFalse(list(root.glob(".stego-staging-*")))
+            with patch("stego.video._MIN_FREE_BYTES", 1 << 80):
+                with self.assertRaisesRegex(
+                    ValueError, "insufficient free disk space"
+                ):
+                    encode_video(
+                        source_path,
+                        output_path,
+                        SIGNING_PRIVATE_KEY,
+                        RECEIVER_PUBLIC_KEY,
+                        bootstrap_span(RECEIVER_PUBLIC_KEY),
+                        3,
+                        b"cap test",
+                        b"{}",
+                    )
+            self.assertFalse(output_path.exists())
+            self.assertFalse(list(root.glob(".stego-staging-*")))
 
     def test_output_cap_failure_removes_staging_and_does_not_publish(self) -> None:
         with TemporaryDirectory() as directory:
