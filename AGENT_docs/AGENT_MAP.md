@@ -44,7 +44,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Flask-to-protocol-v3 streaming file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
 | Active Flask-to-protocol-v3 service | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
-| FR1–FR12 demonstration notebook: verdict/fidelity evidence; file-backed PNG/WAV carriers and payload API demo | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
+| FR1–FR12 demonstration notebook: PNG/WAV and optional video carrier demos, verdict/fidelity evidence, and payload API | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol and chunked-carrier tests | [test_stego.py](../test_stego.py), [test_video.py](../test_video.py) |
 | Flask integration and current protocol tests | [test_webapp.py](../test_webapp.py) and [test_stego.py](../test_stego.py) |
 | Runtime and test dependencies | [requirements.txt](../requirements.txt) |

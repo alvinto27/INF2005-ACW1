@@ -92,6 +92,24 @@ def _audio_position_matches(actual: int, expected: int, sample_rate: int) -> boo
     return abs(actual - expected) <= (sample_rate + 1_999) // 2_000
 
 
+def _audio_layout_identities(layout: object) -> tuple[str, ...]:
+    """Accept canonical mono/stereo identities or wholly unspecified layouts."""
+    channels = getattr(layout, "channels", None)
+    if channels is None:
+        raise ValueError("unsupported audio channel layout")
+    identities = tuple(getattr(channel, "name", "NONE") for channel in channels)
+    if len(identities) not in _AUDIO_CHANNEL_COUNTS:
+        raise ValueError("unsupported audio channel count")
+    if identities not in {
+        ("FC",),
+        ("NONE",),
+        ("FL", "FR"),
+        ("NONE", "NONE"),
+    }:
+        raise ValueError("unsupported audio channel layout")
+    return identities
+
+
 def _pack_tick(tick: int) -> bytes:
     """Encode a signed canonical millisecond tick as a checked i64."""
     if tick < -(1 << 63) or tick >= 1 << 63:
@@ -172,14 +190,10 @@ def _audio_chunks(
 
 
 def _audio_resampler(av_module: object, stream: object) -> object:
-    """Convert decoded samples to s16 without changing rate or channel layout."""
+    """Convert decoded samples to s16 without changing rate or channel order."""
     codec = stream.codec_context
     layout = codec.layout
-    if layout is None:
-        raise ValueError("unsupported audio channel layout")
-    channels = len(layout.channels)
-    if channels not in _AUDIO_CHANNEL_COUNTS:
-        raise ValueError("unsupported audio channel count")
+    _audio_layout_identities(layout)
     sample_rate = codec.sample_rate
     if sample_rate is None or sample_rate < 1:
         raise ValueError("invalid audio sample rate")
@@ -213,6 +227,7 @@ class VideoCarrier(CarrierSource):
         self._read_chunk: np.ndarray | None = None
         self._read_chunk_offset = 0
         self._closed = False
+        self._current_video_origin: Fraction | None = None
         self._scan()
 
     @property
@@ -314,14 +329,14 @@ class VideoCarrier(CarrierSource):
 
         audio_rate = 0
         audio_channels = 0
+        audio_layout_identities: tuple[str, ...] = ()
         audio_frames = 0
         audio_start_tick = 0
         if audio_stream is not None:
             audio_rate = audio_stream.codec_context.sample_rate or 0
             layout = audio_stream.codec_context.layout
-            audio_channels = len(layout.channels) if layout is not None else 0
-            if audio_channels not in _AUDIO_CHANNEL_COUNTS:
-                raise ValueError("unsupported audio channel count")
+            audio_layout_identities = _audio_layout_identities(layout)
+            audio_channels = len(audio_layout_identities)
             if audio_rate < 1:
                 raise ValueError("invalid audio sample rate")
             audio_first_time: Fraction | None = None
@@ -333,15 +348,13 @@ class VideoCarrier(CarrierSource):
                     exact_time = _frame_time(frame, selected_audio)
                     if frame.sample_rate != audio_rate:
                         raise ValueError("audio sample rate changed during decode")
-                    if len(frame.layout.channels) != audio_channels:
-                        raise ValueError("audio channel count changed during decode")
+                    if _audio_layout_identities(frame.layout) != audio_layout_identities:
+                        raise ValueError("unsupported audio channel layout")
                     if audio_first_time is None:
                         audio_first_time = exact_time
                         audio_start_tick = _round_fraction(
                             (exact_time - first_video_time) * 1000
                         )
-                        if abs(audio_start_tick) > _MAX_DURATION_MS:
-                            raise ValueError("audio offset exceeds configured duration limit")
                     actual_position = _round_fraction(
                         (exact_time - audio_first_time) * audio_rate
                     )
@@ -351,8 +364,10 @@ class VideoCarrier(CarrierSource):
                     audio_end_tick = audio_start_tick + _round_fraction(
                         Fraction(audio_frames * 1000, audio_rate)
                     )
-                    if audio_end_tick > _MAX_DURATION_MS + _AUDIO_END_SLACK_MS:
-                        raise ValueError("audio exceeds configured duration limit")
+                    selected_start = min(0, audio_start_tick)
+                    selected_end = max(latest_tick, audio_end_tick)
+                    if selected_end - selected_start > _MAX_DURATION_MS + _AUDIO_END_SLACK_MS:
+                        raise ValueError("selected media span exceeds configured duration limit")
             if audio_frames == 0 or audio_first_time is None:
                 raise ValueError("audio stream contains no decoded samples")
 
@@ -388,13 +403,16 @@ class VideoCarrier(CarrierSource):
         """Yield frame RGB values as bounded chunks and one timestamp per frame."""
         frame_count = 0
         first_time = self._first_video_time
+        self._current_video_origin = None
         with self._open() as container:
             stream, audio_stream = self._select_streams(container)
             if (audio_stream is None) != (self._audio_channels == 0):
                 raise CarrierAccessError("audio stream presence changed after validation")
-            for frame, tick, _ in _frame_ticks(
+            for frame, tick, exact_time in _frame_ticks(
                 container.decode(video=0), stream, first_time
             ):
+                if self._current_video_origin is None:
+                    self._current_video_origin = exact_time
                 if frame.width != self._width or frame.height != self._height:
                     raise CarrierAccessError("video dimensions changed after validation")
                 if any(
@@ -433,18 +451,25 @@ class VideoCarrier(CarrierSource):
                 raise CarrierAccessError("audio stream disappeared after validation")
             if stream.codec_context.sample_rate != self._audio_rate:
                 raise CarrierAccessError("audio sample rate changed after validation")
+            if self._current_video_origin is None and self._first_video_time is not None:
+                self._current_video_origin = self._first_video_time
+            header_layout = _audio_layout_identities(stream.codec_context.layout)
+            if len(header_layout) != self._audio_channels:
+                raise CarrierAccessError("unsupported audio channel layout")
             resampler = _audio_resampler(av, stream)
             first_chunk = True
             for frame in container.decode(audio=0):
                 if frame.sample_rate != self._audio_rate:
                     raise CarrierAccessError("audio sample rate changed after validation")
-                if len(frame.layout.channels) != self._audio_channels:
-                    raise CarrierAccessError("audio channel count changed after validation")
+                if _audio_layout_identities(frame.layout) != header_layout:
+                    raise CarrierAccessError("unsupported audio channel layout")
                 exact_time = _frame_time(frame, stream)
                 if first_audio_time is None:
                     first_audio_time = exact_time
+                    if self._current_video_origin is None:
+                        raise CarrierAccessError("video origin is missing during audio decode")
                     actual_tick = _round_fraction(
-                        (exact_time - self._first_video_time) * 1000
+                        (exact_time - self._current_video_origin) * 1000
                     )
                     if actual_tick != self._audio_start_tick:
                         raise CarrierAccessError("audio start time changed after validation")
@@ -526,11 +551,13 @@ class VideoCarrier(CarrierSource):
             frame_count = 0
             with self._open() as source_container:
                 source_video, _ = self._select_streams(source_container)
-                for frame, tick, _ in _frame_ticks(
+                for frame, tick, exact_time in _frame_ticks(
                     source_container.decode(video=0),
                     source_video,
                     self._first_video_time,
                 ):
+                    if frame_count == 0:
+                        self._current_video_origin = exact_time
                     if frame.width != self._width or frame.height != self._height:
                         raise CarrierAccessError(
                             "video dimensions changed after validation"
@@ -630,11 +657,12 @@ class VideoCarrier(CarrierSource):
         output._read_chunk = None
         output._read_chunk_offset = 0
         output._closed = False
+        output._first_video_time = None
+        output._current_video_origin = None
         for attribute in (
-            "_width", "_height", "_frame_count", "_first_video_time",
-            "_audio_rate", "_audio_channels", "_audio_frames_per_channel",
-            "_audio_start_tick", "_video_units", "_total_units",
-            "_fixed_byte_count", "_media_context",
+            "_width", "_height", "_frame_count", "_audio_rate",
+            "_audio_channels", "_audio_frames_per_channel", "_audio_start_tick",
+            "_video_units", "_total_units", "_fixed_byte_count", "_media_context",
         ):
             setattr(output, attribute, getattr(self, attribute))
         return output

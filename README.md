@@ -81,10 +81,19 @@ manually when they are no longer needed.
 ## Protocol API
 
 The public Python API includes `encode_png`, `verify_png`, `encode_wav`,
-`verify_wav`, `PngCarrier`, and `WavCarrier`. Verification requires the sender
-public key and receiver private key. The file-backed carriers provide bounded
-range reads, chunk iteration, and sequential rewrites. `WavCarrier` reads whole
-PCM frames, so carrier working memory does not grow with the WAV size. The public
+`verify_wav`, `PngCarrier`, `WavCarrier`, and the optional video API below.
+Verification requires the sender public key and receiver private key. The
+file-backed carriers provide bounded range reads, chunk iteration, and
+sequential rewrites. `WavCarrier` reads whole PCM frames, so carrier working
+memory does not grow with the WAV size.
+
+The optional video library API includes `VideoCarrier`, `encode_video`,
+`verify_video`, `encode_video_from_payload_path`, and
+`verify_video_to_payload_path`. Video is available in the library and
+notebook, not in the Flask web application. It writes lossless FFV1 video and
+PCM audio to `.mkv`; this output can be much larger than the compressed input.
+PyAV is a normal install dependency in `requirements.txt`, but the video import
+is lazy, so `import stego` works when PyAV is unavailable. The public
 `CarrierSource` abstraction and `prepare_carrier_encoding` /
 `decode_carrier_source` entry points support backend-level operations. The public
 `lsb_range_transform` helper prepares LSB changes for a carrier range. Whole-array
@@ -120,5 +129,6 @@ removal record](AGENT_docs/MERGE-LEFTOVER-REMOVAL.md).
 - [Agent navigation map](AGENT_docs/AGENT_MAP.md)
 - [Current protocol](AGENT_docs/CURRENT-PROTOCOL.md)
 - [Carrier and payload flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md)
+- [Video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md)
 - [Web application guide](AGENT_docs/WEB-APPLICATION-GUIDE.md)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)

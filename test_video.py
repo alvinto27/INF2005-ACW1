@@ -33,6 +33,7 @@ from stego.core import (
 )
 from stego.video import (
     VideoCarrier,
+    _audio_layout_identities,
     _configure_decoder,
     _frame_ticks,
     _round_fraction,
@@ -387,6 +388,7 @@ def make_matroska(
     audio_gap_samples: int = 0,
     width: int = 16,
     height: int = 8,
+    audio_layout: str | None = None,
     extra_audio: bool = False,
 ) -> None:
     """Write a small deterministic FFV1/PCM Matroska fixture."""
@@ -405,7 +407,7 @@ def make_matroska(
         extra = output.add_stream("pcm_s16le", rate=audio_rate)
         extra.layout = "mono"
     if audio_samples is not None:
-        layout = {1: "mono", 2: "stereo", 6: "5.1"}[audio_channels]
+        layout = audio_layout or {1: "mono", 2: "stereo", 6: "5.1"}[audio_channels]
         audio = output.add_stream("pcm_s16le", rate=audio_rate)
         audio.layout = layout
         if audio_rate:
@@ -441,6 +443,37 @@ def make_matroska(
             for packet in stream.encode():
                 output.mux(packet)
     output.close()
+
+
+def make_avi_audio_layout(path: Path, layout_name: str) -> None:
+    """Write FFV1/PCM in AVI to test layouts that Matroska does not preserve."""
+    import av
+
+    with av.open(str(path), mode="w", format="avi") as output:
+        video = output.add_stream("ffv1", rate=25)
+        video.width = 64
+        video.height = 32
+        video.pix_fmt = "bgr0"
+        audio = output.add_stream("pcm_s16le", rate=48_000)
+        audio.layout = layout_name
+        frame = av.VideoFrame.from_ndarray(
+            np.zeros((32, 64, 3), dtype=np.uint8), format="rgb24"
+        )
+        frame.pts = 0
+        frame.time_base = Fraction(1, 25)
+        for packet in video.encode(frame):
+            output.mux(packet)
+        audio_frame = av.AudioFrame.from_ndarray(
+            np.zeros((1, 960), dtype=np.int16), format="s16", layout=layout_name
+        )
+        audio_frame.sample_rate = 48_000
+        audio_frame.pts = 0
+        audio_frame.time_base = Fraction(1, 48_000)
+        for packet in audio.encode(audio_frame):
+            output.mux(packet)
+        for stream in (video, audio):
+            for packet in stream.encode():
+                output.mux(packet)
 
 
 class DecoderConfigurationTests(unittest.TestCase):
@@ -717,6 +750,84 @@ class VideoCarrierReadTests(unittest.TestCase):
             finally:
                 source.close()
 
+    def test_real_encodes_use_the_output_video_origin(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            ticks = tuple(5_000 + index * 40 for index in range(90))
+            audio = np.arange(9_600, dtype=np.int16)
+            cases = (
+                ("no-audio", None, 0),
+                ("audio-after", audio, 240_960),
+                ("audio-before", audio, 238_080),
+            )
+            with patch("stego.video._MIN_FREE_BYTES", 0):
+                for name, samples, audio_start in cases:
+                    with self.subTest(case=name):
+                        source_path = root / f"{name}-source.mkv"
+                        output_path = root / f"{name}-encoded.mkv"
+                        make_matroska(
+                            source_path,
+                            ticks=ticks,
+                            audio_samples=samples,
+                            audio_rate=48_000,
+                            audio_start=audio_start,
+                            width=64,
+                            height=32,
+                        )
+                        encode_video(
+                            source_path, output_path, SIGNING_PRIVATE_KEY,
+                            RECEIVER_PUBLIC_KEY, bootstrap_span(RECEIVER_PUBLIC_KEY),
+                            3, b"non-zero video origin", b"{}",
+                        )
+                        result = verify_video(
+                            output_path, SIGNING_PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+                        )
+                        self.assertEqual(result.verdict, "Authentic", result.detail)
+                        self.assertEqual(
+                            result.payload.user_payload, b"non-zero video origin"
+                        )
+                        if name == "audio-before":
+                            rewritten = VideoCarrier(output_path)
+                            try:
+                                self.assertGreater(rewritten._first_video_time, 0)
+                                self.assertEqual(rewritten._audio_start_tick, -40)
+                            finally:
+                                rewritten.close()
+
+    def test_audio_before_video_keeps_negative_millisecond_offset(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "negative-audio.mkv"
+            make_matroska(
+                path,
+                ticks=(0, 40, 80),
+                audio_samples=np.arange(960, dtype=np.int16),
+                audio_start=-480,
+            )
+            source = VideoCarrier(path)
+            try:
+                fixed = b"".join(data for _, data in source.iter_chunks_with_fixed_bytes())
+                self.assertEqual(struct.unpack(">q", fixed[24:32])[0], -10)
+            finally:
+                source.close()
+
+    def test_audio_timeline_span_includes_negative_start_and_video_end(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "too-wide-span.mkv"
+            make_matroska(
+                path,
+                ticks=(0, 50, 100),
+                audio_samples=np.arange(200, dtype=np.int16),
+                audio_rate=1_000,
+                audio_start=-30,
+            )
+            # Old separate checks pass: |-30| <= 100 and audio end 70 <= 120.
+            # The full selected span is 100 - (-30) = 130, above the 120 cap.
+            with patch("stego.video._MAX_DURATION_MS", 100), patch(
+                "stego.video._AUDIO_END_SLACK_MS", 20
+            ):
+                with self.assertRaisesRegex(ValueError, "selected media span"):
+                    VideoCarrier(path)
+
     def test_audio_gap_is_refused(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "audio-gap.mkv"
@@ -757,6 +868,63 @@ class VideoCarrierReadTests(unittest.TestCase):
                 audio_channels=6,
             )
             with self.assertRaisesRegex(ValueError, "unsupported audio channel count"):
+                VideoCarrier(path)
+
+    def test_canonical_and_unspecified_audio_layouts_are_accepted(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, channels in (
+                ("stereo", 2),
+                ("2 channels", 2),
+                ("mono", 1),
+                ("1 channels", 1),
+            ):
+                with self.subTest(layout=name):
+                    path = root / f"{channels}-{name.replace(' ', '-')}.mkv"
+                    make_matroska(
+                        path,
+                        ticks=(0, 40),
+                        audio_samples=np.zeros(channels * 480, dtype=np.int16),
+                        audio_channels=channels,
+                        audio_layout=name,
+                    )
+                    carrier = VideoCarrier(path)
+                    try:
+                        self.assertEqual(carrier._audio_channels, channels)
+                    finally:
+                        carrier.close()
+
+    def test_channel_identity_helper_refuses_noncanonical_orders(self) -> None:
+        import av
+
+        for name in ("FL+LFE", "FR+FL", "DL+DR", "FC+LFE"):
+            with self.subTest(layout=name):
+                with self.assertRaisesRegex(ValueError, "unsupported audio channel layout"):
+                    _audio_layout_identities(av.AudioLayout(name))
+
+    def test_noncanonical_two_channel_layout_is_refused(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "front-and-lfe.avi"
+            make_avi_audio_layout(path, "FL+LFE")
+            with self.assertRaisesRegex(ValueError, "unsupported audio channel layout"):
+                VideoCarrier(path)
+
+    def test_swapped_stereo_layout_is_refused_when_pyav_can_write_it(self) -> None:
+        import av
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "swapped-stereo.avi"
+            make_avi_audio_layout(path, "FR+FL")
+            with av.open(str(path)) as container:
+                identities = tuple(
+                    channel.name for channel in container.streams.audio[0].codec_context.layout.channels
+                )
+            if identities != ("FR", "FL"):
+                self.skipTest(
+                    "PyAV 15.1 AVI writer normalizes FR+FL to NONE/NONE; "
+                    "the order cannot be tested from a decoded media header"
+                )
+            with self.assertRaisesRegex(ValueError, "unsupported audio channel layout"):
                 VideoCarrier(path)
 
     def test_multiple_audio_streams_are_refused(self) -> None:
@@ -1133,6 +1301,13 @@ class VideoCarrierReadTests(unittest.TestCase):
             "rotation remains outside the v1 authenticity boundary"
         )
 
+    def test_last_frame_duration_change_is_skipped_with_pyav_limitation(self) -> None:
+        self.skipTest(
+            "PyAV 15.1 exposes container/stream duration as read-only, and its "
+            "FFV1 encoder does not preserve an assigned VideoFrame.duration; "
+            "there is no supported writer path to change duration alone"
+        )
+
     def test_payload_path_encode_is_staged_and_verifies(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1194,9 +1369,10 @@ class VideoCarrierReadTests(unittest.TestCase):
                 output_path = root / f"encoded-{duration}s.mkv"
                 make_h264_aac(
                     source_path, width=640, height=360, frame_count=frames,
-                    audio_frames=48_000,
+                    audio_frames=48_000 * duration,
                 )
                 peaks.append(run_measured(source_path, output_path))
+            print(f"Peak RSS (5 s video/audio, 15 s video/audio): {peaks} KiB")
             self.assertLess(max(peaks), 1_500 * 1024)
             self.assertLessEqual(abs(peaks[1] - peaks[0]), 64 * 1024)
 
@@ -1230,7 +1406,7 @@ class VideoCarrierReadTests(unittest.TestCase):
             source_samples = audio_s16(source_path)
             self.assertEqual(source_samples.size % 2, 0)
             self.assertTrue(np.array_equal(source_samples, audio_s16(rewritten_path)))
-            # Rewritten Matroska is also a named stereo source for the next pass.
+            # Matroska PCM may report an unspecified two-channel identity on read-back.
             second_rewrite = root / "rewritten-again.mkv"
             carrier = VideoCarrier(rewritten_path)
             try:
@@ -1238,6 +1414,52 @@ class VideoCarrierReadTests(unittest.TestCase):
             finally:
                 carrier.close()
             self.assertTrue(np.array_equal(source_samples, audio_s16(second_rewrite)))
+
+    def test_mono_encode_verifies_and_preserves_s16_values(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "mono-source.mkv"
+            output_path = root / "mono-encoded.mkv"
+            mono_samples = np.arange(4_800, dtype=np.int16) * 3 - 7_000
+            make_matroska(
+                source_path,
+                ticks=tuple(index * 40 for index in range(90)),
+                audio_samples=mono_samples,
+                audio_rate=48_000,
+                audio_channels=1,
+                audio_layout="mono",
+                width=64,
+                height=32,
+            )
+            with patch("stego.video._MIN_FREE_BYTES", 0):
+                encode_video(
+                    source_path, output_path, SIGNING_PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY, bootstrap_span(RECEIVER_PUBLIC_KEY),
+                    3, b"mono video carrier", b"{}",
+                )
+            result = verify_video(output_path, SIGNING_PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload.user_payload, b"mono video carrier")
+
+            def samples_from(path: Path) -> np.ndarray:
+                carrier = VideoCarrier(path)
+                try:
+                    low_parts: list[np.ndarray] = []
+                    high_parts: list[np.ndarray] = []
+                    first_chunk = True
+                    for units, fixed in carrier._iter_audio(True):
+                        high_bytes = fixed[8:] if first_chunk else fixed
+                        first_chunk = False
+                        low_parts.append(units)
+                        high_parts.append(np.frombuffer(high_bytes, dtype=np.uint8))
+                    low = np.concatenate(low_parts).astype(np.uint16)
+                    high = np.concatenate(high_parts).astype(np.uint16)
+                    return (low | (high << 8)).astype("<i2")
+                finally:
+                    carrier.close()
+
+            np.testing.assert_array_equal(samples_from(source_path), mono_samples)
+            np.testing.assert_array_equal(samples_from(output_path), mono_samples)
 
 
 if __name__ == "__main__":

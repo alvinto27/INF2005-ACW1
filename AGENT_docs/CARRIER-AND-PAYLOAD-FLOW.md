@@ -4,7 +4,7 @@
 
 ## Carrier interface and pass order
 
-`CarrierSource` supplies bounded carrier-unit reads to `stego/core.py`. `PngCarrier` and `WavCarrier` are the public file-backed implementations. The internal array backend is not part of the package API. `read_units()` reads a bounded range; `iter_chunks()` returns units in order; `iter_chunks_with_fixed_bytes()` pairs unit chunks with fixed media bytes from the same read. `rewrite_to_path()` writes sequentially and may hash fixed bytes during that same read.
+`CarrierSource` supplies bounded carrier-unit reads to `stego/core.py`. `PngCarrier`, `WavCarrier`, and `VideoCarrier` are the public file-backed implementations. The internal array backend is not part of the package API. `read_units()` reads a bounded range; `iter_chunks()` returns units in order; `iter_chunks_with_fixed_bytes()` pairs unit chunks with fixed media bytes from the same read. `rewrite_to_path()` writes sequentially and may hash fixed bytes during that same read.
 
 PNG keeps one read-only decoded pixel buffer, about one decoded image size D. Bounded reads avoid full RGB and alpha copies. Rewriting adds one output image, about 2 x D total. Pillow still decodes the whole image. WAV reads whole PCM frames in bounded chunks; carrier working memory does not grow with frame count. One PNG unit is an 8-bit R, G, or B value. One WAV unit is the low byte of one PCM sample.
 
@@ -43,19 +43,19 @@ These rules apply only to encoding. `PngCarrier` loading and verification do not
 
 ## Video carrier backend
 
-`VideoCarrier` is the file-backed media-code-3 backend in `stego/video.py`. It performs a bounded scan, then reopens and decodes for range reads, hashing, and rewriting. It exposes ordered RGB and audio-low-byte carrier units and the matching fixed timing/audio-high-byte stream. PyAV imports stay inside video operations; importing `stego` and using PNG/WAV do not require PyAV.
+`VideoCarrier` is the file-backed media-code-3 backend in `stego/video.py`. It performs a bounded scan, then reopens and decodes for range reads, hashing, and rewriting. It exposes ordered RGB and audio-low-byte carrier units and the matching fixed timing/audio-high-byte stream. PyAV imports stay inside video operations; importing `stego` and using PNG/WAV do not require PyAV. PyAV is pinned as a normal dependency in `requirements.txt`.
 
 Only video sources that set `requires_output_check=True` use the additive `CarrierSource.open_rewritten_output(path)` hook. `CarrierEncoding.check_output(source)` verifies output context, embedded transforms, unit/fixed-byte counts, and the masked hash. Core `_rewrite_checked()` owns the sequence: rewrite, open and validate the output reader, close it, then call `finish()`. Any failure removes the incomplete output. Existing PNG/WAV sources use the default no-check behavior.
 
 `encode_video()` writes one FFV1 `bgr0` video stream and optional PCM s16le audio directly to a same-directory `.stego-staging-*` Matroska file. `encode_video_from_payload_path()` uses a private same-directory `.stego-staging-*` directory. Both publish with `os.replace` only after read-back checks and `finish()`. No extra track files or remux stage are used. Failure leaves the destination unpublished and removes the stage.
 
-Video caps are 1920×1080, 15 seconds, 450 frames, mono/stereo audio, 1 GiB final output, and 3 GiB minimum free space at the destination. Dimensions, duration, and frame caps are checked during the bounded scan. The final output cap is enforced while muxing. The old 2 GiB intermediate-byte cap was removed because the direct single-file mux has no intermediate media files; final-file size is the applicable byte limit. The test suite monkeypatches free-space requirements so it does not depend on host disk capacity.
+Video caps are 1920×1080, 15 seconds nominal, 16 seconds maximum selected span including decoder tail, 450 frames, mono/stereo audio under the channel-identity rule in [Current Protocol](CURRENT-PROTOCOL.md#video-plus-audio-media-code-3), 1 GiB final output, and 3 GiB minimum free space at the destination. The scan stops when the selected span exceeds its limit. Dimensions, duration, and frame caps are checked during the bounded scan. The final output cap is enforced while muxing. The old 2 GiB intermediate-byte cap was removed because the direct single-file mux has no intermediate media files; final-file size is the applicable byte limit. The test suite monkeypatches free-space requirements so it does not depend on host disk capacity.
 
 ## 4. Protocol flow
 
 ### Encode
 
-Encoding makes two full carrier passes:
+The protocol core makes two source-content passes after backend validation. Video also makes an initial validation/count scan and a read-back pass after writing:
 
 1. Validate inputs and calculate geometry before reading carrier data.
 2. Hash every chunk with the bootstrap region and future packet footprint masked. Build and encrypt the record, sign it, and seal the bootstrap.
@@ -98,6 +98,10 @@ encode_wav_from_payload_path
 decode_carrier_source_to_payload_path
 verify_png_to_payload_path
 verify_wav_to_payload_path
+encode_video
+verify_video
+encode_video_from_payload_path
+verify_video_to_payload_path
 PayloadFileRecord
 ```
 
