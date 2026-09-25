@@ -43,7 +43,9 @@ _MAX_FRAME_PIXELS = 178_956_970
 _MAX_OUTPUT_BYTES = 2 * 1024**3
 _MIN_FREE_BYTES = 3 * 1024 * 1024 * 1024
 _AUDIO_CHANNEL_COUNTS = frozenset((1, 2))
-_VIDEO_CONTEXT_FORMAT = ">IIQIHQ"
+_VIDEO_CONTEXT_FORMAT = ">IIQBBIHQ"
+_VIDEO_DEPTHS = (8, 9, 10, 12, 14, 16)
+_VIDEO_ALPHA_DEPTHS = (8, 10, 12, 14, 16)
 
 
 def _check_video_output_resources(path: str | bytes | PathLike[str]) -> Path:
@@ -78,6 +80,102 @@ def _check_video_frame_pixels(width: int, height: int) -> None:
     """Refuse frames above the PNG-compatible decompression-bomb threshold."""
     if width * height > _MAX_FRAME_PIXELS:
         raise ValueError("video frame exceeds configured pixel limit")
+
+
+def _video_format_info(video_format: object) -> tuple[int, bool, int, str, str]:
+    """Return source depth, alpha flag, canonical depth, decode, and output formats."""
+    name = getattr(video_format, "name", None)
+    components = getattr(video_format, "components", None)
+    if not isinstance(name, str) or components is None:
+        raise ValueError("unsupported video pixel format")
+    lowered_name = name.lower()
+    if any(marker in lowered_name for marker in ("f16", "f32", "f64")):
+        raise ValueError("unsupported video pixel format")
+    try:
+        component_bits = tuple(int(component.bits) for component in components)
+        has_alpha = any(bool(component.is_alpha) for component in components)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("unsupported video pixel format") from error
+    if not component_bits or min(component_bits) < 1:
+        raise ValueError("unsupported video pixel format")
+    source_depth = max(component_bits)
+    if source_depth > 16:
+        raise ValueError("unsupported video pixel format")
+    depth_table = _VIDEO_ALPHA_DEPTHS if has_alpha else _VIDEO_DEPTHS
+    canonical_depth = next(
+        (depth for depth in depth_table if depth >= source_depth), None
+    )
+    if canonical_depth is None:
+        raise ValueError("unsupported video pixel format")
+    channels = "ap" if has_alpha else "p"
+    if canonical_depth == 8:
+        decode_format = "rgba" if has_alpha else "rgb24"
+        output_format = "bgra" if has_alpha else "bgr0"
+    else:
+        decode_format = f"gbr{channels}{canonical_depth}le"
+        output_format = decode_format
+    return source_depth, has_alpha, canonical_depth, decode_format, output_format
+
+
+def _check_video_conversion(frame: object, pixel_format: str) -> None:
+    """Confirm that the decoded frame converts to its canonical pixel format."""
+    try:
+        converted = frame.reformat(format=pixel_format)
+    except Exception as error:
+        raise ValueError("unsupported video pixel format") from error
+    if converted.format.name != pixel_format:
+        raise ValueError("unsupported video pixel format")
+
+
+def _canonical_frame_array(
+    frame: object,
+    pixel_format: str,
+    width: int,
+    height: int,
+    depth: int,
+    channel_count: int,
+) -> np.ndarray:
+    """Return canonical RGB(A) pixels at their native component depth."""
+    try:
+        pixels = frame.to_ndarray(format=pixel_format)
+    except Exception as error:
+        raise CarrierAccessError("unsupported video pixel format") from error
+    dtype = np.uint8 if depth == 8 else np.uint16
+    if pixels.shape != (height, width, channel_count) or pixels.dtype != dtype:
+        raise CarrierAccessError("unsupported video pixel format")
+    # The canonical pixel format defines the sample range. Avoid a full-frame
+    # maximum scan on every pass; encode read-back checks exact decoded values.
+    return pixels
+
+
+def _high_bytes_little_endian(values: np.ndarray) -> bytes:
+    """Return each uint16 sample's high byte without shift/cast temporaries."""
+    little_endian = values.astype("<u2", copy=False)
+    return little_endian.view(np.uint8)[1::2].tobytes()
+
+
+def _pack_video_context(
+    width: int,
+    height: int,
+    frame_count: int,
+    depth: int,
+    video_channels: int,
+    audio_rate: int,
+    audio_channels: int,
+    audio_frames: int,
+) -> bytes:
+    """Build the fixed 32-byte media-code-3 context."""
+    return struct.pack(
+        _VIDEO_CONTEXT_FORMAT,
+        width,
+        height,
+        frame_count,
+        depth,
+        video_channels,
+        audio_rate,
+        audio_channels,
+        audio_frames,
+    )
 
 
 def _round_fraction(value: Fraction) -> int:
@@ -223,7 +321,9 @@ class VideoCarrier(CarrierSource):
         """Validate and count a video file using bounded decode passes."""
         if not isinstance(path, (str, bytes, PathLike)):
             raise TypeError("path must be a filesystem path")
-        chunk_units = _validate_positive_integer(chunk_units, "chunk_units")
+        chunk_units = min(
+            _validate_positive_integer(chunk_units, "chunk_units"), DEFAULT_CHUNK_BYTES
+        )
         self._path = path
         self._chunk_units = chunk_units
         self._read_iterator: Iterator[np.ndarray] | None = None
@@ -232,6 +332,7 @@ class VideoCarrier(CarrierSource):
         self._read_chunk_offset = 0
         self._closed = False
         self._current_video_origin: Fraction | None = None
+        self._output_reader = False
         self._scan()
 
     @property
@@ -241,12 +342,12 @@ class VideoCarrier(CarrierSource):
 
     @property
     def total_units(self) -> int:
-        """Return RGB channel values followed by interleaved audio samples."""
+        """Return three low-byte RGB units per pixel plus audio sample units."""
         return self._total_units
 
     @property
     def fixed_byte_count(self) -> int:
-        """Return canonical frame/audio timing and PCM high-byte count."""
+        """Return frame timing, RGB high bytes, alpha bytes, and audio fixed bytes."""
         return self._fixed_byte_count
 
     @property
@@ -256,7 +357,7 @@ class VideoCarrier(CarrierSource):
 
     @property
     def media_context(self) -> bytes:
-        """Return the fixed 30-byte video/audio context."""
+        """Return the fixed 32-byte video/audio context."""
         return self._media_context
 
     @property
@@ -304,10 +405,19 @@ class VideoCarrier(CarrierSource):
             if not width or not height:
                 raise ValueError("invalid video dimensions")
             _check_video_frame_pixels(width, height)
+            header_format = video_stream.codec_context.format
+            header_info = (
+                _video_format_info(header_format) if header_format is not None else None
+            )
 
         first_video_time: Fraction | None = None
         frame_count = 0
         total_units = 0
+        source_depth: int | None = None
+        has_alpha: bool | None = None
+        canonical_depth = 0
+        decode_pixel_format = ""
+        output_pixel_format = ""
         with self._open() as container:
             video_stream, _ = self._select_streams(container)
             decoder = container.decode(video=0)
@@ -315,16 +425,24 @@ class VideoCarrier(CarrierSource):
                 _check_video_frame_pixels(frame.width, frame.height)
                 if frame.width != width or frame.height != height:
                     raise ValueError("video dimensions changed during decode")
+                frame_info = _video_format_info(frame.format)
+                frame_depth, frame_alpha, frame_canonical_depth, frame_decode_format, frame_output_format = frame_info
+                if source_depth is None:
+                    if header_info is not None and frame_info[:2] != header_info[:2]:
+                        raise ValueError("video pixel format changed during decode")
+                    source_depth = frame_depth
+                    has_alpha = frame_alpha
+                    canonical_depth = frame_canonical_depth
+                    decode_pixel_format = frame_decode_format
+                    output_pixel_format = frame_output_format
+                    _check_video_conversion(frame, decode_pixel_format)
+                elif (frame_depth, frame_alpha) != (source_depth, has_alpha):
+                    raise ValueError("video pixel format changed during decode")
                 total_units += frame.width * frame.height * 3
                 if total_units > _MAX_CARRIER_UNITS:
                     raise ValueError(
                         "video carrier exceeds configured decoded-size limit"
                     )
-                if any(
-                    component.is_alpha or component.bits > 8
-                    for component in frame.format.components
-                ):
-                    raise ValueError("unsupported video pixel format")
                 if first_video_time is None:
                     first_video_time = exact_time
                 frame_count += 1
@@ -381,17 +499,30 @@ class VideoCarrier(CarrierSource):
         self._audio_channels = audio_channels
         self._audio_frames_per_channel = audio_frames
         self._audio_start_tick = audio_start_tick
+        self._source_depth = source_depth
+        self._depth = canonical_depth
+        self._has_alpha = bool(has_alpha)
+        self._video_channels = 4 if self._has_alpha else 3
+        self._decode_pixel_format = decode_pixel_format
+        self._output_pixel_format = output_pixel_format
         self._video_units = frame_count * width * height * 3
         audio_units = audio_frames * audio_channels
         self._total_units = total_units
-        self._fixed_byte_count = 8 * frame_count + (
+        pixels_per_frame = width * height
+        frame_fixed_bytes = 8
+        if self._depth > 8:
+            frame_fixed_bytes += 3 * pixels_per_frame
+        if self._has_alpha:
+            frame_fixed_bytes += pixels_per_frame * (1 if self._depth == 8 else 2)
+        self._fixed_byte_count = frame_count * frame_fixed_bytes + (
             8 + audio_units if audio_units else 0
         )
-        self._media_context = struct.pack(
-            _VIDEO_CONTEXT_FORMAT,
+        self._media_context = _pack_video_context(
             width,
             height,
             frame_count,
+            self._depth,
+            self._video_channels,
             audio_rate,
             audio_channels,
             audio_frames,
@@ -400,7 +531,7 @@ class VideoCarrier(CarrierSource):
     def _iter_video(
         self, with_fixed_bytes: bool
     ) -> Iterator[tuple[np.ndarray, bytes]]:
-        """Yield frame RGB values as bounded chunks and one timestamp per frame."""
+        """Yield bounded low-byte RGB units and ordered frame fixed bytes."""
         frame_count = 0
         first_time = self._first_video_time
         self._current_video_origin = None
@@ -408,6 +539,19 @@ class VideoCarrier(CarrierSource):
             stream, audio_stream = self._select_streams(container)
             if (audio_stream is None) != (self._audio_channels == 0):
                 raise CarrierAccessError("audio stream presence changed after validation")
+            header_format = stream.codec_context.format
+            if header_format is not None:
+                header_info = _video_format_info(header_format)
+                expected_depth = self._depth if self._output_reader else self._source_depth
+                if (header_info[0], header_info[1]) != (
+                    expected_depth,
+                    self._has_alpha,
+                ):
+                    raise CarrierAccessError("video pixel format changed during decode")
+                if self._output_reader and header_info[2] != self._depth:
+                    raise CarrierAccessError(
+                        "output video pixel format does not match signed context"
+                    )
             for frame, tick, exact_time in _frame_ticks(
                 container.decode(video=0), stream, first_time
             ):
@@ -415,21 +559,51 @@ class VideoCarrier(CarrierSource):
                     self._current_video_origin = exact_time
                 if frame.width != self._width or frame.height != self._height:
                     raise CarrierAccessError("video dimensions changed after validation")
-                if any(
-                    component.is_alpha or component.bits > 8
-                    for component in frame.format.components
+                frame_info = _video_format_info(frame.format)
+                expected_depth = self._depth if self._output_reader else self._source_depth
+                if (frame_info[0], frame_info[1]) != (
+                    expected_depth,
+                    self._has_alpha,
                 ):
-                    raise CarrierAccessError("unsupported video pixel format")
-                rgb = frame.to_ndarray(format="rgb24")
-                if rgb.shape != (self._height, self._width, 3):
-                    raise CarrierAccessError("decoded video frame is not RGB24")
-                flat = rgb.reshape(-1)
+                    raise CarrierAccessError("video pixel format changed during decode")
+                if self._output_reader and frame_info[2] != self._depth:
+                    raise CarrierAccessError(
+                        "output video pixel format does not match signed context"
+                    )
+                pixels = _canonical_frame_array(
+                    frame,
+                    self._decode_pixel_format,
+                    self._width,
+                    self._height,
+                    self._depth,
+                    self._video_channels,
+                )
+                pixel_values = pixels.reshape(-1, self._video_channels)
+                chunk_limit = min(self._chunk_units, DEFAULT_CHUNK_BYTES)
+                pixels_per_chunk = max(1, chunk_limit // 3)
                 first_chunk = True
-                for offset in range(0, flat.size, self._chunk_units):
-                    chunk = flat[offset:offset + self._chunk_units].copy()
+                pixel_count = self._width * self._height
+                for pixel_offset in range(0, pixel_count, pixels_per_chunk):
+                    pixel_end = min(pixel_count, pixel_offset + pixels_per_chunk)
+                    values = pixel_values[pixel_offset:pixel_end, :3].reshape(-1)
+                    units = values.astype(np.uint8, copy=False)
                     fixed = _pack_tick(tick) if with_fixed_bytes and first_chunk else b""
-                    yield chunk, fixed
+                    if with_fixed_bytes and self._depth > 8:
+                        fixed += _high_bytes_little_endian(values)
+                    yield units, fixed
                     first_chunk = False
+                if with_fixed_bytes and self._has_alpha:
+                    alpha_bytes = 1 if self._depth == 8 else 2
+                    alpha_limit = max(1, chunk_limit // alpha_bytes)
+                    alpha = pixel_values[:, 3]
+                    for offset in range(0, alpha.size, alpha_limit):
+                        values = alpha[offset:offset + alpha_limit]
+                        fixed = (
+                            values.astype(np.uint8, copy=False).tobytes()
+                            if alpha_bytes == 1
+                            else values.astype("<u2", copy=False).tobytes()
+                        )
+                        yield np.empty(0, dtype=np.uint8), fixed
                 frame_count += 1
         if frame_count != self._frame_count:
             raise CarrierAccessError("video frame count changed after validation")
@@ -514,7 +688,7 @@ class VideoCarrier(CarrierSource):
         transform: Callable[[int, np.ndarray], np.ndarray],
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
     ) -> None:
-        """Write selected RGB/s16 tracks to a tag-free FFV1/PCM Matroska file."""
+        """Write selected native-depth RGB(A)/s16 tracks to tag-free Matroska."""
         if not isinstance(path, (str, bytes, PathLike)):
             raise TypeError("path must be a filesystem path")
         import av
@@ -525,7 +699,7 @@ class VideoCarrier(CarrierSource):
         video_output = output.add_stream("ffv1", rate=25)
         video_output.width = self._width
         video_output.height = self._height
-        video_output.pix_fmt = "bgr0"
+        video_output.pix_fmt = self._output_pixel_format
         video_output.time_base = Fraction(1, 1000)
         video_codec = video_output.codec_context
         video_codec.time_base = Fraction(1, 1000)
@@ -558,33 +732,65 @@ class VideoCarrier(CarrierSource):
                 ):
                     if frame_count == 0:
                         self._current_video_origin = exact_time
-                    if frame.width != self._width or frame.height != self._height:
-                        raise CarrierAccessError(
-                            "video dimensions changed after validation"
-                        )
-                    if any(
-                        component.is_alpha or component.bits > 8
-                        for component in frame.format.components
+                    frame_info = _video_format_info(frame.format)
+                    if (frame_info[0], frame_info[1]) != (
+                        self._source_depth,
+                        self._has_alpha,
                     ):
-                        raise CarrierAccessError("unsupported video pixel format")
-                    rgb = frame.to_ndarray(format="rgb24")
-                    flat = rgb.reshape(-1)
-                    rewritten = np.empty(flat.size, dtype=np.uint8)
+                        raise CarrierAccessError(
+                            "video pixel format changed during decode"
+                        )
+                    pixels = _canonical_frame_array(
+                        frame,
+                        self._decode_pixel_format,
+                        self._width,
+                        self._height,
+                        self._depth,
+                        self._video_channels,
+                    )
+                    pixel_values = pixels.reshape(-1, self._video_channels)
+                    chunk_limit = min(self._chunk_units, DEFAULT_CHUNK_BYTES)
+                    pixels_per_chunk = max(1, chunk_limit // 3)
                     first_chunk = True
-                    for offset in range(0, flat.size, self._chunk_units):
-                        original = flat[offset:offset + self._chunk_units].copy()
+                    pixel_count = self._width * self._height
+                    for pixel_offset in range(0, pixel_count, pixels_per_chunk):
+                        pixel_end = min(pixel_count, pixel_offset + pixels_per_chunk)
+                        rgb_values = pixel_values[pixel_offset:pixel_end, :3].reshape(-1)
+                        original = rgb_values.astype(np.uint8, copy=False)
                         fixed = _pack_tick(tick) if first_chunk else b""
+                        if self._depth > 8:
+                            fixed += _high_bytes_little_endian(rgb_values)
                         if fixed_bytes_callback is not None:
                             fixed_bytes_callback(video_units, original, fixed)
                         changed = _validate_transformed_units(
                             transform(video_units, original), original.size
                         )
-                        rewritten[offset:offset + changed.size] = changed
+                        if self._depth == 8:
+                            rgb_values[:] = changed
+                        else:
+                            rgb_values[:] = (rgb_values & np.uint16(0xFF00)) | changed
+                        pixel_values[pixel_offset:pixel_end, :3] = rgb_values.reshape(
+                            -1, 3
+                        )
                         video_units += original.size
                         first_chunk = False
+                    if self._has_alpha and fixed_bytes_callback is not None:
+                        alpha_bytes = 1 if self._depth == 8 else 2
+                        alpha_limit = max(1, chunk_limit // alpha_bytes)
+                        alpha = pixel_values[:, 3]
+                        for offset in range(0, alpha.size, alpha_limit):
+                            values = alpha[offset:offset + alpha_limit]
+                            fixed = (
+                                values.astype(np.uint8, copy=False).tobytes()
+                                if alpha_bytes == 1
+                                else values.astype("<u2", copy=False).tobytes()
+                            )
+                            fixed_bytes_callback(
+                                video_units, np.empty(0, dtype=np.uint8), fixed
+                            )
                     encoded_frame = av.VideoFrame.from_ndarray(
-                        rewritten.reshape(self._height, self._width, 3),
-                        format="rgb24",
+                        pixels,
+                        format=self._decode_pixel_format,
                     )
                     encoded_frame.pts = tick
                     encoded_frame.time_base = Fraction(1, 1000)
@@ -659,12 +865,59 @@ class VideoCarrier(CarrierSource):
         output._closed = False
         output._first_video_time = None
         output._current_video_origin = None
+        output._output_reader = True
         for attribute in (
             "_width", "_height", "_frame_count", "_audio_rate",
             "_audio_channels", "_audio_frames_per_channel", "_audio_start_tick",
-            "_video_units", "_total_units", "_fixed_byte_count", "_media_context",
+            "_source_depth", "_depth", "_has_alpha", "_video_channels",
+            "_decode_pixel_format", "_output_pixel_format", "_video_units",
+            "_total_units", "_fixed_byte_count", "_media_context",
         ):
             setattr(output, attribute, getattr(self, attribute))
+        with output._open() as container:
+            video_stream, _ = self._select_streams(container)
+            output_width = video_stream.codec_context.width
+            output_height = video_stream.codec_context.height
+            header_format = video_stream.codec_context.format
+            if header_format is not None:
+                info = _video_format_info(header_format)
+                output._source_depth = info[0]
+                output._depth = info[2]
+                output._has_alpha = info[1]
+                output._video_channels = 4 if info[1] else 3
+                output._decode_pixel_format = info[3]
+                output._output_pixel_format = info[4]
+                output._width = output_width
+                output._height = output_height
+                output._video_units = (
+                    output._frame_count * output_width * output_height * 3
+                )
+                output._total_units = output._video_units + (
+                    output._audio_frames_per_channel * output._audio_channels
+                )
+                frame_fixed_bytes = 8
+                if output._depth > 8:
+                    frame_fixed_bytes += 3 * output_width * output_height
+                if output._has_alpha:
+                    frame_fixed_bytes += output_width * output_height * (
+                        1 if output._depth == 8 else 2
+                    )
+                audio_units = (
+                    output._audio_frames_per_channel * output._audio_channels
+                )
+                output._fixed_byte_count = output._frame_count * frame_fixed_bytes + (
+                    8 + audio_units if audio_units else 0
+                )
+                output._media_context = _pack_video_context(
+                    output_width,
+                    output_height,
+                    output._frame_count,
+                    output._depth,
+                    output._video_channels,
+                    output._audio_rate,
+                    output._audio_channels,
+                    output._audio_frames_per_channel,
+                )
         return output
 
     def iter_chunks_with_fixed_bytes(self) -> Iterator[tuple[np.ndarray, bytes]]:
@@ -681,8 +934,17 @@ class VideoCarrier(CarrierSource):
 
     def iter_chunks(self) -> Iterator[np.ndarray]:
         """Yield bounded RGB and audio carrier units in protocol order."""
-        for units, _ in self.iter_chunks_with_fixed_bytes():
-            yield units
+        import av
+
+        try:
+            for units, _ in self._iter_video(False):
+                yield units
+            for units, _ in self._iter_audio(False):
+                yield units
+        except CarrierAccessError:
+            raise
+        except (OSError, ValueError, av.error.FFmpegError) as error:
+            raise CarrierAccessError("could not decode video carrier") from error
 
     def _reset_reader(self) -> None:
         """Reset the persistent range reader to the start of the carrier."""

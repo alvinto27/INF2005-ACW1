@@ -35,9 +35,11 @@ from stego.video import (
     VideoCarrier,
     _audio_layout_identities,
     _audio_position_matches,
+    _check_video_conversion,
     _configure_decoder,
     _frame_ticks,
     _round_fraction,
+    _video_format_info,
     verify_video,
 )
 from stego.constants import IMAGE_MEDIA_CODE
@@ -446,6 +448,118 @@ def make_matroska(
     output.close()
 
 
+def make_pixel_format_clip(
+    path: Path,
+    pixel_format: str,
+    *,
+    ticks: tuple[int, ...] = (0, 40, 80),
+    width: int = 8,
+    height: int = 6,
+    canonical_pixels: np.ndarray | None = None,
+    codec: str = "ffv1",
+) -> None:
+    """Write a tiny FFV1 source at a selected native pixel format."""
+    import av
+
+    video_format = av.VideoFormat(pixel_format)
+    depth = max(component.bits for component in video_format.components)
+    has_alpha = any(component.is_alpha for component in video_format.components)
+    mask = (1 << depth) - 1
+    if canonical_pixels is None and pixel_format != "yuva444p9le":
+        base = np.linspace(0, mask, width * height, dtype=np.uint32).reshape(
+            height, width
+        )
+        channels = [
+            base,
+            (base * 3 + 19) & mask,
+            (base * 5 + 37) & mask,
+        ]
+        if has_alpha:
+            channels.append((base * 7 + 71) & mask)
+        dtype = np.uint8 if depth <= 8 else np.uint16
+        canonical_pixels = np.stack(channels, axis=-1).astype(dtype)
+
+    output = av.open(str(path), mode="w", format="matroska")
+    video = output.add_stream(codec, rate=25)
+    video.width = width
+    video.height = height
+    video.pix_fmt = pixel_format
+    video.time_base = Fraction(1, 1000)
+    video.codec_context.time_base = Fraction(1, 1000)
+    for tick in ticks:
+        if pixel_format == "yuva444p9le":
+            frame = av.VideoFrame(width, height, format=pixel_format)
+            component_values = (170, 400, 300, 420)
+            for plane, value in zip(frame.planes, component_values):
+                rows = np.zeros(
+                    (plane.height, plane.line_size // 2), dtype=np.uint16
+                )
+                rows[:, :plane.width] = value
+                plane.update(rows.tobytes())
+        elif pixel_format in {"rgba", "bgra"}:
+            if canonical_pixels is None:
+                raise AssertionError("an alpha pixel array is required")
+            frame = av.VideoFrame.from_ndarray(
+                canonical_pixels, format="rgba"
+            ).reformat(format=pixel_format)
+        else:
+            if canonical_pixels is None:
+                raise AssertionError("a canonical pixel array is required")
+            frame = av.VideoFrame(width, height, format=pixel_format)
+            component_values = [
+                canonical_pixels[:, :, 1],
+                canonical_pixels[:, :, 2],
+                canonical_pixels[:, :, 0],
+            ]
+            if has_alpha:
+                component_values.append(canonical_pixels[:, :, 3])
+            dtype = np.uint8 if depth <= 8 else np.uint16
+            for plane, values in zip(frame.planes, component_values):
+                row_width = plane.line_size // np.dtype(dtype).itemsize
+                rows = np.zeros((plane.height, row_width), dtype=dtype)
+                rows[:, :width] = values
+                plane.update(rows.tobytes())
+        frame.pts = tick
+        frame.time_base = Fraction(1, 1000)
+        for packet in video.encode(frame):
+            output.mux(packet)
+    for packet in video.encode():
+        output.mux(packet)
+    output.close()
+
+
+def rewrite_native_pixel(
+    source_path: Path,
+    output_path: Path,
+    pixel_format: str,
+    channel: int,
+    xor_value: int,
+) -> None:
+    """Rewrite one canonical pixel component and preserve the video timestamps."""
+    import av
+
+    with av.open(str(source_path)) as source, av.open(
+        str(output_path), mode="w", format="matroska"
+    ) as output:
+        source_stream = source.streams.video[0]
+        output_stream = output.add_stream("ffv1", rate=25)
+        output_stream.width = source_stream.codec_context.width
+        output_stream.height = source_stream.codec_context.height
+        output_stream.pix_fmt = pixel_format
+        output_stream.time_base = Fraction(1, 1000)
+        output_stream.codec_context.time_base = Fraction(1, 1000)
+        for frame in source.decode(video=0):
+            pixels = frame.to_ndarray(format=pixel_format)
+            pixels[-1, -1, channel] ^= np.array(xor_value, dtype=pixels.dtype)
+            rewritten = av.VideoFrame.from_ndarray(pixels, format=pixel_format)
+            rewritten.pts = frame.pts
+            rewritten.time_base = frame.time_base or source_stream.time_base
+            for packet in output_stream.encode(rewritten):
+                output.mux(packet)
+        for packet in output_stream.encode():
+            output.mux(packet)
+
+
 def make_avi_audio_layout(path: Path, layout_name: str) -> None:
     """Write FFV1/PCM in AVI to test layouts that Matroska does not preserve."""
     import av
@@ -676,11 +790,288 @@ class VideoCarrierReadTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     source.media_context,
-                    struct.pack(">IIQIHQ", 16, 8, 3, 0, 0, 0),
+                    struct.pack(">IIQBBIHQ", 16, 8, 3, 8, 3, 0, 0, 0),
                 )
                 self.assertEqual(source.fixed_byte_count, 24)
             finally:
                 source.close()
+
+    def test_native_depth_video_round_trips_with_exact_payload(self) -> None:
+        cases = (
+            ("rgba8", "bgra", 8, True),
+            ("rgb9", "gbrp9le", 9, False),
+            ("rgb10", "gbrp10le", 10, False),
+            ("rgb12", "gbrp12le", 12, False),
+            ("rgb14", "gbrp14le", 14, False),
+            ("rgb16", "gbrp16le", 16, False),
+            ("rgba10", "gbrap10le", 10, True),
+            ("rgba16", "gbrap16le", 16, True),
+            ("rgba9-source", "yuva444p9le", 10, True),
+        )
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for label, source_format, depth, has_alpha in cases:
+                with self.subTest(case=label):
+                    source_path = root / f"{label}-source.mkv"
+                    output_path = root / f"{label}-encoded.mkv"
+                    payload = f"exact payload for {label}".encode()
+                    make_pixel_format_clip(
+                        source_path,
+                        source_format,
+                        ticks=(0, 40, 80),
+                        width=64,
+                        height=48,
+                    )
+                    with patch("stego.video._MIN_FREE_BYTES", 0):
+                        encode_video(
+                            source_path,
+                            output_path,
+                            SIGNING_PRIVATE_KEY,
+                            RECEIVER_PUBLIC_KEY,
+                            bootstrap_span(RECEIVER_PUBLIC_KEY),
+                            3,
+                            payload,
+                            b"{}",
+                        )
+                    result = verify_video(
+                        output_path, SIGNING_PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+                    )
+                    self.assertEqual(result.verdict, "Authentic", result.detail)
+                    self.assertEqual(result.payload.user_payload, payload)
+                    output_carrier = VideoCarrier(output_path)
+                    try:
+                        fields = struct.unpack(
+                            ">IIQBBIHQ", output_carrier.media_context
+                        )
+                        self.assertEqual(fields[3], depth)
+                        self.assertEqual(fields[4], 4 if has_alpha else 3)
+                    finally:
+                        output_carrier.close()
+
+    def test_rgba_and_gbrap_unit_and_fixed_byte_order(self) -> None:
+        import av
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            rgba_values = np.array([[[0x12, 0x34, 0x56, 0x78]]], dtype=np.uint8)
+            for source_format in ("bgra", "rgba"):
+                with self.subTest(source_format=source_format):
+                    rgba_path = root / f"{source_format}.mkv"
+                    make_pixel_format_clip(
+                        rgba_path,
+                        source_format,
+                        ticks=(0,),
+                        width=1,
+                        height=1,
+                        canonical_pixels=rgba_values,
+                        codec="rawvideo" if source_format == "rgba" else "ffv1",
+                    )
+                    with av.open(str(rgba_path)) as container:
+                        decoded = next(container.decode(video=0)).to_ndarray(
+                            format="rgba"
+                        )
+                    self.assertEqual(decoded.shape, (1, 1, 4))
+                    self.assertEqual(decoded[0, 0].tolist(), [0x12, 0x34, 0x56, 0x78])
+                    rgba_source = VideoCarrier(rgba_path, chunk_units=3)
+                    try:
+                        rgba_chunks = list(rgba_source.iter_chunks_with_fixed_bytes())
+                        self.assertEqual(
+                            rgba_source.read_units(0, 3).tolist(), [0x12, 0x34, 0x56]
+                        )
+                        self.assertEqual(rgba_chunks[0][1], struct.pack(">q", 0))
+                        self.assertEqual(rgba_chunks[1][0].size, 0)
+                        self.assertEqual(rgba_chunks[1][1], b"\x78")
+                        self.assertEqual(rgba_source.fixed_byte_count, 9)
+                    finally:
+                        rgba_source.close()
+
+            gbrap_path = root / "gbrap10.mkv"
+            gbrap_values = np.array(
+                [[[0x123, 0x256, 0x3A7, 0x2BC]]], dtype=np.uint16
+            )
+            make_pixel_format_clip(
+                gbrap_path,
+                "gbrap10le",
+                ticks=(0,),
+                width=1,
+                height=1,
+                canonical_pixels=gbrap_values,
+            )
+            with av.open(str(gbrap_path)) as container:
+                decoded = next(container.decode(video=0)).to_ndarray(
+                    format="gbrap10le"
+                )
+            self.assertEqual(decoded.shape, (1, 1, 4))
+            self.assertEqual(decoded[0, 0].tolist(), [0x123, 0x256, 0x3A7, 0x2BC])
+            gbrap_source = VideoCarrier(gbrap_path, chunk_units=3)
+            try:
+                gbrap_chunks = list(gbrap_source.iter_chunks_with_fixed_bytes())
+                self.assertEqual(
+                    gbrap_source.read_units(0, 3).tolist(), [0x23, 0x56, 0xA7]
+                )
+                self.assertEqual(
+                    gbrap_chunks[0][1], struct.pack(">q", 0) + b"\x01\x02\x03"
+                )
+                self.assertEqual(gbrap_chunks[1][0].size, 0)
+                self.assertEqual(gbrap_chunks[1][1], b"\xBC\x02")
+                self.assertEqual(
+                    gbrap_source.media_context,
+                    struct.pack(">IIQBBIHQ", 1, 1, 1, 10, 4, 0, 0, 0),
+                )
+                self.assertEqual(gbrap_source.fixed_byte_count, 13)
+            finally:
+                gbrap_source.close()
+
+    def test_video_fixed_byte_count_matches_independent_formula(self) -> None:
+        cases = (
+            ("rgb8", "bgr0", 8, False, 16, 8, 8),
+            ("rgb10", "gbrp10le", 10, False, 8, 6, 8 + 3 * 8 * 6),
+            (
+                "rgba10",
+                "gbrap10le",
+                10,
+                True,
+                8,
+                6,
+                8 + 3 * 8 * 6 + 2 * 8 * 6,
+            ),
+        )
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for label, pixel_format, depth, alpha, width, height, per_frame in cases:
+                with self.subTest(case=label):
+                    path = root / f"{label}.mkv"
+                    if pixel_format == "bgr0":
+                        make_matroska(path, ticks=(0, 40, 80), width=width, height=height)
+                    else:
+                        make_pixel_format_clip(
+                            path,
+                            pixel_format,
+                            ticks=(0, 40, 80),
+                            width=width,
+                            height=height,
+                        )
+                    source = VideoCarrier(path)
+                    try:
+                        self.assertEqual(source.fixed_byte_count, per_frame * 3)
+                        fields = struct.unpack(">IIQBBIHQ", source.media_context)
+                        self.assertEqual(fields[3], depth)
+                        self.assertEqual(fields[4], 4 if alpha else 3)
+                    finally:
+                        source.close()
+
+    def test_eight_bit_no_alpha_output_remains_bgr0(self) -> None:
+        import av
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.mp4"
+            output_path = root / "output.mkv"
+            make_tiny_clip(source_path)
+            with patch("stego.video._MIN_FREE_BYTES", 0):
+                encode_video(
+                    source_path,
+                    output_path,
+                    SIGNING_PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY,
+                    bootstrap_span(RECEIVER_PUBLIC_KEY),
+                    3,
+                    b"8-bit bgr0",
+                    b"{}",
+                )
+            with av.open(str(output_path)) as container:
+                self.assertEqual(
+                    container.streams.video[0].codec_context.format.name, "bgr0"
+                )
+
+    def test_native_depth_tampering_is_detected(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "gbrap10-source.mkv"
+            encoded_path = root / "gbrap10-encoded.mkv"
+            make_pixel_format_clip(
+                source_path, "gbrap10le", ticks=(0, 40, 80), width=64, height=48
+            )
+            with patch("stego.video._MIN_FREE_BYTES", 0):
+                encode_video(
+                    source_path,
+                    encoded_path,
+                    SIGNING_PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY,
+                    bootstrap_span(RECEIVER_PUBLIC_KEY),
+                    3,
+                    b"tamper native depth",
+                    b"{}",
+                )
+            cases = (("low", 0, 1), ("high", 0, 0x100), ("alpha", 3, 1))
+            for label, channel, xor_value in cases:
+                with self.subTest(component=label):
+                    changed_path = root / f"{label}-changed.mkv"
+                    rewrite_native_pixel(
+                        encoded_path, changed_path, "gbrap10le", channel, xor_value
+                    )
+                    result = verify_video(
+                        changed_path, SIGNING_PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+                    )
+                    self.assertEqual(result.verdict, "Tampered", result.detail)
+
+    def test_float_and_over_16_bit_formats_are_refused(self) -> None:
+        import av
+
+        with self.assertRaisesRegex(ValueError, "unsupported video pixel format"):
+            _video_format_info(av.VideoFormat("gbrpf32le"))
+        over_depth = SimpleNamespace(
+            name="gbrp17le",
+            components=tuple(
+                SimpleNamespace(bits=17, is_alpha=False) for _ in range(3)
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported video pixel format"):
+            _video_format_info(over_depth)
+
+    def test_canonical_conversion_probe_runs_once_per_scan(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "canonical-conversion-probe.mkv"
+            make_pixel_format_clip(path, "gbrp10le", ticks=(0, 40, 80))
+            with patch(
+                "stego.video._check_video_conversion",
+                wraps=_check_video_conversion,
+            ) as conversion_check:
+                source = VideoCarrier(path)
+            try:
+                self.assertEqual(conversion_check.call_count, 1)
+            finally:
+                source.close()
+
+    def test_pixel_format_change_during_decode_is_refused(self) -> None:
+        import av
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "changing-pixel-format.mkv"
+            make_pixel_format_clip(path, "gbrp9le", ticks=(0, 40))
+            original_frame_ticks = _frame_ticks
+
+            def changed_formats(
+                frames: Iterator[object],
+                stream: object,
+                first_time: Fraction | None = None,
+            ) -> Iterator[tuple[object, int, Fraction]]:
+                for index, (frame, tick, exact_time) in enumerate(
+                    original_frame_ticks(frames, stream, first_time)
+                ):
+                    if index == 1:
+                        frame = SimpleNamespace(
+                            width=frame.width,
+                            height=frame.height,
+                            format=av.VideoFormat("gbrp10le"),
+                        )
+                    yield frame, tick, exact_time
+
+            with patch("stego.video._frame_ticks", side_effect=changed_formats):
+                with self.assertRaisesRegex(
+                    ValueError, "video pixel format changed during decode"
+                ):
+                    VideoCarrier(path)
 
     def test_audio_samples_follow_video_and_high_bytes_are_fixed(self) -> None:
         samples = np.arange(960, dtype=np.int16)
