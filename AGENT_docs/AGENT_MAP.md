@@ -16,9 +16,9 @@ Use this map before editing an unfamiliar part of the repository.
 | Implemented version 3 hash, RGBA, compatibility, and limits | [PROTOCOL-V3-FULL-MEDIA-HASH.md](PROTOCOL-V3-FULL-MEDIA-HASH.md) |
 | Historical protocol version 2 design; stages 0 through 6b complete; 6c cancelled | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
-| Chunked carrier access: design, invariants, file-backed backends, chunk size, memory claim, and web follow-up | [STREAMING-CARRIER-PLAN.md](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) |
-| Payload memory, verify-download flow, and deferred streaming work | [PAYLOAD-HANDLING.md](PAYLOAD-HANDLING.md) |
-| Planned payload-path APIs, streamed AES-GCM and Prehashed RSA-PSS, temporary-file lifecycle, and staged tests | [PAYLOAD-STREAMING-DESIGN.md](PAYLOAD-STREAMING-DESIGN.md) |
+| Chunked carrier access, file-backed payload uploads, staging cleanup, chunk size, memory claim, and web tests | [STREAMING-CARRIER-PLAN.md](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) |
+| Payload memory, verify-download flow, streaming web boundary, and plaintext-at-rest risk | [PAYLOAD-HANDLING.md](PAYLOAD-HANDLING.md) |
+| Implemented payload-path APIs, streamed AES-GCM and Prehashed RSA-PSS, temporary-file lifecycle, and tests | [PAYLOAD-STREAMING-DESIGN.md](PAYLOAD-STREAMING-DESIGN.md) |
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
 | Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
 | Active web integration status and verification flow | [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md), [DECODING-VERIFICATION.md](DECODING-VERIFICATION.md) |
@@ -39,11 +39,11 @@ Use this map before editing an unfamiliar part of the repository.
 | Carrier capacity and fixed-width protocol fields | [stego/layout.py](../stego/layout.py) |
 | Public `PngCarrier`, `WavCarrier`, WAV header reader, and PNG/WAV file adapters | [stego/media.py](../stego/media.py) |
 | Two-pass encode, receiver-gated verification over a carrier backend, and file wrappers | [stego/core.py](../stego/core.py) |
-| Flask application factory, disk-backed uploads, encode/decode routes, validated stego downloads, and `/payload/<id>` recovered-payload downloads; runtime files use `instance/stego-outputs` and `instance/recovered-payloads` | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
-| Flask-to-protocol-v3 byte/file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
+| Flask application factory, disk-backed carrier and payload uploads, streaming encode/verify routes, validated downloads, and `/payload/<id>` recovered-payload downloads; runtime files use `instance/stego-outputs` and `instance/recovered-payloads` | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
+| Flask-to-protocol-v3 streaming file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
 | Retained legacy web protocol | [payload_protocol.py](../payload_protocol.py) and legacy modules under [stego_web/services/](../stego_web/services/) |
-| FR1–FR12 demonstration notebook: verdict/fidelity evidence; file-backed PNG and WAV carrier demonstrations | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
+| FR1–FR12 demonstration notebook: verdict/fidelity evidence; file-backed PNG/WAV carriers and payload API demo | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol and chunked-carrier tests | [test_stego.py](../test_stego.py) |
 | Flask integration and legacy-protocol tests | [test_webapp.py](../test_webapp.py) and [test_payload_protocol.py](../test_payload_protocol.py) |
 | Runtime and test dependencies | [requirements.txt](../requirements.txt) |

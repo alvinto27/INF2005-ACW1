@@ -1,6 +1,6 @@
 # Streaming Carrier Plan
 
-**Status: library and web-boundary refactors implemented.** This record is the single source of truth for chunked carrier access and the removal of the whole-file WAV helpers and `MAX_WAV_FRAME_BYTES`. It supersedes the earlier deferred plan and [decision 14](LOCATION-CONFIDENTIALITY-PLAN.md#12-open-decisions) of the Location Confidentiality Plan.
+**Status: library, carrier web boundary, and payload-streaming refactors implemented.** This record is the single source of truth for chunked carrier access and the removal of the whole-file WAV helpers and `MAX_WAV_FRAME_BYTES`. It supersedes the earlier deferred plan and [decision 14](LOCATION-CONFIDENTIALITY-PLAN.md#12-open-decisions) of the Location Confidentiality Plan.
 
 The brief does not ask for this. It is an internal architecture change. It prepares a later video backend; video is not part of it.
 
@@ -167,10 +167,10 @@ This follow-up is complete. Carrier files move through the web boundary by path;
 | Area | Implemented behaviour |
 | --- | --- |
 | Request limit | `MAX_CONTENT_LENGTH = 256 MiB`, overridable through `create_app(test_config)`. |
-| Carrier uploads | Encode covers and decode stego files are saved from `FileStorage` to temporary files. Missing and empty uploads keep their existing errors. Key PEMs and payload files remain byte inputs. |
+| Carrier and payload uploads | Encode covers, payload files, and decode stego files are saved from `FileStorage` to request-scoped temporary files. Text messages are written to a small file. Missing and empty uploads keep their existing errors. Key PEMs remain byte inputs. |
 | Carrier detection and report size | `detect_carrier` reads only the first 12 file bytes. Verification reports use `stat().st_size`. WAV headers use `read_pcm_wav_info`. |
-| Encode output | `encode_png` and `encode_wav` write directly to `STEGO_OUTPUT_DIR` as `<token>.png` or `<token>.wav`. Failed encodes remove partial files. |
-| Response and download | Encode JSON returns `stego_url`, `filename`, and `mime_type`; it does not include stego bytes or base64. `GET /download/<id>.<ext>` checks the token and extension, then streams the file inline. An `Authentic` verify report returns `payload_url`; `GET /payload/<id>` serves the recovered bytes with MIME and browser safeguards. |
+| Encode output | `encode_png_from_payload_path` and `encode_wav_from_payload_path` stream payload files through the library and write directly to `STEGO_OUTPUT_DIR` as `<token>.png` or `<token>.wav`. Failed encodes remove partial files. |
+| Response and download | Encode JSON returns `stego_url`, `filename`, and `mime_type`; it does not include stego bytes or base64. `GET /download/<id>.<ext>` checks the token and extension, then streams the file inline. File-based verification publishes payload bytes only after `Authentic`; the route then writes the sidecar and returns `payload_url`. `GET /payload/<id>` serves the recovered file with MIME and browser safeguards. |
 | Stored-file lifetime | Stego files remain in `instance/stego-outputs`. Authenticated recovered payloads and small sidecars remain in `instance/recovered-payloads` with no expiry. Users delete them manually. Recovered payloads are plaintext on disk; see [Payload Handling](PAYLOAD-HANDLING.md#web-payload-flow). |
 | Browser caching | All responses retain `Cache-Control: no-store`. |
 
@@ -194,8 +194,8 @@ This follow-up is complete. Carrier files move through the web boundary by path;
 - large WAV round trips through the bounded file-backed path
 - memory that does not grow with the carrier size
 - the optional WAV test larger than 64 MiB
-- web tests for upload-to-disk, download URLs, strict identifiers, output retention, failed-encode cleanup, and the 256 MiB limit
-- an optional web round trip for a WAV larger than 32 MiB
+- web tests for carrier and payload uploads to disk, PNG/WAV payload round trips, incremental UTF-8 checks, staging-file URL protection and cleanup, strict identifiers, output retention, failed-encode cleanup, and the 256 MiB limit
+- optional web round trips for a WAV larger than 32 MiB and a 20 MiB uploaded payload in a WAV carrier
 
 The demonstration notebook uses `PngCarrier` and `WavCarrier` for carrier reads and rewrites. Pillow image arrays are used only to display cover, stego, and difference images.
 

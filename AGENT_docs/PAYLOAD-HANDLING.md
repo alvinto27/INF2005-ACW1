@@ -12,25 +12,24 @@ bytes, or verdict.
 
 ### Encode
 
-1. The caller supplies payload bytes. The encoder keeps these bytes in memory;
-   the carrier capacity check bounds their allowed size.
-2. The protocol serializes and encrypts the record, then signs the ciphertext
-   and builds the receiver bootstrap.
-3. The packet stays as packed bytes. During each carrier chunk, the encoder
-   reads only the overlapping packed bit range, expands that bounded range, and
-   writes it with the vectorized LSB operation. The bootstrap uses the same
-   packed-byte path.
-4. Alignment bits are written as zero. The packet is not expanded into one
-   byte per bit, and no second full packet-bit copy is made.
+The bytes API accepts payload bytes and keeps the caller's input in memory; the
+carrier capacity check bounds its allowed size. The file API gets payload size
+from the input file and reads it in bounded chunks. Both serialize and encrypt
+the same record, sign the ciphertext, and build the same receiver bootstrap.
+Packets stay packed. During each carrier chunk, the encoder reads only the
+overlapping packed bit range, expands that bounded range, and writes it with the
+vectorized LSB operation. Alignment bits are written as zero. No full
+byte-per-bit packet copy is made.
 
 ### Verify
 
 1. The decoder reads the bootstrap and recovers the packet geometry.
 2. It reads the packet footprint in bounded carrier-unit ranges. Each range is
-   extracted with vectorized operations and packed into the output byte buffer.
+   extracted with vectorized operations and packed into memory or file staging.
    The decoder checks that alignment padding is zero.
 3. The decoder verifies the signature before decrypting. It checks the media
-   hash last and returns payload bytes only for `Authentic`.
+   hash last. The bytes API releases payload bytes only for `Authentic`; the file
+   API atomically publishes only the authenticated payload file.
 
 The public `read_lsb_bits`, `write_lsb_bits`, and `lsb_range_transform` APIs keep
 their signatures and bit order. A partial last unit still leaves unfilled low
@@ -38,12 +37,27 @@ bits unchanged. The packed transform is internal.
 
 ## Web payload flow
 
-The encode upload remains a bounded byte input. After an `Authentic` result, the
-Flask route writes the recovered bytes to `PAYLOAD_OUTPUT_DIR`, which defaults to
-`instance/recovered-payloads`. The file name is `<token_urlsafe(16)>.bin`. A
-sidecar `<id>.json` stores only `download_name`, `serve_mime`, and
-`preview_allowed`. The verify JSON returns `payload_url`; it does not return
-Base64 payload bytes.
+The encode route saves an uploaded payload file to the request's private
+`TemporaryDirectory`; a UTF-8 message is written to a small temporary file. The
+service passes the path to the library's file API. The file API reads payload
+bytes in bounded chunks, so the web boundary does not make another complete
+payload copy. Key PEM uploads remain byte inputs.
+
+Verification also uses the file API. It writes unauthenticated plaintext only to
+a mode-0600 staging file inside a mode-0700 `.stego-staging-*` directory. After
+the signature, GCM tag, record parse, and full media hash all pass, it atomically
+publishes only the recovered payload to `PAYLOAD_OUTPUT_DIR`, which defaults to
+`instance/recovered-payloads`. A sidecar `<id>.json` stores only `download_name`,
+`serve_mime`, and `preview_allowed`; if sidecar creation fails, the payload file
+is removed. The verify JSON returns `payload_url`; it does not return Base64
+payload bytes.
+
+MIME sniffing reads only the first 12 payload bytes. For a `text/plain` claim,
+the service validates UTF-8 with a 64 KiB incremental decoder. Staging
+subdirectories do not match the download route's 22-character URL token, and a
+route test confirms staged files cannot be served. Normal verification exits
+remove staging. Power loss or `SIGKILL` can leave plaintext staging directories;
+stop the server and remove `.stego-staging-*` directories manually after a crash.
 
 `GET /payload/<id>` checks the same strict token format as the stego download
 route and requires both the payload and sidecar. It serves only an allowlisted
@@ -135,19 +149,12 @@ nonce material, the encoded files were not compared byte-for-byte. Instead,
 full carrier-unit reads and identity-rewrite PNG files matched exactly for both
 modes.
 
-## Deferred work
+## Payload streaming status
 
-These items were not implemented:
-
-- streamed AES-GCM encryption or decryption through temporary files;
-- prehashed signing;
-- embedding from a ciphertext file; and
-- streamed payload upload.
-
-They can be implemented without changing protocol version 3 bytes if they
-preserve the same serialized record, ciphertext, signing input, packet order,
-and verdict checks. They were deferred because payload size is bounded by
-carrier capacity and the current demonstration scale does not justify the extra
-file-management and failure-handling paths. The Flask payload upload remains a
-byte input. Verification still decrypts the payload in memory before it stores
-the authenticated bytes.
+The file APIs stream AES-GCM encryption and decryption, RSA-PSS prehashing,
+packet access, and payload parsing through private staging. The Flask routes now
+save payload uploads to request-scoped files and call those file APIs. The bytes
+APIs remain compatible and continue to return `bytes`; protocol version 3 bytes,
+verdict ordering, MIME rules, and payload availability only for `Authentic` are
+unchanged. See the [Payload Streaming Design](PAYLOAD-STREAMING-DESIGN.md) for
+the API and staging contract.

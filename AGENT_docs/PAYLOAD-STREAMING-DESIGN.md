@@ -1,8 +1,9 @@
 # Payload streaming design
 
-**Status: Stage 2 library and tests complete.** Stage 1 design was accepted
-with the staging-backend amendments below. Stage 3 covers the web application,
-notebook, and remaining documentation.
+**Status: Stages 1–3 complete.** The design, streaming library APIs, Flask
+integration, notebook demonstration, tests, and documentation are implemented.
+The approved staging-backend amendments and compatibility rules below remain the
+contract for future changes.
 
 ## Goal and fixed rules
 
@@ -187,7 +188,7 @@ reaches a caller, callback, or visible path at any point. On all failure
 verdicts, the requested output is not newly created or replaced. The web
 payload-download name pattern `[A-Za-z0-9_-]{22}` followed by `.bin`, `.png`, or
 `.wav` cannot match a `.stego-staging-*` directory or its temporary filenames.
-Stage 3 adds a web test that these directories are not served.
+The Stage 3 web tests confirm these directories are not served.
 
 ### Streaming record checks
 
@@ -339,26 +340,21 @@ The bytes APIs still hold their caller-owned input or successful returned bytes,
 but use the same streaming encryption, prehash, decryption, and parser code.
 Carrier pass counts and the order of the carrier hash do not change.
 
-## H. Stage 3 web plan
+## H. Stage 3 web integration (complete)
 
-- Save uploaded payload files to the request's private temporary directory in
-  `_payload_input`; return a path, size, MIME claim, and safe filename instead
-  of reading the complete upload into bytes. Text messages may use a small
-  in-memory reader.
-- Call the payload-path encode variants from
-  `CurrentProtocolService.encode`.
-- Call the payload-path verify variants with a random final name in
-  `PAYLOAD_OUTPUT_DIR`. The library publishes it only after `Authentic`; write
-  the JSON sidecar afterwards and remove the payload file if sidecar creation
-  fails.
-- Change `_sniff_payload_mime` to read only the first bytes of a file. Check a
-  `text/plain` UTF-8 body with an incremental UTF-8 decoder over bounded reads.
-- Keep the existing response shape, safe MIME rules, private filename policy,
-  `Cache-Control`, and browser security headers. No Base64 response is added.
-- Test that `.stego-staging-*` directories under `PAYLOAD_OUTPUT_DIR` do not
-  match the download route's `[A-Za-z0-9_-]{22}` name plus `.bin`, `.png`, or
-  `.wav` suffix and cannot be served. Add the crash-cleanup warning below to
-  the root `README.md`.
+- Encode uploads and text messages use request-scoped files and the payload-path
+  encode APIs. Key PEMs remain bounded byte inputs.
+- Verification calls the payload-path file APIs. The library publishes only the
+  authenticated payload; the route writes its JSON sidecar afterwards and
+  removes the payload if sidecar creation fails.
+- MIME sniffing reads at most 12 bytes. `text/plain` UTF-8 validation uses an
+  incremental decoder over 64 KiB reads.
+- The response shape, safe MIME rules, filename policy, `Cache-Control`, and
+  browser security headers remain unchanged. No Base64 response is added.
+- Tests cover PNG/WAV upload round trips, UTF-8 boundaries, staging path URL
+  protection and cleanup, plus an opt-in 20 MiB WAV payload round trip.
+- The notebook demonstrates file APIs. The root README documents the crash
+  cleanup step for leftover `.stego-staging-*` directories.
 
 ## I. Stage 2 test plan
 
@@ -407,18 +403,19 @@ peak. 64 MiB took 0.537 s with a 6.39 MiB peak. Both the 8 MiB and 64 MiB tests 
 `stego/layout.py`, `stego/carrier.py`, `stego/core.py`, `stego/__init__.py`,
 `test_stego.py`, and this note. Add no protocol version or wire-format change.
 
-**Stage 3 — web, notebook, and docs:** `stego_web/routes.py`, `README.md`,
-`stego_web/services/current_protocol.py`, `stego_web/static/app.js`,
-`stego_web/static/verify.js`, `notebooks/FR1-12 Prototype.ipynb`,
-`test_webapp.py`, `AGENT_docs/IMPLEMENTATION-STATUS.md`,
-`AGENT_docs/PAYLOAD-HANDLING.md`, and `AGENT_docs/STREAMING-CARRIER-PLAN.md`.
+**Stage 3 — web, notebook, and docs (complete):** `stego_web/routes.py`,
+`README.md`, `stego_web/services/current_protocol.py`,
+`notebooks/FR1-12 Prototype.ipynb`, `test_webapp.py`,
+`AGENT_docs/IMPLEMENTATION-STATUS.md`, `AGENT_docs/PAYLOAD-HANDLING.md`,
+and `AGENT_docs/STREAMING-CARRIER-PLAN.md`. No JavaScript changes were needed.
 
 **Risks:** GCM update emits plaintext before the tag is checked; private staging
 and delayed publication are mandatory. While the file API verifies,
 unauthenticated plaintext exists in a mode-0700 staging directory on disk. It is
-deleted on every exit path, but a power loss or `SIGKILL` can leave it. Delete
-`.stego-staging-*` directories manually after a crash. The design needs temporary
-disk space proportional to the encrypted and staged plaintext payload. A payload
+deleted on every normal exit path, but a power loss or `SIGKILL` can leave it.
+The root README instructs users to stop the server and manually delete
+`.stego-staging-*` directories after a crash. The design needs temporary disk
+space proportional to the encrypted and staged plaintext payload. A payload
 file that changes while it is read can produce a mixed input; size checks do not
 prevent a same-size change during a read. Prehashed PSS code must retain the
 exact digest and padding parameters. Atomic replacement requires the temporary

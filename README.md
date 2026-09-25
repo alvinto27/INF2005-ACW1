@@ -44,22 +44,29 @@ Encoding requires:
 5. a packet start unit at or after the 2,048-unit RSA-2048 bootstrap span; and
 6. an LSB count from 1 through 8.
 
-The server validates the inputs, constructs typed authenticated metadata, builds
-the full media hash, encrypts the complete payload record, signs the encrypted
-record and geometry, embeds the receiver bootstrap and packet, and returns the
-stego media plus the sender public key.
+The server validates the inputs, saves uploaded payload files to a private
+request-scoped temporary file (or writes a short message there), constructs typed
+authenticated metadata, builds the full media hash, encrypts and signs the payload
+record, embeds the receiver bootstrap and packet, and returns the stego media plus
+the sender public key. Payload bytes are processed in bounded chunks.
 
 Verification requires only the received stego file, the trusted sender public
 key, and the intended receiver private key/password. The receiver bootstrap
 recovers the start unit, LSB count, record length, and AES session material.
 The original cover and the previous shared start-location secret are not inputs.
 
-After an `Authentic` result, the server stores the recovered payload as a
-plaintext file in `instance/recovered-payloads` and returns a download URL. The
-browser previews text, PNG, JPEG, WAV, and MP3 only when the signed MIME claim
+After an `Authentic` result, the protocol writes only the recovered payload to a
+private temporary file, then publishes it in `instance/recovered-payloads` and
+returns a download URL. It checks MIME signatures and text UTF-8 in bounded reads.
+The browser previews text, PNG, JPEG, WAV, and MP3 only when the signed MIME claim
 agrees with the recovered bytes. The verify JSON returns a URL, not payload
 bytes. These recovered files stay without an expiry. Delete them manually. Anyone
 who can read the server's instance folder can read the recovered payloads.
+
+Payload verification uses temporary files under `.stego-staging-*` directories.
+Normal exits remove them. A power loss or `SIGKILL` can leave unauthenticated
+plaintext in these private directories. After a crash, stop the server and
+manually delete `.stego-staging-*` directories under the instance folder.
 
 The local server accepts requests up to 256 MiB. It stores encoded PNG and WAV
 files in `instance/stego-outputs` and returns a download URL instead of sending

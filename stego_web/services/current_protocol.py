@@ -1,5 +1,6 @@
 """Adapt the current masked-media protocol to byte-oriented Flask requests."""
 
+import codecs
 import mimetypes
 import re
 from dataclasses import dataclass
@@ -13,17 +14,18 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from stego import (
     PROTOCOL_VERSION,
     EmbeddingLayout,
+    PayloadFileRecord,
     PayloadRecord,
     VerificationResult,
-    encode_png,
-    encode_wav,
+    encode_png_from_payload_path,
+    encode_wav_from_payload_path,
     generate_rsa_keypair,
     PngCarrier,
     read_pcm_wav_info,
     max_user_payload_length,
     preserved_bit_count,
-    verify_png,
-    verify_wav,
+    verify_png_to_payload_path,
+    verify_wav_to_payload_path,
 )
 from stego.crypto import validate_rsa_private_key, validate_rsa_public_key
 from stego.packet import serialized_record_length
@@ -43,7 +45,7 @@ class WebEncodingResult:
 
     media_type: str
     layout: EmbeddingLayout
-    payload: PayloadRecord
+    payload: PayloadRecord | PayloadFileRecord
     sender_public_key_pem: bytes
     payload_capacity: int
     preserved_bits: int
@@ -59,7 +61,7 @@ class GeneratedKeyPair:
 
 
 class CurrentProtocolService:
-    """Bridge uploaded files and bounded payload bytes to protocol version 3."""
+    """Bridge uploaded files to the protocol version 3 file APIs."""
 
     def generate_key_pair(self, password: str) -> GeneratedKeyPair:
         """Generate one RSA-2048 pair with a password-protected private key."""
@@ -83,7 +85,7 @@ class CurrentProtocolService:
         receiver_public_key_pem: bytes,
         start_unit: int,
         lsb_count: int,
-        user_payload: bytes,
+        payload_path: Path,
         payload_mime: str,
         payload_name: str,
         team_id: str,
@@ -92,8 +94,6 @@ class CurrentProtocolService:
     ) -> WebEncodingResult:
         """Validate a file-backed cover and write its stego output to disk."""
         media_type, _ = self.detect_carrier(carrier_path)
-        if not isinstance(user_payload, bytes):
-            raise TypeError("user payload must be bytes")
         metadata = self._build_metadata(
             team_id,
             sender,
@@ -109,7 +109,11 @@ class CurrentProtocolService:
         receiver_public_key = self._load_public_key(
             receiver_public_key_pem, "receiver public key"
         )
-        encoder = encode_png if media_type == "image" else encode_wav
+        encoder = (
+            encode_png_from_payload_path
+            if media_type == "image"
+            else encode_wav_from_payload_path
+        )
         try:
             layout, payload = encoder(
                 carrier_path,
@@ -118,7 +122,7 @@ class CurrentProtocolService:
                 receiver_public_key,
                 start_unit,
                 lsb_count,
-                user_payload,
+                payload_path,
                 metadata,
             )
             record_overhead = serialized_record_length(
@@ -154,11 +158,12 @@ class CurrentProtocolService:
     def verify(
         self,
         carrier_path: Path,
+        payload_output_path: Path,
         sender_public_key_pem: bytes,
         receiver_private_key_pem: bytes,
         receiver_key_password: str,
-    ) -> tuple[dict[str, object], bytes | None]:
-        """Verify a carrier and return its report plus authenticated payload bytes."""
+    ) -> tuple[dict[str, object], Path | None]:
+        """Verify a carrier and write only an authenticated payload to a file."""
         file_size = carrier_path.stat().st_size
         try:
             media_type, _ = self.detect_carrier(carrier_path)
@@ -173,18 +178,24 @@ class CurrentProtocolService:
         except (OSError, TypeError, ValueError) as error:
             return self._failed_report(file_size, str(error)), None
 
-        verifier = verify_png if media_type == "image" else verify_wav
-        result = verifier(carrier_path, sender_public_key, receiver_private_key)
-        report = self._verification_report(result, media_type, file_size)
-        payload_bytes = (
-            result.payload.user_payload
-            if result.verdict == "Authentic" and result.payload is not None
-            else None
+        verifier = (
+            verify_png_to_payload_path
+            if media_type == "image"
+            else verify_wav_to_payload_path
         )
-        return report, payload_bytes
+        result = verifier(
+            carrier_path,
+            sender_public_key,
+            receiver_private_key,
+            payload_output_path,
+        )
+        report = self._verification_report(result, media_type, file_size)
+        return report, result.payload_path
 
     @staticmethod
-    def payload_record(payload: PayloadRecord) -> dict[str, object]:
+    def payload_record(
+        payload: PayloadRecord | PayloadFileRecord,
+    ) -> dict[str, object]:
         """Serialize safe payload-record fields for the encoding response."""
         return {
             "media_id": payload.media_id,
@@ -194,7 +205,7 @@ class CurrentProtocolService:
             ).isoformat(),
             "nonce": payload.nonce.hex(),
             "media_hash": payload.media_hash.hex(),
-            "user_payload_size": len(payload.user_payload),
+            "user_payload_size": payload.user_payload_size,
             "metadata": payload.metadata.decode("utf-8"),
         }
 
@@ -232,17 +243,25 @@ class CurrentProtocolService:
             "payload": None,
         }
         if result.payload is not None:
-            report["payload"] = self._verified_payload(result.payload)
+            report["payload"] = self._verified_payload(
+                result.payload, result.payload_path
+            )
         return report
 
-    def _verified_payload(self, payload: PayloadRecord) -> dict[str, object]:
+    def _verified_payload(
+        self,
+        payload: PayloadRecord | PayloadFileRecord,
+        payload_path: Path | None,
+    ) -> dict[str, object]:
         """Return authenticated payload data with guarded preview information."""
         raw_metadata = payload.metadata.decode("utf-8")
         metadata, metadata_valid = self._parse_metadata(raw_metadata)
         declared_mime = metadata.get("mime") if metadata_valid else None
         claimed_name = metadata.get("name") if metadata_valid else None
-        sniffed_mime = self._sniff_payload_mime(payload.user_payload)
-        type_agrees = self._type_agrees(declared_mime, sniffed_mime, payload.user_payload)
+        if payload_path is None:
+            raise ValueError("verified payload path is unavailable")
+        sniffed_mime = self._sniff_payload_mime(payload_path)
+        type_agrees = self._type_agrees(declared_mime, sniffed_mime, payload_path)
         safe_name = self.safe_filename(claimed_name or "recovered-payload.bin")
         preview_allowed = bool(
             type_agrees and declared_mime in _PREVIEW_MIME_TYPES
@@ -401,8 +420,10 @@ class CurrentProtocolService:
         return basename or "recovered-payload.bin"
 
     @staticmethod
-    def _sniff_payload_mime(payload: bytes) -> str | None:
-        """Recognize payload types whose magic bytes are checked before preview."""
+    def _sniff_payload_mime(payload_path: Path) -> str | None:
+        """Recognize payload types from a bounded prefix read."""
+        with payload_path.open("rb") as payload_file:
+            payload = payload_file.read(12)
         if payload.startswith(b"\x89PNG\r\n\x1a\n"):
             return "image/png"
         if payload.startswith(b"\xff\xd8\xff"):
@@ -419,9 +440,9 @@ class CurrentProtocolService:
 
     @staticmethod
     def _type_agrees(
-        declared: str | None, sniffed: str | None, payload: bytes
+        declared: str | None, sniffed: str | None, payload_path: Path
     ) -> bool:
-        """Check an authenticated MIME claim before the browser renders bytes."""
+        """Check an authenticated MIME claim using bounded payload reads."""
         if declared is None:
             return False
         if sniffed is not None:
@@ -429,8 +450,12 @@ class CurrentProtocolService:
         if declared in {"image/png", "image/jpeg", "audio/wav", "audio/mpeg", "application/pdf"}:
             return False
         if declared == "text/plain":
+            decoder = codecs.getincrementaldecoder("utf-8")()
             try:
-                payload.decode("utf-8")
+                with payload_path.open("rb") as payload_file:
+                    while chunk := payload_file.read(64 * 1024):
+                        decoder.decode(chunk)
+                    decoder.decode(b"", final=True)
             except UnicodeDecodeError:
                 return False
         return True

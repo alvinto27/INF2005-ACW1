@@ -18,6 +18,7 @@ from PIL import Image
 
 from stego import PROTOCOL_VERSION, generate_rsa_keypair
 from stego_web import create_app
+from stego_web.services.current_protocol import CurrentProtocolService
 
 
 PASSWORD = "test-password"
@@ -152,9 +153,13 @@ class WebApplicationTests(unittest.TestCase):
             data["payload_file"] = (io.BytesIO(payload[0]), payload[1])
         if payload_mime:
             data["payload_mime"] = payload_mime
-        return self.client.post(
+        response = self.client.post(
             "/encode", data=data, content_type="multipart/form-data"
         )
+        self.assertFalse(
+            any(path.name.startswith(".stego-staging-") for path in self.output_dir.iterdir())
+        )
+        return response
 
     def download_stego(self, encoded: dict[str, object]) -> bytes:
         """Fetch the carrier bytes from the API's download URL."""
@@ -199,6 +204,9 @@ class WebApplicationTests(unittest.TestCase):
                 "receiver_key_password": PASSWORD,
             },
             content_type="multipart/form-data",
+        )
+        self.assertFalse(
+            any(path.name.startswith(".stego-staging-") for path in self.payload_dir.iterdir())
         )
 
     def get_payload(self, payload: dict[str, object]) -> object:
@@ -276,6 +284,26 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(second_response.get_data(), b"authenticated message")
         self.assertEqual(len(list(self.payload_dir.glob("*.bin"))), 1)
         self.assertEqual(len(list(self.payload_dir.glob("*.json"))), 1)
+
+    def test_png_payload_file_upload_round_trip(self) -> None:
+        """PNG carrier uploads preserve an uploaded typed payload file."""
+        payload = b"\x89PNG\r\n\x1a\nsmall uploaded PNG payload"
+        encoded_response = self.encode(
+            sample_png(),
+            "cover.png",
+            payload=(payload, "image.png"),
+            payload_mime="image/png",
+        )
+        self.assertEqual(
+            encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
+        )
+        decoded = self.decode(encoded_response.get_json(), "stego.png")
+        self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertTrue(report["payload"]["preview_allowed"])
+        self.assertEqual(self.get_payload(report["payload"]).get_data(), payload)
+        self.assertFalse(any(path.name.startswith(".stego-staging-") for path in self.payload_dir.iterdir()))
 
     def test_rgba_png_web_round_trip_keeps_alpha_bytes(self) -> None:
         """The web flow encodes and verifies RGBA without changing alpha."""
@@ -493,6 +521,28 @@ class WebApplicationTests(unittest.TestCase):
             "default-src 'none'; img-src 'self'; media-src 'self'; sandbox",
         )
         self.assertIn("filename=assignment.pdf", response.headers["Content-Disposition"])
+
+    def test_payload_route_rejects_staging_directories_and_files(self) -> None:
+        """Private staging names and nested files cannot use payload download URLs."""
+        staging_dir = self.payload_dir / ".stego-staging-test"
+        staging_dir.mkdir()
+        payload_id = "A" * 22
+        (staging_dir / f"{payload_id}.bin").write_bytes(b"private staging bytes")
+        (staging_dir / f"{payload_id}.json").write_text("{}", encoding="utf-8")
+        for identifier in (staging_dir.name, payload_id):
+            with self.subTest(identifier=identifier):
+                response = self.client.get(f"/payload/{identifier}")
+                self.assertEqual(response.status_code, 404)
+
+    def test_incremental_utf8_check_handles_chunk_boundaries(self) -> None:
+        """Text validation accepts split UTF-8 characters and rejects bad bytes."""
+        service = CurrentProtocolService()
+        with tempfile.TemporaryDirectory(prefix="inf2005-utf8-test-") as temporary:
+            path = Path(temporary) / "payload.txt"
+            path.write_bytes(b"a" * (64 * 1024 - 1) + "é".encode("utf-8") + b"z")
+            self.assertTrue(service._type_agrees("text/plain", None, path))
+            path.write_bytes(b"a" * (64 * 1024) + b"\xff")
+            self.assertFalse(service._type_agrees("text/plain", None, path))
 
     def test_payload_route_rejects_invalid_and_missing_ids(self) -> None:
         """Invalid tokens and absent sidecars return JSON 404 responses."""
@@ -717,6 +767,47 @@ class WebApplicationTests(unittest.TestCase):
         report = decoded.get_json()
         self.assertEqual(report["verdict"], "Authentic")
         self.assertGreater(report["file_size"], 32 * 1024 * 1024)
+
+    @unittest.skipUnless(
+        os.environ.get("STEGO_LARGE_WAV_TEST") == "1",
+        "set STEGO_LARGE_WAV_TEST=1 to run the 20 MiB WAV payload round trip",
+    )
+    def test_large_wav_payload_upload_streams_to_recovered_file(self) -> None:
+        """A large uploaded payload round-trips through WAV file APIs."""
+        payload_size = 20 * 1024 * 1024
+        frame_count = 22 * 1024 * 1024
+        cover_stream = io.BytesIO()
+        with wave.open(cover_stream, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(1)
+            wav_file.setframerate(8000)
+            wav_file.writeframes(b"\x80" * frame_count)
+        payload = b"x" * payload_size
+        response = self.client.post(
+            "/encode",
+            data={
+                "cover": (io.BytesIO(cover_stream.getvalue()), "cover.wav"),
+                "payload_file": (io.BytesIO(payload), "large.txt"),
+                "payload_mime": "text/plain",
+                "sender_private_key": (io.BytesIO(self.sender_private_pem), "sender.pem"),
+                "sender_key_password": PASSWORD,
+                "receiver_public_key": (io.BytesIO(self.receiver_public_pem), "receiver.pem"),
+                "team_id": "P1-4",
+                "sender": "Test User",
+                "start_unit": "2048",
+                "lsb_bits": "8",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        decoded = self.decode(response.get_json(), "large-stego.wav")
+        self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertEqual(report["payload"]["user_payload_size"], payload_size)
+        payload_response = self.get_payload(report["payload"])
+        self.assertEqual(payload_response.get_data(), payload)
+        self.assertFalse(any(path.name.startswith(".stego-staging-") for path in self.payload_dir.iterdir()))
 
     def test_upload_limit_returns_json(self) -> None:
         """The default is 256 MiB and test apps can override the limit."""

@@ -28,8 +28,8 @@ the legacy `STG1` encoding and verification pipelines.
 1. `run.py` calls `stego_web.create_app()` and serves the retained seven-card GUI.
 2. `/encode` accepts a strict cover, raw message/file payload, sender private key
    and password, receiver public key, explicit start unit, and LSB count.
-3. Flask saves the cover upload to a request-scoped temporary file. Key PEMs and
-   the payload file remain bounded byte inputs.
+3. Flask saves the cover and uploaded payload to request-scoped temporary files.
+   A text message is written to a small temporary file. Key PEMs remain byte inputs.
 4. `CurrentProtocolService` detects the carrier from its first 12 bytes, loads both
    RSA key roles, and builds delimiter-checked typed metadata.
 5. `stego.encode_png` or `stego.encode_wav` calculates geometry and full media
@@ -40,12 +40,14 @@ the legacy `STG1` encoding and verification pipelines.
    It does not return stego bytes or either private key.
 7. `GET /download/<id>.<ext>` validates the generated token and PNG/WAV extension,
    then sends the stored file inline for browser preview or download.
-8. `/decode` saves the stego upload to a temporary file. `stego.verify_png` or
-   `stego.verify_wav` opens one receiver bootstrap, verifies the signature,
-   decrypts and parses the record, and checks the v3 full media hash.
-9. The report uses the file's stat size. An `Authentic` result stores the
-   decrypted payload in `instance/recovered-payloads` and returns `payload_url`.
-   The JSON does not include payload bytes or Base64 data.
+8. `/decode` saves the stego upload to a temporary file. The payload-path
+   `stego.verify_png_to_payload_path` or `stego.verify_wav_to_payload_path` API
+   opens one receiver bootstrap, verifies the signature, decrypts and parses the
+   record, and checks the v3 full media hash.
+9. The report uses the file's stat size. Only after `Authentic`, the library
+   atomically publishes the recovered payload in `instance/recovered-payloads`;
+   the route writes a sidecar and returns `payload_url`. The JSON does not include
+   payload bytes or Base64 data. MIME sniffing and UTF-8 checks use bounded reads.
 10. `GET /payload/<id>` serves the stored payload with a safe MIME type,
     download name, and browser security headers. Temporary upload files are
     removed after each request. Stego and recovered payload files remain without
@@ -63,15 +65,18 @@ including 404, 405, and 413. The browser shows the JSON error text.
 
 ## Carrier size
 
-The library reads WAV carriers in bounded chunks. The 64 MiB whole-file WAV cap
-and whole-file loader have been removed. Flask accepts requests up to 256 MiB,
-which can be changed through `create_app(test_config)`. Carrier uploads go to
-request-scoped temporary files. Encoded carriers are written to
-`instance/stego-outputs` and served through `stego_url`; files stay there with no
-expiry until the user deletes them. The output is not returned as base64. Verified
-payloads are stored as plaintext files in `instance/recovered-payloads` and
-served through `payload_url`; these files also stay until manual deletion. WAV
-headers are checked with `read_pcm_wav_info`, and verify reports use the file
+The library reads WAV carriers and payload files in bounded chunks. The 64 MiB
+whole-file WAV cap and whole-file loader have been removed. Flask accepts requests
+up to 256 MiB, which can be changed through `create_app(test_config)`. Carrier
+and payload uploads go to request-scoped temporary files. Encoded carriers are
+written to `instance/stego-outputs` and served through `stego_url`; files stay
+there with no expiry until the user deletes them. The output is not returned as
+base64. Verified payloads are stored as plaintext files in
+`instance/recovered-payloads` and served through `payload_url`; these files also
+stay until manual deletion. Verification uses private `.stego-staging-*`
+directories for temporary ciphertext and unauthenticated plaintext. Normal exits
+remove them; a crash or `SIGKILL` can leave them and requires manual cleanup.
+WAV headers are checked with `read_pcm_wav_info`, and verify reports use the file
 size from `stat()`. Pillow still decodes each PNG into a full image array, so PNG
 working memory grows with image dimensions. An image above Pillow's configured
 error threshold returns a clear size error. See the
