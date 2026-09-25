@@ -857,7 +857,7 @@ class TestMaskedStego(unittest.TestCase):
         removed_names = {
             "ArrayCarrier", "encode_carrier", "decode_carrier",
             "calculate_masked_media_hash", "rgb_array_to_carrier",
-            "carrier_to_rgb_array", "load_png_from_path", "save_rgb_png_to_path",
+            "load_png_from_path",
             "encode_png_media_context", "encode_wav_media_context",
             "WavPcmData", "load_pcm_wav_from_path", "wav_frame_bytes_to_carrier",
             "wav_data_with_carrier", "save_pcm_wav_to_path", "MAX_WAV_FRAME_BYTES",

@@ -288,12 +288,14 @@ class WebApplicationTests(unittest.TestCase):
     def test_png_payload_file_upload_round_trip(self) -> None:
         """PNG carrier uploads preserve an uploaded typed payload file."""
         payload = b"\x89PNG\r\n\x1a\nsmall uploaded PNG payload"
-        encoded_response = self.encode(
-            sample_png(),
-            "cover.png",
-            payload=(payload, "image.png"),
-            payload_mime="image/png",
-        )
+        with patch("stego.media.Image.open", wraps=Image.open) as png_open:
+            encoded_response = self.encode(
+                sample_png(),
+                "cover.png",
+                payload=(payload, "image.png"),
+                payload_mime="image/png",
+            )
+        png_open.assert_called_once()
         self.assertEqual(
             encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
         )
@@ -339,6 +341,33 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "Cannot Verify")
         self.assertEqual(report["message"], detail)
         self.assertEqual(report["frame_version"], PROTOCOL_VERSION)
+
+    def test_invalid_carrier_error_precedes_invalid_sender_key(self) -> None:
+        """Validate a PNG carrier before reporting an invalid sender key."""
+        response = self.client.post(
+            "/encode",
+            data={
+                "cover": (io.BytesIO(sample_palette_png()), "palette.png"),
+                "sender_private_key": (io.BytesIO(b"not a private key"), "sender.pem"),
+                "sender_key_password": PASSWORD,
+                "receiver_public_key": (
+                    io.BytesIO(self.receiver_public_pem),
+                    "receiver.pem",
+                ),
+                "team_id": "P1-4",
+                "sender": "Test User",
+                "secret_message": "authenticated message",
+                "metadata": "project=verification;sequence=1",
+                "start_unit": "2048",
+                "lsb_bits": "1",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "PNG must be RGB or RGBA; palette and grayscale images are not supported",
+        )
 
     def test_oversized_png_errors_reach_encode_and_verify(self) -> None:
         """Pillow's bomb error becomes a clear encode error and verify report."""

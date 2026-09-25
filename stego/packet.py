@@ -147,14 +147,6 @@ def serialize_payload(record: PayloadRecord) -> bytes:
     return validate_payload_bytes(prefix + record.user_payload + suffix)
 
 
-def _take_payload_field(payload_bytes: bytes, offset: int, length: int, name: str) -> tuple[bytes, int]:
-    """Take one checked field from payload bytes and return where the next field starts."""
-    end = offset + length
-    if end > len(payload_bytes):
-        raise ValueError(f"payload is truncated in {name}")
-    return payload_bytes[offset:end], end
-
-
 def parse_payload_from_reader(
     payload_size: int,
     read_range: Callable[[int, int], bytes],

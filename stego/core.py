@@ -639,13 +639,6 @@ def _prepare_carrier_encoding(
 
 def prepare_carrier_encoding(source: CarrierSource, media_code: int, media_context: bytes, signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> CarrierEncoding:
     """Prepare an in-memory streamed encoding for a bytes payload."""
-    source = _validate_carrier_source(source)
-    media_code = _validate_media_code(media_code)
-    media_context = _require_bytes(media_context, "media_context")
-    signing_private_key = validate_rsa_private_key(signing_private_key)
-    receiver_public_key = validate_rsa_public_key(receiver_public_key)
-    start_unit = _validate_non_negative_integer(start_unit, "start_unit")
-    lsb_count = _validate_lsb_count(lsb_count)
     user_payload = _require_bytes(user_payload, "user_payload")
     metadata = _require_bytes(metadata, "metadata")
     payload = user_payload
@@ -1078,13 +1071,30 @@ def _encode_file_from_payload_path(
             encoding.close()
 
 
-def encode_png_from_payload_path(input_path: str | bytes | PathLike[str], output_path: str | bytes | PathLike[str], signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, payload_path: str | bytes | PathLike[str], metadata: bytes) -> tuple[EmbeddingLayout, PayloadFileRecord]:
-    """Stream a payload file into an RGB or RGBA PNG carrier."""
+def encode_png_from_payload_path(
+    input_path: str | bytes | PathLike[str],
+    output_path: str | bytes | PathLike[str],
+    signing_private_key: rsa.RSAPrivateKey,
+    receiver_public_key: rsa.RSAPublicKey,
+    start_unit: int,
+    lsb_count: int,
+    payload_path: str | bytes | PathLike[str],
+    metadata: bytes,
+    *,
+    carrier_source: PngCarrier | None = None,
+) -> tuple[EmbeddingLayout, PayloadFileRecord]:
+    """Stream a payload file into a PNG, optionally reusing its validated source."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
+    if carrier_source is not None:
+        if not isinstance(carrier_source, PngCarrier):
+            raise TypeError("carrier_source must be a PngCarrier")
+        if not _paths_resolve_same(carrier_source.path, input_path):
+            raise ValueError("carrier_source must be loaded from input_path")
+    source = carrier_source if carrier_source is not None else PngCarrier(input_path)
     return _encode_file_from_payload_path(
-        PngCarrier(input_path), output_path, signing_private_key,
-        receiver_public_key, start_unit, lsb_count, payload_path, metadata,
+        source, output_path, signing_private_key, receiver_public_key,
+        start_unit, lsb_count, payload_path, metadata,
     )
 
 

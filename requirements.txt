@@ -1,8 +1,6 @@
 # Runtime and test dependencies for the Flask application and both protocol implementations.
-asttokens==3.0.2
 Flask==3.1.2
 cffi==2.1.1
-comm==0.2.3
 cryptography==50.0.1
 numpy==2.5.3
 pillow==12.3.0

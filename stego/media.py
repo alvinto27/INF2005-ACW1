@@ -156,20 +156,6 @@ def rgb_array_to_carrier(image_array: np.ndarray) -> np.ndarray:
     ).reshape(-1)
 
 
-def carrier_to_rgb_array(carrier_sequence: np.ndarray, shape: tuple[int, int, int]) -> np.ndarray:
-    """Reshape carrier units into a copy with the given RGB image shape."""
-    carrier_sequence = _validate_carrier_units(carrier_sequence)
-    try:
-        shape = tuple(shape)
-    except TypeError as error:
-        raise TypeError("shape must be a three-dimensional sequence") from error
-    if len(shape) != 3 or shape[2] != RGB_CHANNEL_COUNT or any(not isinstance(value, (int, np.integer)) or value < 1 for value in shape):
-        raise ValueError("shape must contain positive (height, width, 3) dimensions")
-    if carrier_sequence.size != int(np.prod(shape, dtype=np.int64)):
-        raise ValueError("carrier_sequence length does not match shape")
-    return carrier_sequence.copy().reshape(shape)
-
-
 def encode_png_media_context(image_shape: tuple[int, int, int], carrier_unit_count: int | None = None) -> bytes:
     """Make the PNG context that binds width, height, and channel count."""
     try:
@@ -195,14 +181,6 @@ def _save_png_array_to_path(image_array: np.ndarray, output_path: str | bytes | 
         raise ValueError("could not save PNG") from error
 
 
-def save_rgb_png_to_path(image_array: np.ndarray, output_path: str | bytes | PathLike[str]) -> None:
-    """Save an RGB image array as a PNG file."""
-    image_array = _validate_png_array(image_array)
-    if image_array.shape[2] != RGB_CHANNEL_COUNT:
-        raise ValueError("image_array must have shape (height, width, 3)")
-    _save_png_array_to_path(image_array, output_path)
-
-
 class PngCarrier(CarrierSource):
     """Read an RGB or RGBA PNG through bounded RGB carrier-unit chunks.
 
@@ -215,6 +193,7 @@ class PngCarrier(CarrierSource):
     def __init__(self, path: str | bytes | PathLike[str], chunk_units: int = DEFAULT_CHUNK_BYTES) -> None:
         """Load one PNG into a single backing buffer, then choose the chunk size."""
         chunk_units = _validate_positive_integer(chunk_units, "chunk_units")
+        self._path = path
         pixels, self._shape = _load_png_buffer_from_path(path)
         self._channel_count = self._shape[2]
         self._pixels = np.frombuffer(pixels, dtype=np.uint8).reshape(self._shape)
@@ -230,6 +209,11 @@ class PngCarrier(CarrierSource):
         self._media_context = encode_png_media_context(
             self._shape, self._total_units
         )
+
+    @property
+    def path(self) -> str | bytes | PathLike[str]:
+        """Return the path used to load this PNG carrier."""
+        return self._path
 
     @property
     def total_units(self) -> int:

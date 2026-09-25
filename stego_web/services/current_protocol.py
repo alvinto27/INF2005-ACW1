@@ -101,30 +101,41 @@ class CurrentProtocolService:
             payload_name,
             extra_metadata,
         )
-        validator = PngCarrier if media_type == "image" else read_pcm_wav_info
-        validator(carrier_path)
+        png_source: PngCarrier | None = None
+        if media_type == "image":
+            png_source = PngCarrier(carrier_path)
+        else:
+            read_pcm_wav_info(carrier_path)
         sender_private_key = self._load_private_key(
             sender_private_key_pem, sender_key_password, "sender private key"
         )
         receiver_public_key = self._load_public_key(
             receiver_public_key_pem, "receiver public key"
         )
-        encoder = (
-            encode_png_from_payload_path
-            if media_type == "image"
-            else encode_wav_from_payload_path
-        )
         try:
-            layout, payload = encoder(
-                carrier_path,
-                output_path,
-                sender_private_key,
-                receiver_public_key,
-                start_unit,
-                lsb_count,
-                payload_path,
-                metadata,
-            )
+            if png_source is not None:
+                layout, payload = encode_png_from_payload_path(
+                    carrier_path,
+                    output_path,
+                    sender_private_key,
+                    receiver_public_key,
+                    start_unit,
+                    lsb_count,
+                    payload_path,
+                    metadata,
+                    carrier_source=png_source,
+                )
+            else:
+                layout, payload = encode_wav_from_payload_path(
+                    carrier_path,
+                    output_path,
+                    sender_private_key,
+                    receiver_public_key,
+                    start_unit,
+                    lsb_count,
+                    payload_path,
+                    metadata,
+                )
             record_overhead = serialized_record_length(
                 len(payload.media_id.encode("utf-8")), 0, len(metadata)
             )
