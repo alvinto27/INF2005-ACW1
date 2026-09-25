@@ -23,13 +23,35 @@ The adapter calls `stego.encode_png_from_payload_path` or `stego.encode_wav_from
 
 The request does not include media type, LSB count, start unit, record length, a shared location secret, or the original cover. The bootstrap supplies geometry and AES session material. Flask stores the upload in a temporary file and calls `verify_png_to_payload_path` or `verify_wav_to_payload_path`.
 
-Missing or invalid request fields return HTTP 400. An unreadable receiver bootstrap returns `Payload Missing` with HTTP 422. Oversized uploads return HTTP 413. Processed verification outcomes use HTTP 200; callers must inspect the JSON verdict. A readable version 2 bootstrap returns `Cannot Verify` with detail `unsupported bootstrap version`; the decoder does not retry with an older format.
+The route uses these HTTP status codes:
+
+| Condition | HTTP status | Body |
+| --- | --- | --- |
+| A required upload or form field is missing or empty, or the upload cannot be saved | 400 | `ok`, `error`, and verdict `Cannot Verify`; no report fields |
+| All fields are present, but the service cannot use them: the carrier is not PNG or WAV, the PNG or WAV is not a supported format, the sender public key cannot be read, or the receiver private key cannot be opened with the password | 200 | Full report with verdict `Cannot Verify` |
+| The receiver private key cannot open the bootstrap | 422 | Full report with verdict `Payload Missing` |
+| Verification completes with any other verdict | 200 | Full report; callers must read the verdict |
+| The upload is larger than the request limit | 413 | JSON error |
+
+A readable version 2 bootstrap returns `Cannot Verify` with detail `unsupported bootstrap version`; the decoder does not retry with an older format.
 
 Verification reads the bootstrap, validates recovered fields and bounds, reads the packet at that location, checks padding, verifies RSA-PSS before decryption, opens AES-GCM, parses the record, and checks the v3 media hash last. It reads one bootstrap and does not search for alternative packets. Cryptographic and integrity decisions remain in `stego/core.py`; Flask validates inputs and serializes the result.
 
 ## Result and payload handling
 
-Reports include verdict and detail, carrier type and size, protocol version, recovered start unit and LSB count, signature and integrity state, sender-key fingerprint, preserved-bit count and ratio, and authenticated record fields. `null` means a check was not performed; it differs from `false`.
+Reports include verdict and detail, carrier type and size, protocol version, recovered start unit and LSB count, signature and integrity state, sender-key fingerprint, preserved-bit count and ratio, and authenticated record fields.
+
+A `null` field means that verification did not reach that step or did not recover that value. `null` differs from `false`. When a later step fails, the fields that verification recovered before the failure stay set:
+
+| Field | Set when |
+| --- | --- |
+| `frame_version` | The receiver private key opened the bootstrap. The value is the version byte read from the received bootstrap, not the version of this application. A readable version 2 bootstrap gives `2`. |
+| `start_location`, `lsb_bits` | The bootstrap was opened and its fields were valid. |
+| `preserved_bits`, `preserved_ratio` | The recovered geometry fits the carrier. `Wrong Start Location` leaves them `null`. |
+| `sender_key_fingerprint` | The service loaded the supplied sender public key and called the library. It identifies the supplied key, not a recovered value. |
+| `payload` | The verdict is `Authentic`. Other verdicts never give payload fields, a payload file, or a `payload_url`. |
+
+For example, `Signature Invalid`, `Cannot Decrypt`, and `Tampered` keep `frame_version` 3, the start location, the LSB count, and the preserved bits. `Payload Missing` and the 400 and service-level `Cannot Verify` responses have `frame_version` `null`. The browser shows the bootstrap as opened only when `frame_version` is not `null`.
 
 Only an `Authentic` result includes `payload_url` and parsed typed metadata. The library atomically publishes authenticated payload bytes to `instance/recovered-payloads`; the route writes a small sidecar containing `download_name`, `serve_mime`, and `preview_allowed`. If sidecar creation fails, the payload is removed. The response contains a URL, not payload bytes or Base64.
 
@@ -39,7 +61,7 @@ The service recognizes PNG, JPEG, WAV, MP3, and PDF magic. It allows inline prev
 
 ## Errors and storage
 
-Carrier and form validation errors return JSON with HTTP 400. Processed verification failures use the protocol verdict and HTTP 200, except the unreadable-bootstrap case above. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
+For `POST /encode`, carrier and form validation errors return JSON with HTTP 400. For `POST /decode`, the status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
 
 The whole-request limit is `MAX_CONTENT_LENGTH = 256 MiB`; `create_app(test_config)` can override it. Upload files are deleted when the request ends. Encoded carriers and recovered payloads remain in their output directories until users delete them. Private `.stego-staging-*` directories are removed on normal exits. Power loss or `SIGKILL` can leave unauthenticated plaintext staging; stop the server and remove these directories manually after a crash. See [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#cleanup-rule).
 

@@ -1,5 +1,7 @@
 # KISS Reduction Specification
 
+> **Historical decision record.** Implementation-status statements here are superseded; see [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) and [Current Protocol](CURRENT-PROTOCOL.md).
+
 ## Purpose
 
 This record defines the agreed reduction scope after reviewing the current protocol against the INF2005 ACW1 brief. It is not a protocol redesign. The goal is to remove infrastructure that is more general than the assignment or the anticipated video extension requires, while preserving security behaviour that exists for a concrete requirement or attack model.

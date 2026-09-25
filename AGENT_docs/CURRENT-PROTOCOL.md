@@ -103,7 +103,7 @@ Protocol version 3 encrypts the complete payload record, including `user_payload
 kind=png;flow=typed-content;mime=image/png;name=generated.png
 ```
 
-This is not a new wrapper. Entries use `;` and key/value pairs use `=`. MIME and filename values cannot contain either delimiter because the convention has no escaping. The receiver treats the declared MIME as a claim: it sniffs the recovered bytes, compares known magic bytes with the claim, rejects unsafe names, and selects a handler only after validation. The function that writes a file derives a safe name itself. Recognised magic types are PNG, JPEG, WAV, and PDF. The handler saves unknown or mismatched types without rendering them.
+This is not a new wrapper. Entries use `;` and key/value pairs use `=`. MIME and filename values cannot contain either delimiter because the convention has no escaping. Web MIME sniffing, validation, preview, and safe file handling are described in the [Web Application Guide](WEB-APPLICATION-GUIDE.md#result-and-payload-handling).
 
 ## Payload discovery
 

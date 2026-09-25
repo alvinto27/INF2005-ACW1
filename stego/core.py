@@ -725,11 +725,54 @@ class VerificationResult:
     preserved_bits: int | None
     preserved_ratio: float | None
     payload_path: Path | None = None
+    protocol_version: int | None = None
 
 
-def _failure_result(verdict: str, detail: str) -> VerificationResult:
-    """Make a failed verification result without a payload."""
-    return VerificationResult(False, verdict, detail, None, None, None, None, None, None)
+@dataclass
+class _VerificationContext:
+    """Hold verification fields as the decoder recovers them."""
+
+    protocol_version: int | None = None
+    start_unit: int | None = None
+    lsb_count: int | None = None
+    preserved_bits: int | None = None
+    preserved_ratio: float | None = None
+    sender_key_fingerprint: str | None = None
+
+
+def _failure_result(
+    verdict: str,
+    detail: str,
+    context: _VerificationContext | None = None,
+) -> VerificationResult:
+    """Make a failed result that keeps known context but never payload data."""
+    known = context or _VerificationContext()
+    return VerificationResult(
+        False,
+        verdict,
+        detail,
+        None,
+        known.sender_key_fingerprint,
+        known.start_unit,
+        known.lsb_count,
+        known.preserved_bits,
+        known.preserved_ratio,
+        None,
+        known.protocol_version,
+    )
+
+
+def _context_for_sender_key(
+    sender_public_key: rsa.RSAPublicKey,
+) -> _VerificationContext:
+    """Return the sender fingerprint when the supplied key is valid."""
+    context = _VerificationContext()
+    try:
+        valid_key = validate_rsa_public_key(sender_public_key)
+    except (TypeError, ValueError):
+        return context
+    context.sender_key_fingerprint = display_rsa_public_key_fingerprint(valid_key)
+    return context
 
 
 def _stream_decrypt(
@@ -770,6 +813,9 @@ def _decode_carrier_source(
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
     sender_public_key = validate_rsa_public_key(sender_public_key)
+    context = _VerificationContext(
+        sender_key_fingerprint=display_rsa_public_key_fingerprint(sender_public_key)
+    )
     receiver_private_key = validate_rsa_private_key(receiver_private_key)
     total_units = _validate_non_negative_integer(source.total_units, "total_units")
     span = bootstrap_span(receiver_private_key)
@@ -780,24 +826,35 @@ def _decode_carrier_source(
         envelope_bits = read_lsb_bits(bootstrap_units, span, BOOTSTRAP_LSB_COUNT)
         envelope = bit_sequence_to_bytes(envelope_bits)
     except (ValueError, OSError) as error:
-        return _failure_result("Cannot Verify", str(error))
+        return _failure_result("Cannot Verify", str(error), context)
     try:
         bootstrap_plaintext = open_with_private_key(envelope, receiver_private_key)
     except ValueError:
         return _failure_result(
             "Payload Missing",
             "nothing was readable with the supplied receiver private key",
+            context,
         )
+    # Keep only the version byte before validation; other raw bytes can have
+    # a different meaning in another version or in a malformed bootstrap.
+    if bootstrap_plaintext:
+        context.protocol_version = bootstrap_plaintext[0]
     try:
         fields = parse_bootstrap(bootstrap_plaintext)
     except ValueError as error:
-        return _failure_result("Cannot Verify", str(error))
+        return _failure_result("Cannot Verify", str(error), context)
+    context.protocol_version = fields.version
+    context.start_unit = fields.start_unit
+    context.lsb_count = fields.lsb_count
     if fields.ciphertext_length < GCM_TAG_SIZE:
-        return _failure_result("Cannot Verify", "ciphertext_length must include a 16-byte GCM tag")
+        return _failure_result(
+            "Cannot Verify", "ciphertext_length must include a 16-byte GCM tag", context
+        )
     if fields.start_unit < span:
         return _failure_result(
             "Wrong Start Location",
             f"start_unit {fields.start_unit} is below bootstrap_span {span}",
+            context,
         )
     try:
         layout = build_embedding_layout(
@@ -808,8 +865,18 @@ def _decode_carrier_source(
             span,
         )
     except ValueError as error:
-        return _failure_result("Wrong Start Location", str(error))
+        return _failure_result("Wrong Start Location", str(error), context)
 
+    context.preserved_bits = preserved_bit_count(
+        layout.total_units,
+        layout.footprint,
+        layout.lsb_count,
+        layout.bootstrap_span,
+    )
+    total_bits = layout.total_units * 8
+    context.preserved_ratio = (
+        context.preserved_bits / total_bits if total_bits else 0.0
+    )
     ciphertext = session.new_store("ciphertext")
     signature_buffer = bytearray()
     signing_hasher = hashes.Hash(hashes.SHA256())
@@ -840,7 +907,9 @@ def _decode_carrier_source(
                     chunk_bits.size, packet_bits_length - packet_bit_offset
                 )
                 if np.any(chunk_bits[packet_bit_count:] != 0):
-                    return _failure_result("Cannot Verify", "alignment padding must be zero")
+                    return _failure_result(
+                        "Cannot Verify", "alignment padding must be zero", context
+                    )
                 packet_chunk = np.packbits(
                     chunk_bits[:packet_bit_count], bitorder="big"
                 ).tobytes()
@@ -854,11 +923,13 @@ def _decode_carrier_source(
                 signature_buffer.extend(packet_chunk[ciphertext_count:])
             packet_bit_offset += packet_bit_count
     except (ValueError, OSError) as error:
-        return _failure_result("Cannot Verify", str(error))
+        return _failure_result("Cannot Verify", str(error), context)
 
     signature = bytes(signature_buffer)
     if not _verify_digest(signing_hasher.finalize(), signature, sender_public_key):
-        return _failure_result("Signature Invalid", "RSA-PSS signature verification failed")
+        return _failure_result(
+            "Signature Invalid", "RSA-PSS signature verification failed", context
+        )
 
     plaintext = session.new_store("plaintext")
     try:
@@ -873,30 +944,27 @@ def _decode_carrier_source(
         return _failure_result(
             "Cannot Decrypt",
             "signature verified but the AES-GCM tag rejected the body",
+            context,
         )
     try:
         payload, user_payload_offset = parse_payload_from_reader(
             plaintext.size, plaintext.read_range
         )
     except (ValueError, OSError) as error:
-        return _failure_result("Cannot Verify", str(error))
+        return _failure_result("Cannot Verify", str(error), context)
     try:
         calculated_hash = _hash_carrier_source(source, media_code, layout)
     except (ValueError, OSError) as error:
         return _failure_result(
-            "Cannot Verify", f"carrier could not be read for the masked media hash: {error}"
+            "Cannot Verify",
+            f"carrier could not be read for the masked media hash: {error}",
+            context,
         )
     if calculated_hash != payload.media_hash:
-        return _failure_result("Tampered", "masked media hash mismatch")
+        return _failure_result("Tampered", "masked media hash mismatch", context)
 
-    preserved_bits = preserved_bit_count(
-        layout.total_units,
-        layout.footprint,
-        layout.lsb_count,
-        layout.bootstrap_span,
-    )
-    total_bits = layout.total_units * 8
-    ratio = preserved_bits / total_bits if total_bits else 0.0
+    preserved_bits = context.preserved_bits
+    ratio = context.preserved_ratio
     if payload_output_path is None:
         user_payload = plaintext.release(
             offset=user_payload_offset, length=payload.user_payload_size
@@ -928,12 +996,13 @@ def _decode_carrier_source(
         "Authentic",
         "signature and masked media hash are valid under the supplied public key",
         released_payload,
-        display_rsa_public_key_fingerprint(sender_public_key),
+        context.sender_key_fingerprint,
         layout.start_unit,
         layout.lsb_count,
         preserved_bits,
         ratio,
         released_path,
+        context.protocol_version,
     )
 
 
@@ -983,6 +1052,9 @@ def encode_png(input_path: str | bytes | PathLike[str], output_path: str | bytes
         source.rewrite_to_path(output_path, encoding.embed_chunk, encoding.update_fixed_bytes)
         encoding.finish()
         return encoding.layout, encoding.payload
+    except BaseException:
+        _remove_incomplete_output(output_path)
+        raise
     finally:
         encoding.close()
 
@@ -992,7 +1064,9 @@ def verify_png(input_path: str | bytes | PathLike[str], sender_public_key: rsa.R
     try:
         source = PngCarrier(input_path)
     except (OSError, ValueError, UnSupportedFileType) as error:
-        return _failure_result("Cannot Verify", str(error))
+        return _failure_result(
+            "Cannot Verify", str(error), _context_for_sender_key(sender_public_key)
+        )
     return decode_carrier_source(
         source, source.media_code, source.media_context,
         sender_public_key, receiver_private_key,
@@ -1113,7 +1187,9 @@ def verify_png_to_payload_path(input_path: str | bytes | PathLike[str], sender_p
     try:
         source = PngCarrier(input_path)
     except (OSError, ValueError, UnSupportedFileType) as error:
-        return _failure_result("Cannot Verify", str(error))
+        return _failure_result(
+            "Cannot Verify", str(error), _context_for_sender_key(sender_public_key)
+        )
     return decode_carrier_source_to_payload_path(
         source, source.media_code, source.media_context, sender_public_key,
         receiver_private_key, payload_output_path,
@@ -1125,7 +1201,9 @@ def verify_wav(input_path: str | bytes | PathLike[str], sender_public_key: rsa.R
     try:
         source = WavCarrier(input_path)
     except (OSError, ValueError) as error:
-        return _failure_result("Cannot Verify", str(error))
+        return _failure_result(
+            "Cannot Verify", str(error), _context_for_sender_key(sender_public_key)
+        )
     return decode_carrier_source(
         source, source.media_code, source.media_context,
         sender_public_key, receiver_private_key,
@@ -1137,7 +1215,9 @@ def verify_wav_to_payload_path(input_path: str | bytes | PathLike[str], sender_p
     try:
         source = WavCarrier(input_path)
     except (OSError, ValueError) as error:
-        return _failure_result("Cannot Verify", str(error))
+        return _failure_result(
+            "Cannot Verify", str(error), _context_for_sender_key(sender_public_key)
+        )
     return decode_carrier_source_to_payload_path(
         source, source.media_code, source.media_context, sender_public_key,
         receiver_private_key, payload_output_path,

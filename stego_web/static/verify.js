@@ -93,7 +93,7 @@
       element('p', data.message || data.error || 'The server could not complete verification.'),
     );
     result.append(fields([
-      ['Bootstrap', data.start_location == null ? 'Not opened' : 'Opened for this receiver'],
+      ['Bootstrap', data.frame_version == null ? 'Not opened' : 'Opened for this receiver'],
       ['Signature', check(data.signature_valid, 'Valid', 'Invalid')],
       ['Full-media integrity', check(data.integrity_valid, 'Match', 'Mismatch')],
       ['Media ID', data.payload?.media_id],

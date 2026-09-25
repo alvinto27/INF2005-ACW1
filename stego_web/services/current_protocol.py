@@ -12,7 +12,6 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from stego import (
-    PROTOCOL_VERSION,
     EmbeddingLayout,
     PayloadFileRecord,
     PayloadRecord,
@@ -241,7 +240,7 @@ class CurrentProtocolService:
             "message": result.detail,
             "file_size": file_size,
             "media_type": media_type,
-            "frame_version": PROTOCOL_VERSION,
+            "frame_version": result.protocol_version,
             "payload_extracted": result.payload is not None,
             "signature_valid": signature_valid,
             "integrity_valid": integrity_valid,
@@ -298,7 +297,7 @@ class CurrentProtocolService:
             "message": message,
             "file_size": file_size,
             "media_type": None,
-            "frame_version": PROTOCOL_VERSION,
+            "frame_version": None,
             "payload_extracted": False,
             "signature_valid": None,
             "integrity_valid": None,

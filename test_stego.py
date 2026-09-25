@@ -1194,6 +1194,48 @@ class TestMaskedStego(unittest.TestCase):
         changed_bootstrap[0] ^= np.uint8(1)
         self.assertEqual(decode_carrier(changed_bootstrap, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Payload Missing")
 
+    def test_failed_results_keep_recovered_context_without_payload(self) -> None:
+        source = carrier(30000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
+        tampered = encoded.copy()
+        tampered[layout.start_unit + layout.footprint] ^= np.uint8(1)
+        expected_preserved = preserved_bit_count(
+            layout.total_units, layout.footprint, layout.lsb_count, layout.bootstrap_span
+        )
+        cases = (
+            ("Signature Invalid", encoded, OTHER_PUBLIC_KEY),
+            ("Tampered", tampered, PUBLIC_KEY),
+        )
+        for verdict, units, sender_key in cases:
+            with self.subTest(verdict=verdict), TemporaryDirectory() as directory_name:
+                output_path = Path(directory_name) / "payload.bin"
+                result = decode_carrier_source_to_payload_path(
+                    ArrayCarrier(units), IMAGE_MEDIA_CODE, context, sender_key,
+                    RECEIVER_PRIVATE_KEY, output_path,
+                )
+                self.assertEqual(result.verdict, verdict)
+                self.assertFalse(result.valid)
+                self.assertIsNone(result.payload)
+                self.assertIsNone(result.payload_path)
+                self.assertFalse(output_path.exists())
+                self.assertEqual(result.protocol_version, PROTOCOL_VERSION)
+                self.assertEqual(result.start_unit, 2048)
+                self.assertEqual(result.lsb_count, 3)
+                self.assertEqual(result.preserved_bits, expected_preserved)
+                self.assertEqual(
+                    result.preserved_ratio, expected_preserved / (layout.total_units * 8)
+                )
+                self.assertEqual(
+                    result.key_fingerprint, display_rsa_public_key_fingerprint(sender_key)
+                )
+        missing = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, OTHER_PRIVATE_KEY)
+        self.assertEqual(missing.verdict, "Payload Missing")
+        self.assertIsNone(missing.protocol_version)
+        self.assertIsNone(missing.start_unit)
+        self.assertIsNone(missing.lsb_count)
+        self.assertIsNone(missing.preserved_bits)
+        self.assertEqual(missing.key_fingerprint, display_rsa_public_key_fingerprint(PUBLIC_KEY))
+
     def test_signature_verification_precedes_decryption(self) -> None:
         source = carrier(30000)
         (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
@@ -1604,6 +1646,30 @@ class TestMaskedStego(unittest.TestCase):
             result = verify_png(v2_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
             self.assertEqual(result.verdict, "Cannot Verify")
             self.assertEqual(result.detail, "unsupported bootstrap version")
+            # Only the version byte is reported before the bootstrap validates.
+            self.assertEqual(result.protocol_version, 2)
+            self.assertIsNone(result.start_unit)
+            self.assertIsNone(result.lsb_count)
+            self.assertIsNone(result.preserved_bits)
+            self.assertIsNone(result.payload)
+            self.assertEqual(result.key_fingerprint, display_rsa_public_key_fingerprint(PUBLIC_KEY))
+
+    def test_failed_png_write_removes_incomplete_output(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "input.png"
+            output_path = directory / "output.png"
+            Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8), mode="RGB").save(input_path)
+
+            def write_partial_then_fail(self: PngCarrier, path: Path, *args: object) -> None:
+                Path(path).write_bytes(b"\x89PNG partial")
+                raise OSError("disk full")
+
+            with patch.object(PngCarrier, "rewrite_to_path", write_partial_then_fail):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    encode_png(input_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse(output_path.exists())
+            self.assertEqual(sorted(path.name for path in directory.iterdir()), ["input.png"])
 
     def test_wav_tampering_outside_footprint_is_tampered(self) -> None:
         with TemporaryDirectory() as directory_name:

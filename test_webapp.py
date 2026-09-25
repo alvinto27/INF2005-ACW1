@@ -16,7 +16,20 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from PIL import Image
 
-from stego import PROTOCOL_VERSION, generate_rsa_keypair
+from stego import (
+    BOOTSTRAP_LSB_COUNT,
+    PROTOCOL_VERSION,
+    bit_sequence_to_bytes,
+    bootstrap_span,
+    bytes_to_bit_sequence,
+    display_rsa_public_key_fingerprint,
+    generate_rsa_keypair,
+    open_with_private_key,
+    parse_bootstrap,
+    read_lsb_bits,
+    seal_to_public_key,
+    write_lsb_bits,
+)
 from stego_web import create_app
 from stego_web.services.current_protocol import CurrentProtocolService
 
@@ -189,7 +202,7 @@ class WebApplicationTests(unittest.TestCase):
         receiver_private: bytes | None = None,
     ) -> object:
         """Post carrier bytes with independently selectable verification keys."""
-        return self.client.post(
+        response = self.client.post(
             "/decode",
             data={
                 "stego": (io.BytesIO(stego_bytes), filename),
@@ -208,6 +221,7 @@ class WebApplicationTests(unittest.TestCase):
         self.assertFalse(
             any(path.name.startswith(".stego-staging-") for path in self.payload_dir.iterdir())
         )
+        return response
 
     def get_payload(self, payload: dict[str, object]) -> object:
         """Fetch one payload by the URL returned in an Authentic report."""
@@ -340,7 +354,7 @@ class WebApplicationTests(unittest.TestCase):
         report = decoded.get_json()
         self.assertEqual(report["verdict"], "Cannot Verify")
         self.assertEqual(report["message"], detail)
-        self.assertEqual(report["frame_version"], PROTOCOL_VERSION)
+        self.assertIsNone(report["frame_version"])
 
     def test_invalid_carrier_error_precedes_invalid_sender_key(self) -> None:
         """Validate a PNG carrier before reporting an invalid sender key."""
@@ -462,7 +476,7 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         report = response.get_json()
         self.assertEqual(report["verdict"], "Cannot Verify")
-        self.assertEqual(report["frame_version"], PROTOCOL_VERSION)
+        self.assertIsNone(report["frame_version"])
         self.assertEqual(report["file_size"], len(stego_bytes))
 
     def test_wrong_receiver_key_is_payload_missing(self) -> None:
@@ -509,6 +523,128 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIsNone(report["payload"])
         self.assertNotIn("payload_url", report)
         self.assert_no_recovered_payloads()
+
+    def rewrite_png_bootstrap(
+        self,
+        stego_bytes: bytes,
+        version: int | None = None,
+        start_unit: int | None = None,
+        flip_session_key: bool = False,
+    ) -> bytes:
+        """Reseal the receiver bootstrap of an RGB PNG with changed fields."""
+        with Image.open(io.BytesIO(stego_bytes)) as image:
+            pixels = np.array(image, dtype=np.uint8, copy=True)
+        units = pixels.reshape(-1)
+        span = bootstrap_span(self.receiver_private)
+        envelope = bit_sequence_to_bytes(
+            read_lsb_bits(units[:span], span, BOOTSTRAP_LSB_COUNT)
+        )
+        fields = parse_bootstrap(open_with_private_key(envelope, self.receiver_private))
+        session_key = fields.session_key
+        if flip_session_key:
+            session_key = bytes((session_key[0] ^ 1,)) + session_key[1:]
+        plaintext = (
+            struct.pack(
+                ">BB",
+                fields.version if version is None else version,
+                fields.lsb_count,
+            )
+            + (fields.start_unit if start_unit is None else start_unit).to_bytes(8, "big")
+            + fields.ciphertext_length.to_bytes(8, "big")
+            + session_key
+            + fields.aead_nonce
+        )
+        sealed = seal_to_public_key(plaintext, self.receiver_public)
+        units[:span] = write_lsb_bits(
+            units[:span], bytes_to_bit_sequence(sealed), BOOTSTRAP_LSB_COUNT
+        )
+        output = io.BytesIO()
+        Image.fromarray(pixels, mode="RGB").save(output, format="PNG")
+        return output.getvalue()
+
+    def test_verdict_reports_keep_recovered_fields_and_leave_no_staging(self) -> None:
+        """Each verdict reports the fields that verification reached and recovered."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        stego_bytes = self.download_stego(encoded)
+        with Image.open(io.BytesIO(stego_bytes)) as image:
+            tampered_pixels = np.array(image, dtype=np.uint8, copy=True)
+        tampered_pixels.reshape(-1)[-1] ^= np.uint8(0x80)
+        tampered_output = io.BytesIO()
+        Image.fromarray(tampered_pixels, mode="RGB").save(tampered_output, format="PNG")
+        wrong_receiver, _ = generate_rsa_keypair()
+        _, wrong_sender = generate_rsa_keypair()
+        span = bootstrap_span(self.receiver_private)
+        sender_fingerprint = display_rsa_public_key_fingerprint(self.sender_public)
+        # Each row: carrier, sender PEM, receiver PEM, verdict, HTTP status,
+        # frame_version, start_location, lsb_bits, preserved bits expected.
+        cases = (
+            ("Authentic", stego_bytes, None, None, 200, 3, 2048, 1, True),
+            (
+                "Signature Invalid", stego_bytes, public_pem(wrong_sender),
+                None, 200, 3, 2048, 1, True,
+            ),
+            (
+                "Payload Missing", stego_bytes, None,
+                private_pem(wrong_receiver), 422, None, None, None, False,
+            ),
+            (
+                "Tampered", tampered_output.getvalue(), None,
+                None, 200, 3, 2048, 1, True,
+            ),
+            (
+                "Cannot Decrypt",
+                self.rewrite_png_bootstrap(stego_bytes, flip_session_key=True),
+                None, None, 200, 3, 2048, 1, True,
+            ),
+            (
+                "Wrong Start Location",
+                self.rewrite_png_bootstrap(stego_bytes, start_unit=span - 1),
+                None, None, 200, 3, span - 1, 1, False,
+            ),
+            (
+                "Cannot Verify",
+                self.rewrite_png_bootstrap(stego_bytes, version=2),
+                None, None, 200, 2, None, None, False,
+            ),
+        )
+        for (
+            verdict, carrier_bytes, sender_public, receiver_private, status,
+            frame_version, start_location, lsb_bits, has_preserved,
+        ) in cases:
+            with self.subTest(verdict=verdict):
+                for path in self.payload_dir.iterdir():
+                    path.unlink()
+                response = self.decode_bytes(
+                    carrier_bytes, "stego.png", sender_public, receiver_private
+                )
+                self.assertEqual(response.status_code, status, response.get_data(as_text=True))
+                report = response.get_json()
+                self.assertEqual(report["verdict"], verdict)
+                self.assertEqual(report["frame_version"], frame_version)
+                self.assertEqual(report["start_location"], start_location)
+                self.assertEqual(report["lsb_bits"], lsb_bits)
+                if has_preserved:
+                    self.assertIsInstance(report["preserved_bits"], int)
+                    self.assertIsInstance(report["preserved_ratio"], float)
+                else:
+                    self.assertIsNone(report["preserved_bits"])
+                    self.assertIsNone(report["preserved_ratio"])
+                expected_fingerprint = (
+                    display_rsa_public_key_fingerprint(wrong_sender)
+                    if sender_public is not None
+                    else sender_fingerprint
+                )
+                self.assertEqual(report["sender_key_fingerprint"], expected_fingerprint)
+                self.assertFalse(
+                    any(path.name.startswith(".stego-staging-") for path in self.payload_dir.iterdir())
+                )
+                if verdict == "Authentic":
+                    self.assertIn("payload_url", report["payload"])
+                    self.assertEqual(len(list(self.payload_dir.glob("*.bin"))), 1)
+                else:
+                    self.assertIsNone(report["payload"])
+                    self.assertFalse(report["payload_extracted"])
+                    self.assert_no_recovered_payloads()
 
     def test_mime_mismatch_disables_preview_without_invalidating_signature(self) -> None:
         """A false typed-payload claim remains authenticated but is not rendered."""
