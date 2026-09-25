@@ -19,6 +19,7 @@ For repository structure and implementation entry points, see the [Agent Navigat
 
 - [Current Protocol](CURRENT-PROTOCOL.md) — active version 3 hash, wire format, typed metadata, discovery behavior, verdicts, capacity, and compatibility.
 - [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) — bounded carrier access, payload APIs, staging cleanup, measurements, and file boundary.
+- [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) — approved design for one bounded-memory video-plus-audio carrier (media code 3, `VID-`); Stage 1 prototype gates open, with no implementation.
 - [Web Application Guide](WEB-APPLICATION-GUIDE.md) — request contracts, response handling, payload previews, and requirement coverage.
 
 ## Historical records and project status
