@@ -12,18 +12,16 @@ Use this map before editing an unfamiliar part of the repository.
 | Repository instructions | [AGENTS.md](../AGENTS.md) |
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
-| Current protocol, fixed-width fields, typed-payload metadata, and design history | [PROTOCOL-DESIGN.md](PROTOCOL-DESIGN.md#protocol-design) |
-| Implemented version 3 hash, RGBA, compatibility, and limits | [PROTOCOL-V3-FULL-MEDIA-HASH.md](PROTOCOL-V3-FULL-MEDIA-HASH.md) |
+| Current version-3 wire format, media hash, typed metadata, discovery, and verdicts | [CURRENT-PROTOCOL.md](CURRENT-PROTOCOL.md#verification-verdicts) |
+| Version-1 design history | [PROTOCOL-V1-HISTORY.md](PROTOCOL-V1-HISTORY.md#decisions-and-what-was-rejected) |
 | Removal of imported legacy files, the old `STG1` stack, and duplicate assignment PDF | [MERGE-LEFTOVER-REMOVAL.md](MERGE-LEFTOVER-REMOVAL.md) |
 | Historical protocol version 2 design; stages 0 through 6b complete; 6c cancelled | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
 | Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
-| Chunked carrier access, file-backed payload uploads, staging cleanup, chunk size, memory claim, and web tests | [STREAMING-CARRIER-PLAN.md](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) |
-| Payload memory, verify-download flow, streaming web boundary, and plaintext-at-rest risk | [PAYLOAD-HANDLING.md](PAYLOAD-HANDLING.md) |
-| Implemented payload-path APIs, streamed AES-GCM and Prehashed RSA-PSS, temporary-file lifecycle, and tests | [PAYLOAD-STREAMING-DESIGN.md](PAYLOAD-STREAMING-DESIGN.md) |
+| Chunked carrier access, payload APIs, staging cleanup, measurements, and known limits | [CARRIER-AND-PAYLOAD-FLOW.md](CARRIER-AND-PAYLOAD-FLOW.md#4-protocol-flow) |
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
 | Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
-| Active web integration status and verification flow | [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md), [DECODING-VERIFICATION.md](DECODING-VERIFICATION.md) |
-| Current and legacy protocol boundary | [PROTOCOL-COMPATIBILITY.md](PROTOCOL-COMPATIBILITY.md) |
+| Web request contracts, response handling, payload previews, and requirement coverage | [WEB-APPLICATION-GUIDE.md](WEB-APPLICATION-GUIDE.md) |
+| Current and older protocol compatibility | [CURRENT-PROTOCOL.md](CURRENT-PROTOCOL.md#limits-and-compatibility) |
 
 ## Implementation locations
 

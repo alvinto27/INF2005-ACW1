@@ -105,7 +105,7 @@ version 1 and version 2 masked-media files are not accepted by the active
 version-3 web routes. A readable version 2 bootstrap returns `Cannot Verify`
 with `unsupported bootstrap version`. The separate legacy `STG1` implementation
 has been removed and is not interoperable with this protocol. See [Protocol
-Compatibility](AGENT_docs/PROTOCOL-COMPATIBILITY.md) and the [merge-leftover
+Compatibility](AGENT_docs/CURRENT-PROTOCOL.md#limits-and-compatibility) and the [merge-leftover
 removal record](AGENT_docs/MERGE-LEFTOVER-REMOVAL.md).
 
 ## Documentation
@@ -113,7 +113,7 @@ removal record](AGENT_docs/MERGE-LEFTOVER-REMOVAL.md).
 - [Agent instructions](AGENTS.md)
 - [Documentation index](AGENT_docs/README.md)
 - [Agent navigation map](AGENT_docs/AGENT_MAP.md)
-- [Protocol design](AGENT_docs/PROTOCOL-DESIGN.md)
-- [Protocol version 3 full media hash](AGENT_docs/PROTOCOL-V3-FULL-MEDIA-HASH.md)
-- [Web implementation status](AGENT_docs/IMPLEMENTATION-STATUS.md)
+- [Current protocol](AGENT_docs/CURRENT-PROTOCOL.md)
+- [Carrier and payload flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md)
+- [Web application guide](AGENT_docs/WEB-APPLICATION-GUIDE.md)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)

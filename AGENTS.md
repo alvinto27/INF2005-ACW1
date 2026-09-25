@@ -5,13 +5,13 @@ description: Flask steganography application on the masked-media protocol versio
 
 # INF2005-ACW1
 
-This repository provides a localhost Flask steganography application on the reduced masked-media protocol. The active application uses protocol version 3. Read the [Agent Navigation Map](AGENT_docs/AGENT_MAP.md), [documentation index](AGENT_docs/README.md), and [protocol compatibility record](AGENT_docs/PROTOCOL-COMPATIBILITY.md) before changing files.
+This repository provides a localhost Flask steganography application on masked-media protocol version 3. Read the [Agent Navigation Map](AGENT_docs/AGENT_MAP.md), [documentation index](AGENT_docs/README.md), and [current protocol](AGENT_docs/CURRENT-PROTOCOL.md) before changing files.
 
 ## Read first
 
 1. [Agent Navigation Map](AGENT_docs/AGENT_MAP.md) — repository structure and map chain.
 2. [Documentation index](AGENT_docs/README.md) — durable records and current repository documentation.
-3. [Protocol compatibility](AGENT_docs/PROTOCOL-COMPATIBILITY.md) — boundaries between the web format and masked-media format.
+3. [Current protocol](AGENT_docs/CURRENT-PROTOCOL.md) — active wire format, integrity checks, and compatibility rules.
 4. [README](README.md) — setup, application flow, and integrity behavior.
 
 ## Commands

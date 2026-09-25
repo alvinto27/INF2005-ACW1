@@ -1,7 +1,7 @@
 # Merge Leftover Removal
 
 **Status:** complete.  
-**Removal commit:** (added after commit)
+**Removal commit:** [120c02972786ffa5923b43876af48795d8bc10b4](https://github.com/alvinto27/INF2005-ACW1/commit/120c02972786ffa5923b43876af48795d8bc10b4)
 
 This record explains the removal of the old `STG1` implementation, unused
 services, the standalone FR1/FR5 helper, and a duplicate assignment PDF. Source
@@ -90,9 +90,9 @@ Stage B updates only the current-state claims needed to describe these removals.
 | --- | --- | --- |
 | `AGENTS.md` | Docs — Stage C | Current instructions; Stage B removes obsolete `STG1` and test claims. |
 | `AGENT_docs/AGENT_MAP.md` | Docs — Stage C | Navigation map; Stage B removes links to deleted code and adds this record. |
-| `AGENT_docs/DECODING-VERIFICATION.md` | Docs — Stage C | Active decoder guide; routes use the current service, not the old stack. |
-| `AGENT_docs/IMPLEMENTATION-STATUS.md` | Docs — Stage C | Current web status; Stage B corrects protocol and API claims. |
-| `AGENT_docs/PROTOCOL-COMPATIBILITY.md` | Docs — Stage C | Current compatibility guide; Stage B records that `STG1` code is removed. |
+| `AGENT_docs/WEB-APPLICATION-GUIDE.md#decode-request` | Docs — Stage C | Active decoder guide; routes use the current service, not the old stack. |
+| `AGENT_docs/WEB-APPLICATION-GUIDE.md` | Docs — Stage C | Current web status; Stage B corrects protocol and API claims. |
+| `AGENT_docs/CURRENT-PROTOCOL.md#limits-and-compatibility` | Docs — Stage C | Current compatibility guide; Stage B records that `STG1` code is removed. |
 | `AGENT_docs/README.md` | Docs — Stage C | Documentation index; Stage B removes the legacy test entry and adds this record. |
 | `AGENT_docs/WORK-NOT-BUILT.md` | Docs — Stage C | Assignment status record; no deleted module is an active dependency. |
 | `FR1_FR5.py` | Removed | No active Python importer; the current media/core/bit APIs replace its prototype work. |
@@ -146,5 +146,5 @@ the seven removed services. After removal, active imports continue through:
 
 The version-3 route does not guess formats or import an `STG1` reader. It keeps
 the documented version-3 verification outcomes and does not weaken the receiver
-private-key requirement. See [Protocol Compatibility](PROTOCOL-COMPATIBILITY.md)
-and [Implementation Status](IMPLEMENTATION-STATUS.md).
+private-key requirement. See [Protocol Compatibility](CURRENT-PROTOCOL.md#limits-and-compatibility)
+and [Implementation Status](WEB-APPLICATION-GUIDE.md).

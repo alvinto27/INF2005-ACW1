@@ -29,7 +29,7 @@ from .bits import (
 # - Throughput: SHA-256 and NumPy work dominate each chunk. Smaller chunks pay
 #   more fixed per-chunk Python cost; larger chunks fall out of CPU cache. On a
 #   96 MiB WAV the hash pass was fastest at 1 MiB, with a traced peak of about
-#   2.6 MiB. See AGENT_docs/STREAMING-CARRIER-PLAN.md for the measurement.
+#   2.6 MiB. See AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md for the measurement.
 # - WAV alignment: a PCM frame is at most 65,535 channels x 4 bytes, which is
 #   below 1 MiB, so every chunk holds at least one complete frame.
 DEFAULT_CHUNK_BYTES = 1024 * 1024
