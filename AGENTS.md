@@ -35,6 +35,7 @@ bash scripts/install-hooks.sh
 ## Conventions
 
 - Commit the notebook with all outputs cleared.
+- The notebook is an API demonstration of the main flows, not the reference for API behaviour, and it does not show every feature. Keep notebook changes minimal; prove behaviour with tests.
 - Keep the masked-media protocol media-neutral and use its fixed `stego/` PNG and WAV adapters for file I/O.
 - Preserve protocol version 3 and its documented verification verdicts. The active Flask routes accept only protocol version 3; do not present older masked-media or `STG1` files as interoperable.
 - Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in the existing three test modules unless the repository adopts a different layout.
