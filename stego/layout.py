@@ -16,6 +16,7 @@ from .bits import (
     validate_payload_bytes,
     validate_payload_length,
 )
+from .carrier import overlap_range
 from .constants import (
     MEDIA_HASH_CONTEXT_PREFIX_FORMAT,
     MEDIA_HASH_DOMAIN,
@@ -147,45 +148,139 @@ def preserved_bit_count(total_units: int, footprint: int, lsb_count: int, bootst
     )
 
 
-def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_count: int, start_unit: int, footprint: int, bootstrap_span: int) -> bytes:
-    """Hash the carrier with the packet's low bits cleared, so the sender and receiver get the
-    same answer even though the packet overwrote those bits."""
-    carrier_units = _validate_carrier_units(carrier_units)
-    media_code = _validate_media_code(media_code)
-    lsb_count = _validate_lsb_count(lsb_count)
-    total_units = _validate_non_negative_integer(carrier_units.size, "total_units")
-    start_unit = _validate_non_negative_integer(start_unit, "start_unit")
-    footprint = _validate_non_negative_integer(footprint, "footprint")
-    bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
-    if start_unit + footprint > total_units:
-        raise ValueError("masked media footprint is out of range")
-    if start_unit < bootstrap_span:
-        raise ValueError("start_unit must be at least bootstrap_span")
-    masked = carrier_units.copy()
-    masked[0:bootstrap_span] &= np.uint8(0xFE)
-    mask = (~((1 << lsb_count) - 1)) & 0xFF
-    masked[start_unit:start_unit + footprint] &= np.uint8(mask)
-    preimage = (
-        MEDIA_HASH_DOMAIN
-        + struct.pack(MEDIA_HASH_CONTEXT_PREFIX_FORMAT, media_code, lsb_count)
-        + encode_protocol_field(total_units, "total_units")
-        + encode_protocol_field(start_unit, "start_unit")
-        + encode_protocol_field(footprint, "footprint")
-        + encode_protocol_field(bootstrap_span, "bootstrap_span")
-        + masked.tobytes()
-    )
-    return hashlib.sha256(preimage).digest()
+class MaskedMediaHasher:
+    """Hash masked carrier units and fixed media bytes in bounded chunks.
+
+    Chunk boundaries do not affect the digest. The hasher checks the declared
+    number of unit and fixed bytes before producing the final media hash.
+    """
+
+    def __init__(
+        self,
+        media_code: int,
+        lsb_count: int,
+        total_units: int,
+        start_unit: int,
+        footprint: int,
+        bootstrap_span: int,
+        fixed_byte_count: int = 0,
+    ) -> None:
+        """Check geometry and expected stream lengths."""
+        media_code = _validate_media_code(media_code)
+        lsb_count = _validate_lsb_count(lsb_count)
+        total_units = _validate_non_negative_integer(total_units, "total_units")
+        start_unit = _validate_non_negative_integer(start_unit, "start_unit")
+        footprint = _validate_non_negative_integer(footprint, "footprint")
+        bootstrap_span = _validate_non_negative_integer(bootstrap_span, "bootstrap_span")
+        fixed_byte_count = _validate_non_negative_integer(
+            fixed_byte_count, "fixed_byte_count"
+        )
+        if start_unit + footprint > total_units:
+            raise ValueError("masked media footprint is out of range")
+        if start_unit < bootstrap_span:
+            raise ValueError("start_unit must be at least bootstrap_span")
+        encode_protocol_field(fixed_byte_count, "fixed_byte_count")
+        self._media_code = media_code
+        self._lsb_count = lsb_count
+        self._total_units = total_units
+        self._start_unit = start_unit
+        self._footprint = footprint
+        self._bootstrap_span = bootstrap_span
+        self._expected_fixed_byte_count = fixed_byte_count
+        self._consumed_units = 0
+        self._consumed_fixed_bytes = 0
+        self._unit_hash = hashlib.sha256()
+        self._fixed_hash = hashlib.sha256()
+        self._regions = (
+            (0, bootstrap_span, np.uint8(0xFE)),
+            (start_unit, start_unit + footprint, np.uint8((~((1 << lsb_count) - 1)) & 0xFF)),
+        )
+
+    @property
+    def consumed_units(self) -> int:
+        """Return how many carrier units have been hashed so far."""
+        return self._consumed_units
+
+    @property
+    def consumed_fixed_bytes(self) -> int:
+        """Return how many fixed media bytes have been hashed so far."""
+        return self._consumed_fixed_bytes
+
+    def update(self, chunk: np.ndarray, fixed_bytes: bytes = b"") -> None:
+        """Hash one unit chunk and its fixed bytes without changing the array."""
+        chunk = _validate_carrier_units(chunk)
+        fixed_bytes = _require_bytes(fixed_bytes, "fixed_bytes")
+        chunk_start = self._consumed_units
+        chunk_end = chunk_start + int(chunk.size)
+        if chunk_end > self._total_units:
+            raise ValueError(
+                "carrier supplied more units than total_units: "
+                f"consumed_units={chunk_end}, total_units={self._total_units}"
+            )
+        self._hash_units(chunk, chunk_start, chunk_end)
+        self._consumed_units = chunk_end
+        self.update_fixed_bytes(fixed_bytes)
+
+    def update_fixed_bytes(self, fixed_bytes: bytes) -> None:
+        """Hash fixed bytes supplied alongside one or more unit chunks."""
+        fixed_bytes = _require_bytes(fixed_bytes, "fixed_bytes")
+        next_count = self._consumed_fixed_bytes + len(fixed_bytes)
+        if next_count > self._expected_fixed_byte_count:
+            raise ValueError(
+                "carrier supplied more fixed bytes than fixed_byte_count: "
+                f"consumed_fixed_bytes={next_count}, "
+                f"fixed_byte_count={self._expected_fixed_byte_count}"
+            )
+        self._fixed_hash.update(fixed_bytes)
+        self._consumed_fixed_bytes = next_count
+
+    def _hash_units(self, chunk: np.ndarray, chunk_start: int, chunk_end: int) -> None:
+        """Mask and hash carrier units from one chunk."""
+        masked = chunk
+        for region_start, region_end, mask in self._regions:
+            local = overlap_range(chunk_start, chunk_end, region_start, region_end)
+            if local is None:
+                continue
+            if masked is chunk:
+                masked = chunk.copy()
+            masked[local[0]:local[1]] &= mask
+        self._unit_hash.update(np.ascontiguousarray(masked))
+
+    def digest(self) -> bytes:
+        """Return the final hash after checking both declared stream lengths."""
+        if self._consumed_units != self._total_units:
+            raise ValueError(
+                "carrier supplied fewer units than total_units: "
+                f"consumed_units={self._consumed_units}, total_units={self._total_units}"
+            )
+        if self._consumed_fixed_bytes != self._expected_fixed_byte_count:
+            raise ValueError(
+                "carrier supplied fewer fixed bytes than fixed_byte_count: "
+                f"consumed_fixed_bytes={self._consumed_fixed_bytes}, "
+                f"fixed_byte_count={self._expected_fixed_byte_count}"
+            )
+        preimage = (
+            MEDIA_HASH_DOMAIN
+            + struct.pack(MEDIA_HASH_CONTEXT_PREFIX_FORMAT, self._media_code, self._lsb_count)
+            + encode_protocol_field(self._total_units, "total_units")
+            + encode_protocol_field(self._expected_fixed_byte_count, "fixed_byte_count")
+            + encode_protocol_field(self._start_unit, "start_unit")
+            + encode_protocol_field(self._footprint, "footprint")
+            + encode_protocol_field(self._bootstrap_span, "bootstrap_span")
+            + self._unit_hash.digest()
+            + self._fixed_hash.digest()
+        )
+        return hashlib.sha256(preimage).digest()
 
 
-def encode_signing_input(media_code: int, media_context: bytes, layout: EmbeddingLayout, ciphertext: bytes) -> bytes:
-    """Build signed bytes covering recovered geometry and ciphertext."""
+def encode_signing_input_prefix(
+    media_code: int, media_context: bytes, layout: EmbeddingLayout
+) -> bytes:
+    """Build the fixed signing fields that precede ciphertext bytes."""
     media_code = _validate_media_code(media_code)
     media_context = _require_bytes(media_context, "media_context")
     if not isinstance(layout, EmbeddingLayout):
         raise TypeError("layout must be an EmbeddingLayout")
-    ciphertext = validate_payload_bytes(ciphertext)
-    if len(ciphertext) != layout.ciphertext_length:
-        raise ValueError("ciphertext length does not match layout")
     return (
         SIGNING_DOMAIN
         + struct.pack(
@@ -200,5 +295,16 @@ def encode_signing_input(media_code: int, media_context: bytes, layout: Embeddin
         + encode_protocol_field(layout.footprint, "footprint")
         + encode_protocol_field(layout.ciphertext_length, "ciphertext_length")
         + media_context
-        + ciphertext
     )
+
+
+def encode_signing_input(media_code: int, media_context: bytes, layout: EmbeddingLayout, ciphertext: bytes) -> bytes:
+    """Build signed bytes covering recovered geometry and ciphertext."""
+    media_code = _validate_media_code(media_code)
+    media_context = _require_bytes(media_context, "media_context")
+    if not isinstance(layout, EmbeddingLayout):
+        raise TypeError("layout must be an EmbeddingLayout")
+    ciphertext = validate_payload_bytes(ciphertext)
+    if len(ciphertext) != layout.ciphertext_length:
+        raise ValueError("ciphertext length does not match layout")
+    return encode_signing_input_prefix(media_code, media_context, layout) + ciphertext

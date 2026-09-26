@@ -1,3 +1,6 @@
 .venv/
 __pycache__/
 *.py[cod]
+instance/
+/samples/*
+!/samples/Banana.png

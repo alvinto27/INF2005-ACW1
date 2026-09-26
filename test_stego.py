@@ -1,23 +1,67 @@
 import hashlib
+import os
 import struct
+import tempfile
+import time
+import tracemalloc
 import unittest
 import wave
+import zlib
+from collections.abc import Callable, Iterator
+from datetime import datetime, timezone
+from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import av
 import numpy as np
-from PIL import Image
+import stego
+from PIL import Image, ImageCms, ImageOps
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 from stego import *
-from stego.constants import MEDIA_ID_SIZE
-from stego.bits import encode_protocol_field
-from stego.crypto import sign_bytes, verify_signature
-from stego.layout import build_embedding_layout
-from stego.packet import serialized_record_length
+from stego.carrier import (
+    DEFAULT_CHUNK_BYTES,
+    CarrierSource,
+    _packed_lsb_range_transform,
+    _validate_transformed_units,
+    _validate_unit_range,
+    lsb_range_transform,
+)
+from stego.core import (
+    CarrierEncoding,
+    _MemoryStaging,
+    _StagingSession,
+    _stream_decrypt,
+    _stream_encrypt,
+    decode_carrier_source,
+    decode_carrier_source_to_payload_path,
+    prepare_carrier_encoding,
+)
+from stego.layout import MaskedMediaHasher
+from stego.media import (
+    _PNG_MAX_DECODED_BYTES,
+    encode_png_media_context,
+    encode_wav_media_context,
+)
+from stego.constants import MEDIA_ID_SIZE, RSA_PSS_SALT_LENGTH
+from stego.bits import (
+    _validate_carrier_units,
+    _validate_positive_integer,
+    encode_protocol_field,
+)
+from stego.crypto import (
+    _sign_digest,
+    _verify_digest,
+    rsa_pss_padding,
+)
+from stego.layout import build_embedding_layout, encode_signing_input_prefix
+from stego.packet import parse_payload_from_reader, serialized_record_length
+from stego.sources import _decoded_audio_frames, _decoded_image_frames, detect_source_family
 
 
 SIGNING_PRIVATE_KEY, SENDER_PUBLIC_KEY = generate_rsa_keypair()
@@ -27,8 +71,194 @@ PRIVATE_KEY = SIGNING_PRIVATE_KEY
 PUBLIC_KEY = SENDER_PUBLIC_KEY
 
 
-def carrier(size=24000):
+class ArrayCarrier(CarrierSource):
+    """Keep an in-memory carrier backend for protocol tests only."""
+
+    def __init__(self, carrier_units: np.ndarray, chunk_units: int = DEFAULT_CHUNK_BYTES) -> None:
+        self._units = _validate_carrier_units(carrier_units)
+        self._chunk_units = _validate_positive_integer(chunk_units, "chunk_units")
+
+    @property
+    def total_units(self) -> int:
+        return int(self._units.size)
+
+    def read_units(self, start_unit: int, count: int) -> np.ndarray:
+        start_unit, count = _validate_unit_range(start_unit, count, self.total_units)
+        return self._units[start_unit:start_unit + count].copy()
+
+    def iter_chunks(self) -> Iterator[np.ndarray]:
+        for offset in range(0, self.total_units, self._chunk_units):
+            yield self._units[offset:offset + self._chunk_units].copy()
+
+    def rewrite(self, transform: Callable[[int, np.ndarray], np.ndarray]) -> np.ndarray:
+        result = np.empty(self.total_units, dtype=np.uint8)
+        offset = 0
+        for chunk in self.iter_chunks():
+            replaced = _validate_transformed_units(transform(offset, chunk), chunk.size)
+            result[offset:offset + chunk.size] = replaced
+            offset += chunk.size
+        return result
+
+
+def encode_carrier(
+    carrier_units: np.ndarray,
+    media_code: int,
+    media_context: bytes,
+    signing_private_key: rsa.RSAPrivateKey,
+    receiver_public_key: rsa.RSAPublicKey,
+    start_unit: int,
+    lsb_count: int,
+    user_payload: bytes,
+    metadata: bytes,
+) -> tuple[np.ndarray, EmbeddingLayout, PayloadRecord]:
+    """Encode test units using the production two-pass protocol encoder."""
+    source = ArrayCarrier(_validate_carrier_units(carrier_units))
+    encoding = prepare_carrier_encoding(
+        source, media_code, media_context, signing_private_key, receiver_public_key,
+        start_unit, lsb_count, user_payload, metadata,
+    )
+    try:
+        encoded = source.rewrite(encoding.embed_chunk)
+        encoding.finish()
+        return encoded, encoding.layout, encoding.payload
+    finally:
+        encoding.close()
+
+
+def decode_carrier(
+    carrier_units: np.ndarray,
+    media_code: int,
+    media_context: bytes,
+    sender_public_key: rsa.RSAPublicKey,
+    receiver_private_key: rsa.RSAPrivateKey,
+) -> VerificationResult:
+    """Verify test units through the production carrier-source decoder."""
+    source = ArrayCarrier(_validate_carrier_units(carrier_units))
+    return decode_carrier_source(
+        source, media_code, media_context, sender_public_key, receiver_private_key
+    )
+
+
+def carrier(size: int = 24000) -> np.ndarray:
     return np.arange(size, dtype=np.uint8)
+
+
+def calculate_masked_media_hash(
+    carrier_units: np.ndarray,
+    media_code: int,
+    lsb_count: int,
+    start_unit: int,
+    footprint: int,
+    bootstrap_span: int,
+) -> bytes:
+    """Hash test carrier units with protocol embedding regions masked."""
+    source = ArrayCarrier(carrier_units)
+    hasher = MaskedMediaHasher(
+        media_code, lsb_count, source.total_units, start_unit, footprint, bootstrap_span
+    )
+    for units in source.iter_chunks():
+        hasher.update(units)
+    return hasher.digest()
+
+
+def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
+    """Build one PNG chunk with its CRC for small malformed-image tests."""
+    checksum = zlib.crc32(chunk_type + data) & 0xFFFFFFFF
+    return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", checksum)
+
+
+def write_png16(path: Path, pixels: np.ndarray) -> None:
+    """Write an RGB or RGBA 16-bit PNG with PyAV."""
+    channels = pixels.shape[2]
+    pixel_format = "rgb48be" if channels == 3 else "rgba64be"
+    container = av.open(str(path), mode="w", format="image2pipe")
+    try:
+        stream = container.add_stream("png")
+        stream.width = pixels.shape[1]
+        stream.height = pixels.shape[0]
+        stream.pix_fmt = pixel_format
+        frame = av.VideoFrame.from_ndarray(pixels, format=pixel_format)
+        for packet in (*stream.encode(frame), *stream.encode(None)):
+            container.mux(packet)
+    finally:
+        container.close()
+
+
+def read_png16(path: Path) -> np.ndarray:
+    """Decode a 16-bit PNG to native uint16 values with PyAV."""
+    with av.open(str(path), mode="r") as container:
+        frame = next(container.decode(container.streams.video[0]))
+        channels = 4 if frame.format.name.startswith("rgba") else 3
+        return frame.to_ndarray(
+            format="rgb48be" if channels == 3 else "rgba64be"
+        )
+
+
+def write_av_audio(
+    path: Path,
+    codec_name: str,
+    container_format: str,
+    sample_format: str,
+    sample_values: np.ndarray,
+    layout: str = "mono",
+) -> None:
+    """Write a small audio fixture using PyAV's codec and container writers."""
+    channel_count = len(av.AudioLayout(layout).channels)
+    dtype = np.float32 if sample_format.startswith("flt") else np.int32 if "32" in sample_format else np.int16
+    values = np.asarray(sample_values, dtype=dtype).reshape((channel_count, -1))
+    frame_values = (
+        values
+        if sample_format.endswith("p") or sample_format == "fltp"
+        else values.T.reshape((1, -1))
+    )
+    with av.open(str(path), mode="w", format=container_format) as output:
+        stream = output.add_stream(codec_name, rate=48_000)
+        stream.layout = layout
+        stream.codec_context.format = av.AudioFormat(sample_format)
+        frame = av.AudioFrame.from_ndarray(
+            frame_values, format=sample_format, layout=layout
+        )
+        frame.sample_rate = 48_000
+        frame.pts = 0
+        frame.time_base = Fraction(1, 48_000)
+        for packet in (*stream.encode(frame), *stream.encode(None)):
+            output.mux(packet)
+
+
+def read_signed_pcm24(data: bytes) -> np.ndarray:
+    """Unpack signed little-endian 24-bit samples for tests."""
+    values = []
+    for offset in range(0, len(data), 3):
+        sample = int.from_bytes(data[offset:offset + 3], "little")
+        values.append(sample - (1 << 24) if sample & (1 << 23) else sample)
+    return np.array(values, dtype=np.int32)
+
+
+def png_chunk_list(data: bytes) -> list[tuple[bytes, bytes]]:
+    """Split PNG bytes into (chunk type, whole chunk bytes) pairs."""
+    chunks = []
+    offset = 8
+    while offset < len(data):
+        length, chunk_type = struct.unpack(">I4s", data[offset:offset + 8])
+        chunks.append((chunk_type, data[offset:offset + length + 12]))
+        offset += length + 12
+    return chunks
+
+
+def riff_chunk(chunk_id: bytes, data: bytes) -> bytes:
+    """Build one RIFF chunk with its pad byte when the size is odd."""
+    return chunk_id + struct.pack("<I", len(data)) + data + (b"\x00" if len(data) % 2 else b"")
+
+
+def oversized_rgb_png() -> bytes:
+    """Build a 66-byte RGB PNG whose IHDR exceeds the decoded-byte cap."""
+    header = struct.pack(">IIBBBBB", 20_000, 20_000, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", header)
+        + png_chunk(b"IDAT", zlib.compress(b"x"))
+        + png_chunk(b"IEND", b"")
+    )
 
 
 def payload_length(user_payload=b"hello", metadata=b"{}"):
@@ -73,6 +303,46 @@ def reseal_bootstrap(fields: BootstrapFields, version: int | None = None, lsb_co
     )
 
 
+def malformed_record_carrier(record_bytes: bytes) -> tuple[np.ndarray, bytes]:
+    """Build a signed, encrypted v3 carrier with intentionally malformed plaintext."""
+    units = carrier(30000)
+    context = struct.pack(">II", units.size // 3, 1)
+    session_key = bytes(range(32))
+    aead_nonce = bytes(range(12))
+    fields = BootstrapFields(
+        3, 3, 2048, len(record_bytes) + GCM_TAG_SIZE, session_key, aead_nonce
+    )
+    aad = encode_bootstrap_aad(fields)
+    ciphertext = aead_seal(session_key, aead_nonce, aad, record_bytes)
+    layout = build_embedding_layout(
+        units.size, fields.start_unit, fields.lsb_count,
+        len(ciphertext), bootstrap_span(RECEIVER_PUBLIC_KEY),
+    )
+    fields = BootstrapFields(
+        3, 3, fields.start_unit, len(ciphertext), session_key, aead_nonce
+    )
+    signature = _sign_digest(
+        hashlib.sha256(
+            encode_signing_input(IMAGE_MEDIA_CODE, context, layout, ciphertext)
+        ).digest(),
+        PRIVATE_KEY,
+    )
+    envelope = seal_to_public_key(serialize_bootstrap(fields), RECEIVER_PUBLIC_KEY)
+    span = bootstrap_span(RECEIVER_PUBLIC_KEY)
+    packet_start = layout.start_unit
+    packet_end = packet_start + layout.footprint
+    units[packet_start:packet_end] = 0
+    packet = ciphertext + signature
+    packet_bits = bytes_to_bit_sequence(packet)
+    units[packet_start:packet_end] = write_lsb_bits(
+        units[packet_start:packet_end], packet_bits, layout.lsb_count
+    )
+    units[:span] = write_lsb_bits(
+        units[:span], bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT
+    )
+    return units, context
+
+
 def embedded_bit_flip(encoded, start, k, bit_offset):
     result = encoded.copy()
     unit_offset, within = divmod(bit_offset, k)
@@ -87,13 +357,1538 @@ def decode_pcm_samples(frame_bytes: bytes, sample_width: int) -> list[int]:
     ]
 
 
+def reference_write_lsb_bits(
+    carrier_units: np.ndarray, bit_sequence: np.ndarray, lsb_count: int
+) -> np.ndarray:
+    """Reference the original per-bit writer for exact-semantics tests."""
+    result = carrier_units.copy()
+    for bit_index, bit in enumerate(bit_sequence):
+        unit_index, offset = divmod(bit_index, lsb_count)
+        position = lsb_count - 1 - offset
+        mask = 1 << position
+        result[unit_index] = np.uint8(
+            (int(result[unit_index]) & ~mask) | (int(bit) << position)
+        )
+    return result
+
+
+def reference_read_lsb_bits(
+    carrier_units: np.ndarray, bit_length: int, lsb_count: int
+) -> np.ndarray:
+    """Reference the original per-bit reader for exact-semantics tests."""
+    result = np.empty(bit_length, dtype=np.uint8)
+    for bit_index in range(bit_length):
+        unit_index, offset = divmod(bit_index, lsb_count)
+        position = lsb_count - 1 - offset
+        result[bit_index] = (int(carrier_units[unit_index]) >> position) & 1
+    return result
+
+
+class TestPackedBitHandling(unittest.TestCase):
+    """Check vectorized bit operations and packed chunk transforms."""
+
+    def test_decoder_reads_packet_in_bounded_chunks(self) -> None:
+        """Packet reads stay bounded and split at awkward test chunk edges."""
+        original = carrier(12000)
+        context = struct.pack(">II", 4000, 1)
+        encoding = prepare_carrier_encoding(
+            ArrayCarrier(original, 113),
+            IMAGE_MEDIA_CODE,
+            context,
+            PRIVATE_KEY,
+            RECEIVER_PUBLIC_KEY,
+            2048,
+            3,
+            b"chunked packet extraction " * 40,
+            b"kind=chunk-test",
+        )
+        encoded = ArrayCarrier(original, 113).rewrite(encoding.embed_chunk)
+        encoding.finish()
+        tracked = ReadTrackingCarrier(encoded, 127)
+        with patch("stego.core.DEFAULT_CHUNK_BYTES", 37):
+            result = decode_carrier_source(
+                tracked,
+                IMAGE_MEDIA_CODE,
+                context,
+                PUBLIC_KEY,
+                RECEIVER_PRIVATE_KEY,
+            )
+        self.assertEqual(result.verdict, "Authentic", result.detail)
+        packet_reads = [
+            count
+            for start, count in tracked.read_ranges
+            if encoding.layout.start_unit
+            <= start
+            < encoding.layout.start_unit + encoding.layout.footprint
+        ]
+        self.assertGreater(len(packet_reads), 1)
+        self.assertEqual(sum(packet_reads), encoding.layout.footprint)
+        self.assertLessEqual(max(packet_reads), 32)
+
+    def test_vectorized_lsb_operations_match_per_bit_references(self) -> None:
+        rng = np.random.default_rng(202503)
+        units = rng.integers(0, 256, 40, dtype=np.uint8)
+        for lsb_count in range(1, 9):
+            lengths = {
+                0,
+                1,
+                max(1, lsb_count - 1),
+                lsb_count,
+                lsb_count + 1,
+                3 * lsb_count,
+                3 * lsb_count + 1,
+            }
+            for bit_length in sorted(lengths):
+                bits = rng.integers(0, 2, bit_length, dtype=np.uint8)
+                with self.subTest(lsb_count=lsb_count, bit_length=bit_length):
+                    self.assertTrue(
+                        np.array_equal(
+                            write_lsb_bits(units, bits, lsb_count),
+                            reference_write_lsb_bits(units, bits, lsb_count),
+                        )
+                    )
+                    self.assertTrue(
+                        np.array_equal(
+                            read_lsb_bits(units, bit_length, lsb_count),
+                            reference_read_lsb_bits(units, bit_length, lsb_count),
+                        )
+                    )
+
+    def test_packed_range_transform_is_independent_of_chunk_edges(self) -> None:
+        rng = np.random.default_rng(202504)
+        source = rng.integers(0, 256, 5000, dtype=np.uint8)
+        region_start = 23
+        payload = bytes(rng.integers(0, 256, 251, dtype=np.uint8))
+        for lsb_count in range(1, 9):
+            bit_length = ceil_unit_count(len(payload) * 8, lsb_count) * lsb_count
+            padded_bits = np.zeros(bit_length, dtype=np.uint8)
+            payload_bits = bytes_to_bit_sequence(payload)
+            padded_bits[:payload_bits.size] = payload_bits
+            expected = source.copy()
+            region_units = ceil_unit_count(bit_length, lsb_count)
+            expected[region_start:region_start + region_units] = reference_write_lsb_bits(
+                expected[region_start:region_start + region_units],
+                padded_bits,
+                lsb_count,
+            )
+            transform = _packed_lsb_range_transform(
+                region_start, payload, bit_length, lsb_count
+            )
+            for chunk_units in (1, 2, 3, 5, 7, 13, 31, 997):
+                with self.subTest(lsb_count=lsb_count, chunk_units=chunk_units):
+                    actual = ArrayCarrier(source, chunk_units).rewrite(transform)
+                    self.assertTrue(np.array_equal(actual, expected))
+
+    def test_prepared_encoding_produces_public_authentic_result(self) -> None:
+        source_units = carrier(30000)
+        context = struct.pack(">II", 10000, 1)
+        encoding = prepare_carrier_encoding(
+            ArrayCarrier(source_units, 137),
+            IMAGE_MEDIA_CODE,
+            context,
+            PRIVATE_KEY,
+            RECEIVER_PUBLIC_KEY,
+            2048,
+            5,
+            b"byte-identical packed path",
+            b"kind=test",
+        )
+        encoded = ArrayCarrier(source_units, 137).rewrite(encoding.embed_chunk)
+        encoding.finish()
+        result = decode_carrier_source(
+            ArrayCarrier(encoded, 113),
+            IMAGE_MEDIA_CODE,
+            context,
+            PUBLIC_KEY,
+            RECEIVER_PRIVATE_KEY,
+        )
+        self.assertEqual(result.verdict, "Authentic", result.detail)
+        self.assertEqual(result.payload, encoding.payload)
+
+
+class TestPayloadStreaming(unittest.TestCase):
+    """Check shared streaming crypto, staging backends, and file APIs."""
+
+    def test_streaming_aes_gcm_matches_fixed_vector_for_both_backends(self) -> None:
+        record = PayloadRecord(
+            "IMG-vector", 1700000000, bytes(range(16)), bytes(range(32)),
+            b"fixed vector payload\x00\xff", b"kind=vector",
+        )
+        plaintext = serialize_payload(record)
+        key = bytes(range(32))
+        nonce = bytes(range(12))
+        aad = b"INF2005-ACW1-v3-vector"
+        expected = bytes.fromhex(
+            "4d4b9b5ce893a778f92ee58bb1e97808d0278734f1795c783d61e28d14630bbe"
+            "0c1ea1fcaec3119c71a278e5818d2334e3576f9d4bc4b0ce2a813d0101f9eef"
+            "2ed22d97ad3d126611c54bc0886f76b8c18fcac01020c21488d9ce7a01791dd"
+            "8d34f859e6a441c81a957757dc2c48571ad9130dd9d9546ff0b8d56104097651"
+            "cfe21a50b5"
+        )
+        self.assertEqual(AESGCM(key).encrypt(nonce, plaintext, aad), expected)
+        with TemporaryDirectory() as directory_name:
+            parent = Path(directory_name)
+            for chunk_size in (1, 7, 31, 4096):
+                def chunks(size: int = chunk_size) -> Iterator[bytes]:
+                    for offset in range(0, len(plaintext), size):
+                        yield plaintext[offset:offset + size]
+
+                memory = _MemoryStaging()
+                _stream_encrypt(
+                    key, nonce, aad, chunks(), memory, hashes.Hash(hashes.SHA256())
+                )
+                memory_ciphertext = memory.read_range(0, memory.size)
+                self.assertEqual(memory_ciphertext, expected)
+                memory.discard()
+
+                with _StagingSession(True, parent) as session:
+                    file_stage = session.new_store("vector")
+                    _stream_encrypt(
+                        key, nonce, aad, chunks(), file_stage,
+                        hashes.Hash(hashes.SHA256()),
+                    )
+                    self.assertEqual(
+                        file_stage.read_range(0, file_stage.size), expected
+                    )
+                self.assertFalse(
+                    any(path.name.startswith(".stego-staging-") for path in parent.iterdir())
+                )
+
+    def test_prehashed_signature_uses_the_existing_signing_bytes_and_pss_parameters(self) -> None:
+        layout = build_embedding_layout(30000, 2048, 3, 128, 2048)
+        context = struct.pack(">II", 10000, 1)
+        ciphertext = bytes(range(128))
+        prefix = encode_signing_input_prefix(IMAGE_MEDIA_CODE, context, layout)
+        signing_input = encode_signing_input(IMAGE_MEDIA_CODE, context, layout, ciphertext)
+        self.assertEqual(signing_input, prefix + ciphertext)
+        digest = hashlib.sha256(signing_input).digest()
+        signature = _sign_digest(digest, PRIVATE_KEY)
+        self.assertTrue(_verify_digest(digest, signature, PUBLIC_KEY))
+        pss = rsa_pss_padding()
+        self.assertEqual(pss._salt_length, RSA_PSS_SALT_LENGTH)
+        self.assertIsInstance(pss._mgf, type(rsa_pss_padding()._mgf))
+        self.assertIsInstance(pss._mgf._algorithm, hashes.SHA256)
+
+    def test_streaming_record_parser_preserves_all_error_details(self) -> None:
+        fixed = (1).to_bytes(8, "big") + bytes(16) + bytes(32)
+
+        def raw_record(
+            media_id: bytes = b"A",
+            user_length: int = 0,
+            user_payload: bytes = b"",
+            metadata_length: int = 0,
+            metadata: bytes = b"",
+        ) -> bytes:
+            return (
+                bytes((len(media_id),)) + media_id + fixed
+                + user_length.to_bytes(8, "big") + user_payload
+                + metadata_length.to_bytes(8, "big") + metadata
+            )
+
+        malformed = (
+            (b"", "payload is truncated before media_id length"),
+            (b"\x01", "payload is truncated in media_id"),
+            (b"\x00", "payload is truncated in fixed fields"),
+            (b"\x01A" + fixed, "payload is truncated in user length"),
+            (b"\x01A" + fixed + (2).to_bytes(8, "big") + b"x", "payload is truncated in user payload"),
+            (b"\x01A" + fixed + bytes(8), "payload is truncated in metadata length"),
+            (raw_record(metadata_length=2, metadata=b"x"), "payload is truncated in metadata"),
+            (raw_record() + b"x", "payload contains trailing bytes"),
+            (raw_record(media_id=b"\xff"), "media_id must contain valid UTF-8"),
+            (raw_record(metadata_length=1, metadata=b"\xff"), "metadata must contain valid UTF-8 bytes"),
+            (raw_record(media_id=b""), "media_id UTF-8 length must be between 1 and 255 bytes"),
+        )
+        for malformed_bytes, detail in malformed:
+            with self.subTest(detail=detail):
+                with self.assertRaisesRegex(ValueError, detail):
+                    parse_payload_from_reader(
+                        len(malformed_bytes),
+                        lambda offset, length: malformed_bytes[offset:offset + length],
+                    )
+
+    def test_bytes_api_staging_never_creates_files(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.png"
+            output = directory / "encoded.png"
+            Image.fromarray(carrier(120 * 120 * 3).reshape((120, 120, 3))).save(source)
+            empty_temp = directory / "empty-temp"
+            empty_temp.mkdir()
+            old_tempdir = tempfile.tempdir
+            tempfile.tempdir = str(empty_temp)
+            try:
+                encode_png(
+                    source, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3,
+                    b"bytes API stays in memory", b"kind=memory",
+                )
+                authentic = verify_png(output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                missing = verify_png(output, PUBLIC_KEY, OTHER_PRIVATE_KEY)
+                self.assertEqual(authentic.verdict, "Authentic")
+                self.assertIsNone(authentic.payload_path)
+                self.assertEqual(missing.verdict, "Payload Missing")
+                self.assertIsNone(missing.payload)
+                self.assertEqual(list(empty_temp.iterdir()), [])
+            finally:
+                tempfile.tempdir = old_tempdir
+
+    def test_png_and_wav_file_payload_apis(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            payload_path = directory / "payload.bin"
+            payload_path.write_bytes(b"payload from a file\x00\xff")
+
+            png_input = directory / "input.png"
+            png_output = directory / "output.png"
+            png_payload = directory / "png-recovered.bin"
+            Image.fromarray(carrier(120 * 120 * 3).reshape((120, 120, 3))).save(png_input)
+            _, encoded_record = encode_png_from_payload_path(
+                png_input, png_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, payload_path, b"kind=png",
+            )
+            self.assertIsInstance(encoded_record, PayloadFileRecord)
+            png_result = verify_png_to_payload_path(
+                png_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, png_payload
+            )
+            self.assertEqual(png_result.verdict, "Authentic")
+            self.assertEqual(png_result.payload.user_payload_size, payload_path.stat().st_size)
+            self.assertEqual(png_result.payload_path, png_payload)
+            self.assertEqual(png_payload.read_bytes(), payload_path.read_bytes())
+
+            wav_input = directory / "input.wav"
+            wav_output = directory / "output.wav"
+            wav_payload = directory / "wav-recovered.bin"
+            write_pcm_wav(wav_input, 1, 1, 50000)
+            _, wav_record = encode_wav_from_payload_path(
+                wav_input, wav_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 5, payload_path, b"kind=wav",
+            )
+            self.assertIsInstance(wav_record, PayloadFileRecord)
+            wav_result = verify_wav_to_payload_path(
+                wav_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, wav_payload
+            )
+            self.assertEqual(wav_result.verdict, "Authentic")
+            self.assertEqual(wav_result.payload.metadata, b"kind=wav")
+            self.assertEqual(wav_payload.read_bytes(), payload_path.read_bytes())
+            self.assertFalse(
+                any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+            )
+
+    def test_low_level_file_prepare_owns_and_cleans_its_staging_session(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            payload_path = directory / "payload.bin"
+            payload_path.write_bytes(b"low-level file payload")
+            source_units = carrier(30000)
+            source = ArrayCarrier(source_units)
+            context = struct.pack(">II", source.total_units // 3, 1)
+            old_tempdir = tempfile.tempdir
+            tempfile.tempdir = str(directory)
+            try:
+                with prepare_carrier_encoding_from_payload_path(
+                    source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY, 2048, 3, payload_path, b"kind=low-level",
+                ) as encoding:
+                    encoded = source.rewrite(encoding.embed_chunk)
+                    encoding.finish()
+                self.assertFalse(
+                    any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+                )
+            finally:
+                tempfile.tempdir = old_tempdir
+            result = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Authentic")
+            self.assertEqual(result.payload.user_payload, payload_path.read_bytes())
+
+    def test_file_verification_failures_remove_staging_and_do_not_publish(self) -> None:
+        payload = b"payload for file verification"
+        encoded, layout, _ = encode_carrier(
+            carrier(30000), IMAGE_MEDIA_CODE, struct.pack(">II", 10000, 1),
+            PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 5, payload, b"kind=failure",
+        )
+        context = struct.pack(">II", encoded.size // 3, 1)
+        cases: list[tuple[str, np.ndarray, str]] = []
+        missing = encoded.copy()
+        missing[0] ^= np.uint8(1)
+        cases.append(("missing", missing, "Payload Missing"))
+        cases.append((
+            "signature", embedded_bit_flip(encoded, layout.start_unit, 5, 0),
+            "Signature Invalid",
+        ))
+        fields = bootstrap_fields_from_carrier(encoded)
+        wrong_key = raw_bootstrap(
+            fields.version, fields.lsb_count, fields.start_unit,
+            fields.ciphertext_length, bytes(reversed(fields.session_key)),
+            fields.aead_nonce,
+        )
+        invalid_tag = write_lsb_bits(
+            encoded.copy(), bytes_to_bit_sequence(wrong_key), BOOTSTRAP_LSB_COUNT
+        )
+        cases.append(("tag", invalid_tag, "Cannot Decrypt"))
+        tampered = encoded.copy()
+        tampered[layout.start_unit + layout.footprint + 20] ^= np.uint8(0x80)
+        cases.append(("tampered", tampered, "Tampered"))
+        packet_bits = (layout.ciphertext_length + RSA_SIGNATURE_SIZE) * 8
+        padding_bits = layout.footprint * layout.lsb_count - packet_bits
+        self.assertGreater(padding_bits, 0)
+        bad_padding = encoded.copy()
+        padding_unit, padding_offset = divmod(packet_bits, layout.lsb_count)
+        bad_padding[layout.start_unit + padding_unit] |= np.uint8(
+            1 << (layout.lsb_count - 1 - padding_offset)
+        )
+        cases.append(("padding", bad_padding, "Cannot Verify"))
+        malformed, malformed_context = malformed_record_carrier(b"\x00")
+        cases.append(("record", malformed, "Cannot Verify"))
+
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for name, units, verdict in cases:
+                with self.subTest(name=name):
+                    output = directory / f"{name}.bin"
+                    result = decode_carrier_source_to_payload_path(
+                        ArrayCarrier(units), IMAGE_MEDIA_CODE,
+                        malformed_context if name == "record" else context,
+                        PUBLIC_KEY, RECEIVER_PRIVATE_KEY, output,
+                    )
+                    self.assertEqual(result.verdict, verdict, result.detail)
+                    self.assertIsNone(result.payload)
+                    self.assertIsNone(result.payload_path)
+                    self.assertFalse(output.exists())
+                    self.assertFalse(
+                        any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+                    )
+
+            class FailingPacketCarrier(ArrayCarrier):
+                """Raise during packet extraction to test I/O cleanup."""
+
+                def read_units(self, start_unit: int, count: int) -> np.ndarray:
+                    if start_unit >= layout.start_unit:
+                        raise OSError("injected carrier read failure")
+                    return super().read_units(start_unit, count)
+
+            io_output = directory / "io-failure.bin"
+            io_result = decode_carrier_source_to_payload_path(
+                FailingPacketCarrier(encoded), IMAGE_MEDIA_CODE, context,
+                PUBLIC_KEY, RECEIVER_PRIVATE_KEY, io_output,
+            )
+            self.assertEqual(io_result.verdict, "Cannot Verify")
+            self.assertFalse(io_output.exists())
+            self.assertFalse(
+                any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+            )
+
+            sentinel = directory / "existing.bin"
+            sentinel.write_bytes(b"keep existing output")
+            failed = decode_carrier_source_to_payload_path(
+                ArrayCarrier(cases[1][1]), IMAGE_MEDIA_CODE, context,
+                PUBLIC_KEY, RECEIVER_PRIVATE_KEY, sentinel,
+            )
+            self.assertEqual(failed.verdict, "Signature Invalid")
+            self.assertEqual(sentinel.read_bytes(), b"keep existing output")
+
+    def test_file_staging_cleans_up_on_exceptions_and_interruptions(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            wav_input = directory / "input.wav"
+            wav_output = directory / "output.wav"
+            payload_path = directory / "payload.bin"
+            write_pcm_wav(wav_input, 1, 1, 30000)
+            payload_path.write_bytes(b"streamed payload")
+            for chunks in (iter((b"short",)), iter((b"x" * (payload_path.stat().st_size + 1),))):
+                preserved_output = directory / "preserved.wav"
+                preserved_output.write_bytes(b"existing carrier")
+                with patch("stego.core._file_payload_chunks", return_value=chunks):
+                    with self.assertRaisesRegex(ValueError, "payload file changed while it was read"):
+                        encode_wav_from_payload_path(
+                            wav_input, preserved_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                            2048, 3, payload_path, b"",
+                        )
+                self.assertEqual(preserved_output.read_bytes(), b"existing carrier")
+                self.assertFalse(
+                    any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+                )
+            for failure in (RuntimeError("injected"), KeyboardInterrupt()):
+                with self.subTest(operation="encode", failure=type(failure).__name__):
+                    with patch("stego.core._stream_encrypt", side_effect=failure):
+                        with self.assertRaises(type(failure)):
+                            encode_wav_from_payload_path(
+                                wav_input, wav_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                                2048, 3, payload_path, b"",
+                            )
+                    self.assertFalse(wav_output.exists())
+                    self.assertFalse(
+                        any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+                    )
+
+            encoded, _, _ = encode_carrier(
+                carrier(30000), IMAGE_MEDIA_CODE, struct.pack(">II", 10000, 1),
+                PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"decrypt cleanup", b"",
+            )
+            for failure in (RuntimeError("injected"), KeyboardInterrupt()):
+                output = directory / "recovered.bin"
+                with self.subTest(operation="decrypt", failure=type(failure).__name__):
+                    with patch("stego.core._stream_decrypt", side_effect=failure):
+                        with self.assertRaises(type(failure)):
+                            decode_carrier_source_to_payload_path(
+                                ArrayCarrier(encoded), IMAGE_MEDIA_CODE,
+                                struct.pack(">II", encoded.size // 3, 1),
+                                PUBLIC_KEY, RECEIVER_PRIVATE_KEY, output,
+                            )
+                    self.assertFalse(output.exists())
+                    self.assertFalse(
+                        any(path.name.startswith(".stego-staging-") for path in directory.iterdir())
+                    )
+            memory = _MemoryStaging()
+            memory.write(b"secret plaintext")
+            memory.discard()
+            self.assertEqual(memory._buffer, bytearray())
+
+    def _assert_large_file_payload(self, payload_size: int) -> tuple[float, int]:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.wav"
+            encoded = directory / "encoded.wav"
+            payload = directory / "payload.bin"
+            recovered = directory / "recovered.bin"
+            write_mono8_wav(source, payload_size + 8192)
+            write_pattern_file(payload, payload_size)
+            tracemalloc.start()
+            started = time.perf_counter()
+            try:
+                _, payload_record = encode_wav_from_payload_path(
+                    source, encoded, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                    2048, 8, payload, b"kind=large-file",
+                )
+                result = verify_wav_to_payload_path(
+                    encoded, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, recovered
+                )
+                elapsed = time.perf_counter() - started
+                peak = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertIsInstance(payload_record, PayloadFileRecord)
+            self.assertEqual(payload_record.user_payload_size, payload_size)
+            self.assertEqual(result.payload.user_payload_size, payload_size)
+            self.assertEqual(file_sha256(payload), file_sha256(recovered))
+            self.assertLess(peak, 16 * 1024 * 1024)
+            return elapsed, peak
+
+    def test_file_api_streams_8_mib_wav_payload_under_memory_limit(self) -> None:
+        elapsed, peak = self._assert_large_file_payload(8 * 1024 * 1024)
+        self.assertGreater(elapsed, 0)
+        self.assertLess(peak, 16 * 1024 * 1024)
+
+    def test_file_api_streams_64_mib_wav_payload_under_memory_limit(self) -> None:
+        elapsed, peak = self._assert_large_file_payload(64 * 1024 * 1024)
+        self.assertGreater(elapsed, 0)
+        self.assertLess(peak, 16 * 1024 * 1024)
+
+
+class TestPng16Bit(unittest.TestCase):
+    """Check native-depth PNG carrier values and fixed-byte rules."""
+
+    def test_low_byte_units_and_high_bytes_use_numeric_sample_order(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            path = Path(directory_name) / "known.png"
+            pixels = np.array([[[0x12AB, 0x34CD, 0x56EF]]], dtype=np.uint16)
+            write_png16(path, pixels)
+            source = PngCarrier(path)
+            self.assertTrue(np.array_equal(source.read_units(0, 3), [0xAB, 0xCD, 0xEF]))
+            _, fixed_bytes = next(source.iter_chunks_with_fixed_bytes())
+            self.assertEqual(fixed_bytes, bytes((0x12, 0x34, 0x56)))
+
+    def test_16bit_fixed_bytes_follow_independent_order_for_each_chunk_size(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            path = Path(directory_name) / "fixed.png"
+            values = np.arange(4 * 7 * 4, dtype=np.uint16).reshape((4, 7, 4))
+            values = (values * 997 + 0x1234).astype(np.uint16)
+            write_png16(path, values)
+            expected_high = (values[:, :, :3] >> 8).astype(np.uint8).tobytes()
+            expected_alpha = values[:, :, 3].astype("<u2").tobytes()
+            expected_fixed = expected_high + expected_alpha
+            self.assertEqual(PngCarrier(path, 6).fixed_byte_count, len(expected_fixed))
+            for chunk_units in (6, 27):
+                source = PngCarrier(path, chunk_units)
+                chunks = list(source.iter_chunks_with_fixed_bytes())
+                actual_units = np.concatenate([units for units, _ in chunks])
+                actual_fixed = b"".join(fixed for _, fixed in chunks)
+                expected_units = (values[:, :, :3] & 0xFF).astype(np.uint8).reshape(-1)
+                self.assertTrue(np.array_equal(actual_units, expected_units))
+                self.assertEqual(actual_fixed, expected_fixed)
+
+    def test_8bit_and_16bit_media_contexts_are_compatible_and_distinct(self) -> None:
+        self.assertEqual(
+            encode_png_media_context((7, 11, 3)), struct.pack(">IIB", 11, 7, 3)
+        )
+        self.assertEqual(len(encode_png_media_context((7, 11, 4))), 9)
+        context16 = encode_png_media_context((7, 11, 4), bit_depth=16)
+        self.assertEqual(context16, struct.pack(">IIBB", 11, 7, 4, 16))
+        self.assertEqual(len(context16), 10)
+
+    def test_rgb_and_rgba_16bit_encode_verify_and_tampering(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            generator = np.random.default_rng(916)
+            for channels in (3, 4):
+                source_path = directory / f"source-{channels}.png"
+                pixels = generator.integers(
+                    0, 65536, (120, 120, channels), dtype=np.uint16
+                )
+                write_png16(source_path, pixels)
+                for lsb_count in (1, 8):
+                    output_path = directory / f"encoded-{channels}-{lsb_count}.png"
+                    payload = f"16-bit-{channels}-{lsb_count}".encode()
+                    encode_png(
+                        source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                        2048, lsb_count, payload, b"kind=16-bit",
+                    )
+                    result = verify_png(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                    self.assertEqual(result.verdict, "Authentic", result.detail)
+                    self.assertEqual(result.payload.user_payload, payload)
+                    output_pixels = read_png16(output_path)
+                    rgb_mask = np.uint16(0xFFFF ^ ((1 << lsb_count) - 1))
+                    self.assertTrue(
+                        np.array_equal(
+                            output_pixels[:, :, :3] & rgb_mask,
+                            pixels[:, :, :3] & rgb_mask,
+                        )
+                    )
+                    if channels == 4:
+                        self.assertTrue(
+                            np.array_equal(output_pixels[:, :, 3], pixels[:, :, 3])
+                        )
+
+                if channels == 4:
+                    encoded_path = directory / "encoded-tamper-base.png"
+                    encode_png(
+                        source_path, encoded_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                        2048, 3, b"tamper checks", b"",
+                    )
+                    for name, channel, mask in (
+                        ("low", 0, 0x0001),
+                        ("high", 0, 0x0100),
+                        ("alpha", 3, 0x0001),
+                    ):
+                        changed = read_png16(encoded_path)
+                        changed[-1, -1, channel] ^= np.uint16(mask)
+                        changed_path = directory / f"tampered-{name}.png"
+                        write_png16(changed_path, changed)
+                        result = verify_png(
+                            changed_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+                        )
+                        self.assertEqual(result.verdict, "Tampered", result.detail)
+
+    def test_16bit_rgb_trns_is_refused_and_encoder_phys_is_dropped(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.png"
+            output_path = directory / "encoded.png"
+            pixels = np.full((120, 120, 3), 0x12AB, dtype=np.uint16)
+            write_png16(source_path, pixels)
+            chunks = png_chunk_list(source_path.read_bytes())
+            self.assertIn(b"pHYs", [kind for kind, _ in chunks])
+            source_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                + chunks[0][1]
+                + b"".join(chunk for kind, chunk in chunks[1:] if kind != b"pHYs")
+            )
+            encode_png(
+                source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"no encoder pHYs", b"",
+            )
+            self.assertNotIn(b"pHYs", [kind for kind, _ in png_chunk_list(output_path.read_bytes())])
+
+            chunks = png_chunk_list(source_path.read_bytes())
+            trns_path = directory / "rgb-trns.png"
+            trns_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + chunks[0][1]
+                + png_chunk(b"tRNS", bytes(6))
+                + b"".join(chunk for _, chunk in chunks[1:])
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "^RGB PNG with a tRNS colour key is not supported; convert the image to RGBA$",
+            ):
+                encode_png(
+                    trns_path, directory / "refused.png", PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY, 2048, 3, b"payload", b"",
+                )
+
+    def test_decoded_byte_cap_boundaries_for_rgba_depths(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            eight_exact = directory / "rgba8-exact.png"
+            Image.fromarray(np.zeros((1, 100, 4), dtype=np.uint8), mode="RGBA").save(eight_exact)
+            eight_over = directory / "rgba8-over.png"
+            Image.fromarray(np.zeros((1, 101, 4), dtype=np.uint8), mode="RGBA").save(eight_over)
+            with patch("stego.media._PNG_MAX_DECODED_BYTES", 400):
+                self.assertEqual(PngCarrier(eight_exact).channel_count, 4)
+                with self.assertRaisesRegex(
+                    ValueError, "PNG decoded size exceeds configured limit: 404 bytes > 400 bytes"
+                ):
+                    PngCarrier(eight_over)
+
+            sixteen_exact = directory / "rgba16-exact.png"
+            write_png16(sixteen_exact, np.zeros((1, 100, 4), dtype=np.uint16))
+            sixteen_over = directory / "rgba16-over.png"
+            write_png16(sixteen_over, np.zeros((1, 101, 4), dtype=np.uint16))
+            with patch("stego.media._PNG_MAX_DECODED_BYTES", 800):
+                self.assertEqual(PngCarrier(sixteen_exact)._bit_depth, 16)
+                with self.assertRaisesRegex(
+                    ValueError, "PNG decoded size exceeds configured limit: 808 bytes > 800 bytes"
+                ):
+                    PngCarrier(sixteen_over)
+
+
+class TestSourceConverters(unittest.TestCase):
+    """Check snapshot conversion, source rules, cleanup, and metadata handling."""
+
+    def test_image_source_kinds_and_alpha_channels(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            rgb = np.arange(9 * 7 * 3, dtype=np.uint8).reshape((7, 9, 3))
+            Image.fromarray(rgb).save(directory / "rgb.jpg", quality=90)
+            Image.fromarray(rgb[:, :, 0]).save(directory / "gray.png")
+            gray16_path = directory / "gray16.png"
+            gray16 = np.array([[0, 1, 255], [256, 12345, 65535]], dtype=np.uint16)
+            with av.open(str(gray16_path), mode="w", format="image2pipe") as output:
+                stream = output.add_stream("png")
+                stream.width = 3
+                stream.height = 2
+                stream.pix_fmt = "gray16be"
+                frame = av.VideoFrame.from_ndarray(gray16, format="gray16be")
+                for packet in (*stream.encode(frame), *stream.encode(None)):
+                    output.mux(packet)
+            Image.fromarray(rgb[:, :, 0]).convert("P").save(directory / "palette.png")
+            Image.fromarray(rgb[:, :, 0]).convert("P").save(
+                directory / "palette-alpha.png", transparency=0
+            )
+            Image.fromarray(rgb).save(
+                directory / "rgb-trns.png", transparency=(0, 1, 2)
+            )
+            Image.fromarray(np.dstack((rgb[:, :, 0], rgb[:, :, 1]))).save(
+                directory / "gray-alpha.png"
+            )
+            rgba = np.dstack((rgb, np.full((7, 9), 127, dtype=np.uint8)))
+            Image.fromarray(rgba).save(directory / "rgba.webp", lossless=True)
+            palette = Image.fromarray(rgb).convert("P")
+            palette.save(directory / "static.gif")
+            palette.save(directory / "transparent.gif", transparency=0)
+            Image.fromarray(rgb).save(directory / "rgb.tiff")
+            Image.fromarray(rgb).save(directory / "strict.png")
+            rgb16 = np.arange(4 * 3 * 3, dtype=np.uint16).reshape((3, 4, 3))
+            rgb16[0, 0] = (0x1234, 0x5678, 0x9ABC)
+            rgb16_path = directory / "rgb16-trns.png"
+            with av.open(str(rgb16_path), mode="w", format="image2pipe") as output:
+                stream = output.add_stream("png")
+                stream.width = 4
+                stream.height = 3
+                stream.pix_fmt = "rgb48be"
+                frame = av.VideoFrame.from_ndarray(rgb16, format="rgb48be")
+                for packet in (*stream.encode(frame), *stream.encode(None)):
+                    output.mux(packet)
+            chunks = png_chunk_list(rgb16_path.read_bytes())
+            decorated_rgb16 = bytearray(b"\x89PNG\r\n\x1a\n")
+            decorated_rgb16.extend(chunks[0][1])
+            decorated_rgb16.extend(
+                png_chunk(b"tRNS", struct.pack(">HHH", 0x1234, 0x5678, 0x9ABC))
+            )
+            decorated_rgb16.extend(b"".join(chunk for _, chunk in chunks[1:]))
+            rgb16_path.write_bytes(decorated_rgb16)
+
+            expected_channels = {
+                "rgb.jpg": 3,
+                "gray.png": 3,
+                "gray16.png": 3,
+                "rgb16-trns.png": 4,
+                "palette.png": 3,
+                "palette-alpha.png": 4,
+                "rgb-trns.png": 4,
+                "gray-alpha.png": 4,
+                "rgba.webp": 4,
+                "static.gif": 3,
+                "transparent.gif": 4,
+                "rgb.tiff": 3,
+                "strict.png": 3,
+            }
+            for filename, channels in expected_channels.items():
+                input_path = directory / filename
+                with open_image_source(input_path, directory) as source:
+                    self.assertEqual(source.channel_count, channels, filename)
+                    self.assertEqual(
+                        source.total_units,
+                        (3 * 2 if filename == "gray16.png" else 4 * 3 if filename == "rgb16-trns.png" else 9 * 7) * 3,
+                        filename,
+                    )
+                    if filename == "gray16.png":
+                        self.assertEqual(source._bit_depth, 16)
+                        self.assertTrue(
+                            np.array_equal(
+                                source._pixels,
+                                np.repeat(gray16[:, :, None], 3, axis=2),
+                            )
+                        )
+                    if filename == "rgb16-trns.png":
+                        self.assertEqual(source._bit_depth, 16)
+                        self.assertEqual(source._pixels[0, 0].tolist(), [0x1234, 0x5678, 0x9ABC, 0])
+                        self.assertEqual(int(source._pixels[0, 1, 3]), 65535)
+                    if filename in ("rgb-trns.png", "palette-alpha.png"):
+                        self.assertEqual(int(source._pixels[0, 0, 3]), 0, filename)
+                    if filename == "strict.png":
+                        self.assertEqual(Path(source.path), input_path)
+                    else:
+                        snapshot = Path(source.path)
+                        self.assertTrue(snapshot.is_file())
+                if filename != "strict.png":
+                    self.assertFalse(snapshot.exists(), filename)
+
+    def test_all_exif_orientations_are_pixel_exact_for_odd_rgb_and_rgba(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            gray = np.arange(3 * 5, dtype=np.uint8).reshape((3, 5))
+            rgba = np.arange(3 * 5 * 4, dtype=np.uint8).reshape((3, 5, 4))
+            operations = {
+                1: (),
+                2: (("hflip", None),),
+                3: (("transpose", "dir=clock"), ("transpose", "dir=clock")),
+                4: (("transpose", "dir=clock"), ("hflip", None), ("transpose", "dir=cclock")),
+                5: (("transpose", "dir=clock"), ("hflip", None)),
+                6: (("transpose", "dir=clock"),),
+                7: (("transpose", "dir=cclock"), ("hflip", None)),
+                8: (("transpose", "dir=cclock"),),
+            }
+            for orientation, filters in operations.items():
+                exif = Image.Exif()
+                exif[274] = orientation
+                gray_path = directory / f"gray-{orientation}.png"
+                Image.fromarray(gray).save(gray_path, exif=exif)
+                with Image.open(gray_path) as image:
+                    expected = np.asarray(ImageOps.exif_transpose(image).convert("RGB"))
+                with open_image_source(gray_path, directory) as source:
+                    actual = source._pixels.copy()
+                self.assertTrue(np.array_equal(actual, expected), f"gray orientation {orientation}")
+                self.assertEqual(actual.shape[:2], expected.shape[:2])
+
+                rgba_path = directory / f"rgba-{orientation}.webp"
+                Image.fromarray(rgba).save(rgba_path, format="WEBP", lossless=True, exif=exif)
+                with Image.open(rgba_path) as image:
+                    expected_rgba = np.asarray(ImageOps.exif_transpose(image).convert("RGBA"))
+                with open_image_source(rgba_path, directory) as source:
+                    actual_rgba = source._pixels.copy()
+                self.assertTrue(
+                    np.array_equal(actual_rgba, expected_rgba),
+                    f"RGBA orientation {orientation}",
+                )
+                if orientation in (5, 6, 7, 8):
+                    self.assertEqual(actual_rgba.shape[:2], (5, 3))
+                else:
+                    self.assertEqual(actual_rgba.shape[:2], (3, 5))
+
+    def test_additional_image_formats_depths_and_float_refusal(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            pixels = np.arange(12 * 10 * 3, dtype=np.uint8).reshape((10, 12, 3))
+            bmp_path = directory / "source.bmp"
+            Image.fromarray(pixels).save(bmp_path)
+            webp_path = directory / "lossy.webp"
+            Image.fromarray(pixels).save(webp_path, format="WEBP", quality=45, lossless=False)
+            one_bit_path = directory / "one-bit.png"
+            Image.fromarray(
+                (np.indices((10, 12)).sum(axis=0) & 1).astype(np.uint8) * 255
+            ).convert("1").save(one_bit_path)
+            avif8_path = directory / "eight-bit.avif"
+            self._write_avif(avif8_path, "yuv420p")
+            avif10_path = directory / "ten-bit.avif"
+            self._write_avif(avif10_path, "gbrp10le")
+            exr_path = directory / "float.exr"
+            self._write_float_exr(exr_path)
+
+            for source_path in (bmp_path, webp_path, one_bit_path, avif8_path):
+                with open_image_source(source_path, directory) as source:
+                    self.assertEqual(source._bit_depth, 8, source_path.name)
+                    self.assertEqual(source.channel_count, 3, source_path.name)
+            with open_image_source(avif10_path, directory) as source:
+                self.assertEqual(source._bit_depth, 16)
+                self.assertEqual(len(source.media_context), 10)
+                self.assertEqual(
+                    (source._pixels[0, 0, :3] >> 6).tolist(), [1023, 10, 341]
+                )
+            with patch("stego.sources._decoded_image_frames") as decode:
+                with self.assertRaisesRegex(
+                    ValueError, "image sample depth greater than 16 bits is not supported"
+                ):
+                    with open_image_source(exr_path, directory):
+                        self.fail("floating-point EXR must be refused")
+                decode.assert_not_called()
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_icc_profile_survives_snapshot_and_final_png_rewrite(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            pixels = np.random.default_rng(51).integers(
+                0, 256, (96, 96, 3), dtype=np.uint8
+            )
+            profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+            source_path = directory / "profile.jpg"
+            Image.fromarray(pixels).save(source_path, quality=90, icc_profile=profile)
+            output_path = directory / "stego.png"
+            encode_image(
+                source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"ICC snapshot", b"",
+            )
+            with Image.open(source_path) as source, Image.open(output_path) as output:
+                self.assertEqual(source.info["icc_profile"], profile)
+                self.assertEqual(output.info["icc_profile"], profile)
+            result = verify_png(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload.user_payload, b"ICC snapshot")
+            payload_path = directory / "payload.bin"
+            payload_path.write_bytes(b"image file payload")
+            file_output = directory / "stego-file.png"
+            encode_image_from_payload_path(
+                source_path, file_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, payload_path, b"mime=application/octet-stream",
+            )
+            extracted_path = directory / "image-recovered.bin"
+            file_result = verify_png_to_payload_path(
+                file_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, extracted_path
+            )
+            self.assertEqual(file_result.verdict, "Authentic", file_result.detail)
+            self.assertEqual(extracted_path.read_bytes(), payload_path.read_bytes())
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_snapshot_drops_requested_metadata_and_keeps_colour_chunks(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            gray_path = directory / "gray.png"
+            exif = Image.Exif()
+            exif[274] = 6
+            Image.fromarray(np.arange(9 * 7, dtype=np.uint8).reshape((7, 9))).save(
+                gray_path, exif=exif
+            )
+            source_chunks = png_chunk_list(gray_path.read_bytes())
+            decorated = bytearray(b"\x89PNG\r\n\x1a\n")
+            decorated.extend(source_chunks[0][1])
+            source_colour_chunks = {
+                b"cICP": bytes((1, 13, 0, 1)),
+                b"mDCV": bytes(range(24)),
+                b"cLLI": struct.pack(">II", 1000, 400),
+            }
+            for kind, content in source_colour_chunks.items():
+                decorated.extend(png_chunk(kind, content))
+            decorated.extend(png_chunk(b"pHYs", struct.pack(">IIB", 1000, 1000, 1)))
+            decorated.extend(png_chunk(b"tEXt", b"Comment\x00remove me"))
+            decorated.extend(png_chunk(b"sBIT", b"\x08"))
+            decorated.extend(b"".join(chunk for _, chunk in source_chunks[1:]))
+            gray_path.write_bytes(decorated)
+            with open_image_source(gray_path, directory) as source:
+                snapshot_path = Path(source.path)
+                chunk_types = [kind for kind, _ in png_chunk_list(snapshot_path.read_bytes())]
+                self.assertTrue({b"IHDR", b"IDAT", b"IEND"}.issubset(chunk_types))
+                self.assertNotIn(b"pHYs", chunk_types)
+                self.assertNotIn(b"eXIf", chunk_types)
+                self.assertNotIn(b"tEXt", chunk_types)
+                self.assertNotIn(b"sBIT", chunk_types)
+                snapshot_chunks = {
+                    kind: whole[8:-4]
+                    for kind, whole in png_chunk_list(snapshot_path.read_bytes())
+                }
+                for kind, content in source_colour_chunks.items():
+                    self.assertEqual(snapshot_chunks[kind], content)
+            self.assertFalse(snapshot_path.exists())
+
+    def test_cicp_mdcv_and_clli_survive_strict_png_carrier_rewrite(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "colour.png"
+            pixels = np.zeros((96, 96, 3), dtype=np.uint8)
+            Image.fromarray(pixels).save(source_path)
+            chunks = png_chunk_list(source_path.read_bytes())
+            hdr_chunks = (
+                (b"cICP", bytes((1, 13, 0, 1))),
+                (b"mDCV", bytes(range(24))),
+                (b"cLLI", struct.pack(">II", 1000, 400)),
+            )
+            data = bytearray(b"\x89PNG\r\n\x1a\n")
+            data.extend(chunks[0][1])
+            data.extend(b"".join(png_chunk(kind, content) for kind, content in hdr_chunks))
+            data.extend(b"".join(chunk for _, chunk in chunks[1:]))
+            source_path.write_bytes(data)
+            output_path = directory / "stego.png"
+            encode_png(
+                source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"colour chunks", b"",
+            )
+            output_chunks = {
+                kind: whole[8:-4] for kind, whole in png_chunk_list(output_path.read_bytes())
+            }
+            for kind, content in hdr_chunks:
+                self.assertEqual(output_chunks[kind], content)
+
+    def test_animated_gif_apng_and_webp_are_rejected_before_decode(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            first = Image.new("RGBA", (5, 3), (255, 0, 0, 255))
+            second = Image.new("RGBA", (5, 3), (0, 255, 0, 128))
+            gif_first = Image.new("P", (5, 3), 0)
+            gif_palette = [255, 0, 0, 0, 255, 0] + [0, 0, 0] * 254
+            gif_first.putpalette(gif_palette)
+            gif_second = Image.new("P", (5, 3), 1)
+            gif_second.putpalette(gif_palette)
+            gif_first.save(
+                directory / "animated.gif", save_all=True,
+                append_images=[gif_second], duration=40, loop=0,
+            )
+            first.save(
+                directory / "animated.png", save_all=True,
+                append_images=[second], duration=40, loop=0,
+            )
+            first.save(
+                directory / "animated.webp", format="WEBP", save_all=True,
+                append_images=[second], duration=40, loop=0,
+            )
+            for filename, message in (
+                ("animated.gif", "animated GIF images are not supported"),
+                ("animated.png", "animated PNG images are not supported"),
+                ("animated.webp", "animated WebP images are not supported"),
+            ):
+                with patch("stego.sources.av.open", side_effect=AssertionError("decoded")):
+                    with self.assertRaisesRegex(ValueError, message):
+                        with open_image_source(directory / filename, directory):
+                            self.fail("animated source must be refused")
+
+    def test_cmyk_cap_and_corrupt_png_rules_do_not_fall_through(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            cmyk_path = directory / "cmyk.jpg"
+            Image.new("CMYK", (16, 12), (20, 30, 40, 50)).save(cmyk_path)
+            with patch("stego.sources.av.open", side_effect=AssertionError("decoded")):
+                with self.assertRaisesRegex(ValueError, "^CMYK images are not supported$"):
+                    with open_image_source(cmyk_path, directory):
+                        self.fail("CMYK source must be refused")
+
+            oversized_path = directory / "oversized.png"
+            oversized_path.write_bytes(oversized_rgb_png())
+            with patch("stego.sources.av.open", side_effect=AssertionError("decoded")):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"PNG decoded size exceeds configured limit: 1200000000 bytes > {_PNG_MAX_DECODED_BYTES} bytes",
+                ):
+                    with open_image_source(oversized_path, directory):
+                        self.fail("oversized source must be refused")
+
+            corrupt_path = directory / "corrupt.png"
+            corrupt_path.write_bytes(b"not a PNG")
+            with self.assertRaises(Exception) as strict_error:
+                PngCarrier(corrupt_path)
+            with patch("stego.sources._convert_image") as converter:
+                with self.assertRaises(type(strict_error.exception)) as error:
+                    with open_image_source(corrupt_path, directory):
+                        self.fail("corrupt PNG must be refused")
+                self.assertEqual(str(error.exception), str(strict_error.exception))
+                converter.assert_not_called()
+
+    def test_image_decode_once_and_snapshot_cleanup_on_failure(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.jpg"
+            Image.fromarray(np.zeros((48, 48, 3), dtype=np.uint8)).save(source_path)
+            with patch("stego.sources._decoded_image_frames", wraps=_decoded_image_frames) as decode:
+                with open_image_source(source_path, directory) as source:
+                    snapshot_path = Path(source.path)
+                    self.assertTrue(snapshot_path.exists())
+                    self.assertGreater(source.total_units, 0)
+                self.assertFalse(snapshot_path.exists())
+                self.assertEqual(decode.call_count, 1)
+
+            reused_output = directory / "reused.png"
+            with open_image_source(source_path, directory) as carrier:
+                encode_image(
+                    source_path, reused_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                    2048, 3, b"reuse carrier", b"", carrier_source=carrier,
+                )
+            reused_result = verify_png(
+                reused_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+            )
+            self.assertEqual(reused_result.verdict, "Authentic", reused_result.detail)
+            self.assertEqual(reused_result.payload.user_payload, b"reuse carrier")
+
+            output_path = directory / "fail.png"
+            with self.assertRaises(ValueError):
+                encode_image(
+                    source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                    1_000_000, 3, b"bad location", b"",
+                )
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_strict_png_and_wav_bypass_conversion_and_keep_metadata(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            png_path = directory / "strict.png"
+            Image.fromarray(np.zeros((96, 96, 3), dtype=np.uint8)).save(png_path)
+            chunks = png_chunk_list(png_path.read_bytes())
+            decorated_png = bytearray(b"\x89PNG\r\n\x1a\n")
+            decorated_png.extend(chunks[0][1])
+            decorated_png.extend(png_chunk(b"pHYs", struct.pack(">IIB", 1200, 1300, 1)))
+            decorated_png.extend(png_chunk(b"tEXt", b"Comment\x00keep me"))
+            decorated_png.extend(b"".join(chunk for _, chunk in chunks[1:]))
+            png_path.write_bytes(decorated_png)
+            wav_path = directory / "strict.wav"
+            write_pcm_wav(wav_path, 1, 2, 8192)
+            wav_data = wav_path.read_bytes()
+            list_chunk = riff_chunk(b"LIST", b"metadata")
+            wav_path.write_bytes(
+                wav_data[:4]
+                + struct.pack("<I", len(wav_data) + len(list_chunk) - 8)
+                + wav_data[8:]
+                + list_chunk
+            )
+            with open_image_source(png_path, directory) as image_source:
+                self.assertEqual(Path(image_source.path), png_path)
+            with open_audio_source(wav_path, directory) as audio_source:
+                self.assertEqual(Path(audio_source.path), wav_path)
+            png_output = directory / "strict-stego.png"
+            encode_image(
+                png_path, png_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"strict png", b"",
+            )
+            output_png_chunks = [kind for kind, _ in png_chunk_list(png_output.read_bytes())]
+            self.assertIn(b"pHYs", output_png_chunks)
+            self.assertIn(b"tEXt", output_png_chunks)
+            wav_output = directory / "strict-stego.wav"
+            encode_audio(
+                wav_path, wav_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"strict wav", b"",
+            )
+            self.assertIn(b"LIST", wav_output.read_bytes())
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_lossless_audio_widths_and_exact_signed_samples(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            values16 = np.array([-32768, -12345, 0, 1, 12345, 32767], dtype=np.int16)
+            values24 = np.array(
+                [0x123456, -0x123456, 0x7FFFFF, -0x800000, 1, -1], dtype=np.int32
+            )
+            fixtures = (
+                ("flac16.flac", "flac", "flac", "s16", values16, 2, values16),
+                ("flac24.flac", "flac", "flac", "s32", values24 << 8, 3, values24),
+                ("alac16.m4a", "alac", "ipod", "s16p", values16, 2, values16),
+                ("alac24.m4a", "alac", "ipod", "s32p", values24 << 8, 3, values24),
+                ("pcm24.mka", "pcm_s24le", "matroska", "s32", values24 << 8, 3, values24),
+            )
+            for filename, codec, container_format, sample_format, values, width, expected in fixtures:
+                source_path = directory / filename
+                write_av_audio(
+                    source_path, codec, container_format, sample_format,
+                    np.asarray(values).reshape((1, -1)),
+                )
+                with open_audio_source(source_path, directory) as source:
+                    self.assertEqual(source.info.sample_width, width, filename)
+                    with wave.open(str(source.path), "rb") as audio:
+                        raw = audio.readframes(audio.getnframes())
+                    actual = (
+                        read_signed_pcm24(raw)
+                        if width == 3
+                        else np.frombuffer(raw, dtype="<i2")
+                    )
+                    self.assertTrue(np.array_equal(actual, expected), filename)
+
+    def test_lossy_float_audio_widths_cover_art_and_channels(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            values = np.arange(4800, dtype=np.int16).reshape((1, -1)) - 2400
+            codecs = (
+                ("lossy.mp3", "libmp3lame", "mp3", "s16p", values),
+                ("aac.m4a", "aac", "ipod", "fltp", values.astype(np.float32) / 32768),
+                ("opus.ogg", "libopus", "ogg", "fltp", values.astype(np.float32) / 32768),
+                ("vorbis.ogg", "libvorbis", "ogg", "fltp", values.astype(np.float32) / 32768),
+                ("float.wav", "pcm_f32le", "wav", "flt", values.astype(np.float32) / 32768),
+            )
+            for filename, codec, fmt, sample_format, samples in codecs:
+                source_path = directory / filename
+                write_av_audio(source_path, codec, fmt, sample_format, samples)
+                with open_audio_source(source_path, directory) as source:
+                    self.assertEqual(source.info.sample_width, 2, filename)
+                    self.assertEqual(source.info.frame_rate, 48_000, filename)
+                    self.assertGreater(source.info.frame_count, 0, filename)
+                    if filename == "aac.m4a":
+                        self.assertEqual(source.info.frame_count, 5120)
+
+            cover_path = directory / "cover.mp3"
+            self._write_mp3_with_cover(cover_path, values)
+            self.assertEqual(detect_source_family(cover_path), ("audio", "mp3"))
+            with open_audio_source(cover_path, directory) as source:
+                self.assertEqual(source.info.sample_width, 2)
+                self.assertEqual(source.info.channels, 1)
+
+            multistream_path = directory / "two-audio.mka"
+            self._write_two_audio_streams(multistream_path)
+            with self.assertRaisesRegex(ValueError, "exactly one audio stream"):
+                with open_audio_source(multistream_path, directory):
+                    self.fail("two audio streams must be refused")
+
+            cover_first_path = directory / "cover-first.mkv"
+            self._write_cover_first_matroska(cover_first_path, values)
+            with av.open(str(cover_first_path), mode="r") as cover_first:
+                self.assertEqual(
+                    [stream.type for stream in cover_first.streams], ["video", "audio"]
+                )
+                self.assertLess(
+                    cover_first.streams.video[0].index,
+                    cover_first.streams.audio[0].index,
+                )
+            with open_audio_source(cover_first_path, directory) as source:
+                self.assertEqual(source.info.channels, 1)
+
+            movie_path = directory / "video-first.mkv"
+            self._write_video_then_audio(movie_path)
+            with av.open(str(movie_path), mode="r") as movie:
+                self.assertEqual([stream.type for stream in movie.streams], ["video", "audio"])
+                self.assertEqual([stream.index for stream in movie.streams], [0, 1])
+            movie_output = directory / "movie-audio-stego.wav"
+            encode_audio(
+                movie_path, movie_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"movie audio", b"",
+            )
+            movie_result = verify_wav(
+                movie_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+            )
+            self.assertEqual(movie_result.verdict, "Authentic", movie_result.detail)
+            self.assertEqual(movie_result.payload.user_payload, b"movie audio")
+
+            surround_path = directory / "surround.mka"
+            write_av_audio(
+                surround_path, "pcm_s16le", "matroska", "s16",
+                np.zeros((6, 480), dtype=np.int16), layout="5.1",
+            )
+            with self.assertRaisesRegex(ValueError, "unsupported audio channel count"):
+                with open_audio_source(surround_path, directory):
+                    self.fail("more than two channels must be refused")
+
+    def test_audio_decode_once_riff_cap_cleanup_and_payload_wrapper(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.mp3"
+            values = np.zeros((1, 4800), dtype=np.int16)
+            write_av_audio(source_path, "libmp3lame", "mp3", "s16p", values)
+            with patch("stego.sources._decoded_audio_frames", wraps=_decoded_audio_frames) as decode:
+                with open_audio_source(source_path, directory) as source:
+                    snapshot_path = Path(source.path)
+                    self.assertTrue(snapshot_path.exists())
+                    self.assertGreater(source.total_units, 0)
+                self.assertFalse(snapshot_path.exists())
+                self.assertEqual(decode.call_count, 1)
+
+            with patch("stego.sources._MAX_RIFF_DATA_BYTES", 1):
+                with self.assertRaisesRegex(ValueError, "RIFF 4 GiB limit"):
+                    with open_audio_source(source_path, directory):
+                        self.fail("patched RIFF limit must refuse")
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+            payload_path = directory / "payload.bin"
+            payload_path.write_bytes(b"payload file")
+            output_path = directory / "audio-stego.wav"
+            encode_audio_from_payload_path(
+                source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, payload_path, b"mime=application/octet-stream",
+            )
+            extracted_path = directory / "recovered.bin"
+            result = verify_wav_to_payload_path(
+                output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, extracted_path
+            )
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(extracted_path.read_bytes(), payload_path.read_bytes())
+            message_output = directory / "audio-message.wav"
+            encode_audio(
+                source_path, message_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"audio message", b"",
+            )
+            message_result = verify_wav(
+                message_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+            )
+            self.assertEqual(message_result.verdict, "Authentic", message_result.detail)
+            self.assertEqual(message_result.payload.user_payload, b"audio message")
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def _write_mp3_with_cover(self, path: Path, values: np.ndarray) -> None:
+        """Create an MP3 whose attached picture stream comes before its audio."""
+        with av.open(str(path), mode="w", format="mp3") as output:
+            picture = output.add_stream("mjpeg", rate=1)
+            picture.width = 8
+            picture.height = 8
+            picture.pix_fmt = "yuvj420p"
+            picture.disposition = av.stream.Disposition.attached_pic.value
+            audio = output.add_stream("libmp3lame", rate=48_000)
+            audio.layout = "mono"
+            audio.codec_context.format = av.AudioFormat("s16p")
+            frame = av.AudioFrame.from_ndarray(values, format="s16p", layout="mono")
+            frame.sample_rate = 48_000
+            frame.pts = 0
+            frame.time_base = Fraction(1, 48_000)
+            image = av.VideoFrame.from_ndarray(
+                np.zeros((8, 8, 3), dtype=np.uint8), format="rgb24"
+            )
+            image.pts = 0
+            image.time_base = Fraction(1, 1)
+            for packet in (
+                *picture.encode(image), *picture.encode(None),
+                *audio.encode(frame), *audio.encode(None),
+            ):
+                output.mux(packet)
+
+    def _write_cover_first_matroska(self, path: Path, values: np.ndarray) -> None:
+        """Write a video stream before its mono audio stream."""
+        with av.open(str(path), mode="w", format="matroska") as output:
+            picture = output.add_stream("mjpeg", rate=1)
+            picture.width = 8
+            picture.height = 8
+            picture.pix_fmt = "yuvj420p"
+            picture.disposition = av.stream.Disposition.attached_pic.value
+            audio = output.add_stream("pcm_s16le", rate=48_000)
+            audio.layout = "mono"
+            audio.codec_context.format = av.AudioFormat("s16")
+            image = av.VideoFrame.from_ndarray(
+                np.zeros((8, 8, 3), dtype=np.uint8), format="rgb24"
+            )
+            image.pts = 0
+            image.time_base = Fraction(1, 1)
+            frame = av.AudioFrame.from_ndarray(values, format="s16", layout="mono")
+            frame.sample_rate = 48_000
+            frame.pts = 0
+            frame.time_base = Fraction(1, 48_000)
+            for packet in (*picture.encode(image), *picture.encode(None)):
+                output.mux(packet)
+            for packet in (*audio.encode(frame), *audio.encode(None)):
+                output.mux(packet)
+
+    def _write_video_then_audio(self, path: Path) -> None:
+        """Write a real video stream first and a PCM audio stream second."""
+        with av.open(str(path), mode="w", format="matroska") as output:
+            video = output.add_stream("ffv1", rate=25)
+            video.width = 16
+            video.height = 16
+            video.pix_fmt = "yuv420p"
+            audio = output.add_stream("pcm_s16le", rate=48_000)
+            audio.layout = "mono"
+            audio.codec_context.format = av.AudioFormat("s16")
+            video_frame = av.VideoFrame.from_ndarray(
+                np.zeros((16, 16, 3), dtype=np.uint8), format="rgb24"
+            )
+            video_frame.pts = 0
+            video_frame.time_base = Fraction(1, 25)
+            audio_frame = av.AudioFrame.from_ndarray(
+                np.zeros((1, 6000), dtype=np.int16), format="s16", layout="mono"
+            )
+            audio_frame.sample_rate = 48_000
+            audio_frame.pts = 0
+            audio_frame.time_base = Fraction(1, 48_000)
+            for packet in (*video.encode(video_frame), *video.encode(None)):
+                output.mux(packet)
+            for packet in (*audio.encode(audio_frame), *audio.encode(None)):
+                output.mux(packet)
+
+    def _write_avif(self, path: Path, pixel_format: str) -> None:
+        """Create a tiny AVIF at the requested AV1 source depth."""
+        if pixel_format == "yuv420p":
+            frame = av.VideoFrame.from_ndarray(
+                np.full((4, 4, 3), 120, dtype=np.uint8), format="rgb24"
+            )
+        else:
+            frame = av.VideoFrame(4, 4, format=pixel_format)
+            plane_values = (10, 341, 1023)
+            for index, plane in enumerate(frame.planes):
+                pixels = np.ndarray(
+                    (4, 4), dtype="<u2", buffer=plane,
+                    strides=(plane.line_size, 2),
+                )
+                pixels.fill(plane_values[index])
+        with av.open(str(path), mode="w", format="avif") as output:
+            stream = output.add_stream("libaom-av1", rate=1)
+            stream.width = frame.width
+            stream.height = frame.height
+            stream.pix_fmt = pixel_format
+            stream.options = {"crf": "0", "still-picture": "1"}
+            frame.pts = 0
+            frame.time_base = Fraction(1, 1)
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                output.mux(packet)
+
+    def _write_float_exr(self, path: Path) -> None:
+        """Create a small floating-point OpenEXR image with PyAV."""
+        with av.open(str(path), mode="w", format="image2") as output:
+            stream = output.add_stream("exr")
+            stream.width = 4
+            stream.height = 4
+            stream.pix_fmt = "gbrpf32le"
+            frame = av.VideoFrame.from_ndarray(
+                np.zeros((4, 4, 3), dtype=np.float32), format="gbrpf32le"
+            )
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                output.mux(packet)
+
+    def _write_two_audio_streams(self, path: Path) -> None:
+        """Write two short PCM audio streams to one Matroska container."""
+        with av.open(str(path), mode="w", format="matroska") as output:
+            streams = []
+            for _ in range(2):
+                stream = output.add_stream("pcm_s16le", rate=48_000)
+                stream.layout = "mono"
+                streams.append(stream)
+            frames = []
+            for stream in streams:
+                frame = av.AudioFrame.from_ndarray(
+                    np.zeros((1, 480), dtype=np.int16), format="s16", layout="mono"
+                )
+                frame.sample_rate = 48_000
+                frame.pts = 0
+                frame.time_base = Fraction(1, 48_000)
+                frames.append(frame)
+            for stream, frame in zip(streams, frames):
+                for packet in (*stream.encode(frame), *stream.encode(None)):
+                    output.mux(packet)
+
+
 class TestMaskedStego(unittest.TestCase):
     def test_constants_and_minimal_media_contexts(self) -> None:
-        self.assertEqual(MEDIA_HASH_DOMAIN, b"INF2005-ACW1\x00MEDIA-HASH\x00")
+        self.assertEqual(MEDIA_HASH_DOMAIN, b"INF2005-ACW1\x00MEDIA-HASH-V3\x00")
+        self.assertEqual(PROTOCOL_VERSION, 3)
         self.assertEqual(SIGNING_DOMAIN, b"INF2005-ACW1\x00SIGN\x00")
-        self.assertEqual(encode_png_media_context((7, 11, 3)), struct.pack(">II", 11, 7))
-        wav_data = WavPcmData(2, 2, 44100, 3, bytes(12))
-        self.assertEqual(encode_wav_media_context(wav_data), struct.pack(">HBIQ", 2, 2, 44100, 3))
+        self.assertEqual(encode_png_media_context((7, 11, 3)), struct.pack(">IIB", 11, 7, 3))
+        self.assertEqual(encode_png_media_context((7, 11, 4)), struct.pack(">IIB", 11, 7, 4))
+        wav_info = WavPcmInfo(2, 2, 44100, 3)
+        self.assertEqual(encode_wav_media_context(wav_info), struct.pack(">HBIQ", 2, 2, 44100, 3))
+
+    def test_png_carrier_units_chunks_rewrite_and_context(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "input.png"
+            output_path = directory / "identity.png"
+            image_array = np.arange(37 * 29 * 3, dtype=np.uint8).reshape((37, 29, 3))
+            Image.fromarray(image_array, mode="RGB").save(input_path)
+            with Image.open(input_path) as image:
+                reference_units = np.asarray(image, dtype=np.uint8).reshape(-1).copy()
+            expected_context = struct.pack(">IIB", 29, 37, 3)
+            for chunk_units in (1, 13, 2048, 4096):
+                source = PngCarrier(input_path, chunk_units)
+                self.assertEqual(source.media_code, IMAGE_MEDIA_CODE)
+                self.assertEqual(source.media_context, expected_context)
+                self.assertEqual(source.total_units, reference_units.size)
+                self.assertTrue(np.array_equal(np.concatenate(list(source.iter_chunks())), reference_units))
+                self.assertTrue(np.array_equal(source.read_units(17, 31), reference_units[17:48]))
+            source = PngCarrier(input_path, 13)
+
+            def identity_transform(chunk_start: int, units: np.ndarray) -> np.ndarray:
+                return units
+
+            source.rewrite_to_path(output_path, identity_transform)
+            with Image.open(output_path) as image:
+                rewritten_pixels = np.asarray(image, dtype=np.uint8).copy()
+            self.assertTrue(np.array_equal(rewritten_pixels, image_array))
+
+    def test_png_carrier_ranges_chunks_and_identity_bytes_match_reference(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            generator = np.random.default_rng(6206)
+            for channels in (3, 4):
+                mode = "RGB" if channels == 3 else "RGBA"
+                image_array = generator.integers(
+                    0, 256, (31, 29, channels), dtype=np.uint8
+                )
+                input_path = directory / f"input-{channels}.png"
+                output_path = directory / f"identity-{channels}.png"
+                Image.fromarray(image_array, mode=mode).save(input_path)
+                reference_units = image_array[:, :, :3].reshape(-1).copy()
+                source = PngCarrier(input_path, 19)
+
+                self.assertEqual(source.total_units, reference_units.size)
+                self.assertFalse(source._pixels.flags.writeable)
+                if channels == 4:
+                    self.assertIsNotNone(source._alpha)
+                    self.assertFalse(source._alpha.flags.writeable)
+                    self.assertTrue(np.shares_memory(source._pixels, source._alpha))
+                else:
+                    self.assertIsNone(source._alpha)
+
+                ranges = [(0, 0), (0, 1), (1, 7), (17, 19), (18, 24)]
+                ranges.extend(
+                    (start, min(37, reference_units.size - start))
+                    for start in range(0, reference_units.size, 113)
+                )
+                for start, count in ranges:
+                    actual = source.read_units(start, count)
+                    self.assertTrue(np.array_equal(actual, reference_units[start:start + count]))
+                    self.assertTrue(actual.flags.writeable)
+
+                chunks = list(source.iter_chunks())
+                self.assertTrue(np.array_equal(np.concatenate(chunks), reference_units))
+                paired_chunks = list(source.iter_chunks_with_fixed_bytes())
+                self.assertTrue(
+                    np.array_equal(
+                        np.concatenate([units for units, _ in paired_chunks]),
+                        reference_units,
+                    )
+                )
+                expected_fixed = (
+                    b""
+                    if channels == 3
+                    else image_array[:, :, 3].tobytes()
+                )
+                self.assertEqual(
+                    b"".join(fixed for _, fixed in paired_chunks), expected_fixed
+                )
+
+                def identity_transform(start: int, units: np.ndarray) -> np.ndarray:
+                    return units
+
+                source.rewrite_to_path(output_path, identity_transform)
+                with Image.open(output_path) as rewritten:
+                    self.assertTrue(np.array_equal(np.asarray(rewritten), image_array))
+
+    def test_png_carrier_load_and_rewrite_memory_is_bounded(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "input.png"
+            output_path = directory / "identity.png"
+            image_array = np.zeros((2400, 2400, 4), dtype=np.uint8)
+            image_array[:, :, 0] = np.arange(2400, dtype=np.uint8)[None, :]
+            image_array[:, :, 1] = np.arange(2400, dtype=np.uint8)[:, None]
+            image_array[:, :, 3] = 255
+            Image.fromarray(image_array, mode="RGBA").save(input_path)
+            decoded_size = image_array.nbytes
+            del image_array
+
+            def identity_transform(start: int, units: np.ndarray) -> np.ndarray:
+                return units
+
+            tracemalloc.start()
+            source = PngCarrier(input_path)
+            source.rewrite_to_path(output_path, identity_transform)
+            _, peak_bytes = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+
+            memory_limit = int(2.5 * decoded_size + 2 * 1024 * 1024)
+            self.assertLess(
+                peak_bytes,
+                memory_limit,
+                f"traced peak={peak_bytes / 1024 / 1024:.2f} MiB; "
+                f"limit={memory_limit / 1024 / 1024:.2f} MiB",
+            )
+
+    def test_public_api_excludes_array_and_removed_wav_helpers(self) -> None:
+        removed_names = {
+            "ArrayCarrier", "encode_carrier", "decode_carrier",
+            "calculate_masked_media_hash", "rgb_array_to_carrier",
+            "load_png_from_path",
+            "encode_png_media_context", "encode_wav_media_context",
+            "WavPcmData", "load_pcm_wav_from_path", "wav_frame_bytes_to_carrier",
+            "wav_data_with_carrier", "save_pcm_wav_to_path", "MAX_WAV_FRAME_BYTES",
+        }
+        self.assertFalse(removed_names.intersection(stego.__all__))
+        self.assertFalse(any(hasattr(stego, name) for name in removed_names))
+        self.assertIn("PngCarrier", stego.__all__)
+        self.assertIn("WavCarrier", stego.__all__)
+        self.assertIn("lsb_range_transform", stego.__all__)
 
     def test_payload_binary_round_trip_and_utf8_metadata(self):
         record = PayloadRecord(
@@ -193,12 +1988,13 @@ class TestMaskedStego(unittest.TestCase):
             MEDIA_HASH_DOMAIN
             + struct.pack(">BB", IMAGE_MEDIA_CODE, 3)
             + b"\x00\x00\x00\x00\x00\x00\x00\x04"
+            + b"\x00\x00\x00\x00\x00\x00\x00\x00"
             + b"\x00\x00\x00\x00\x00\x00\x00\x01"
             + b"\x00\x00\x00\x00\x00\x00\x00\x02"
             + b"\x00\x00\x00\x00\x00\x00\x00\x00"
-            + expected_masked.tobytes()
+            + hashlib.sha256(expected_masked.tobytes()).digest()
+            + hashlib.sha256(b"").digest()
         )
-        self.assertEqual(len(preimage), 62)
         self.assertEqual(calculate_masked_media_hash(source, IMAGE_MEDIA_CODE, 3, 1, 2, 0), hashlib.sha256(preimage).digest())
         self.assertTrue(np.array_equal(source, np.array([0xFF, 0xA5, 0x5A, 0x00], dtype=np.uint8)))
 
@@ -207,7 +2003,7 @@ class TestMaskedStego(unittest.TestCase):
         payload = b"abcde"
         expected = (
             SIGNING_DOMAIN
-            + struct.pack(">BBB", 2, IMAGE_MEDIA_CODE, 3)
+            + struct.pack(">BBB", 3, IMAGE_MEDIA_CODE, 3)
             + b"\x00\x00\x00\x00\x00\x00\x03\xe8"
             + b"\x00\x00\x00\x00\x00\x00\x00\x0d"
             + b"\x00\x00\x00\x00\x00\x00\x01\x2c"
@@ -242,10 +2038,12 @@ class TestMaskedStego(unittest.TestCase):
             MEDIA_HASH_DOMAIN
             + struct.pack(">BB", IMAGE_MEDIA_CODE, 3)
             + b"\x00\x00\x00\x00\x00\x00\x00\x08"
+            + b"\x00\x00\x00\x00\x00\x00\x00\x00"
             + b"\x00\x00\x00\x00\x00\x00\x00\x04"
             + b"\x00\x00\x00\x00\x00\x00\x00\x02"
             + b"\x00\x00\x00\x00\x00\x00\x00\x02"
-            + expected_masked.tobytes()
+            + hashlib.sha256(expected_masked.tobytes()).digest()
+            + hashlib.sha256(b"").digest()
         )
         self.assertTrue(np.all((expected_masked[0:2] & np.uint8(1)) == 0))
         self.assertTrue(np.all((expected_masked[4:6] & np.uint8(7)) == 0))
@@ -283,15 +2081,15 @@ class TestMaskedStego(unittest.TestCase):
         self.assertEqual(len(wide) - len(narrow), 0)
 
     def test_bootstrap_round_trip_and_aad(self) -> None:
-        fields = BootstrapFields(2, 3, 13, 37, bytes(range(32)), bytes(range(12)))
-        expected_aad = b"\x02\x03" + (13).to_bytes(8, "big") + (37).to_bytes(8, "big")
+        fields = BootstrapFields(3, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        expected_aad = b"\x03\x03" + (13).to_bytes(8, "big") + (37).to_bytes(8, "big")
         serialized = serialize_bootstrap(fields)
         self.assertEqual(len(serialized), 62)
         self.assertEqual(parse_bootstrap(serialized), fields)
         self.assertEqual(encode_bootstrap_aad(fields), expected_aad)
 
     def test_bootstrap_span_and_oaep_envelope_limit(self) -> None:
-        fields = BootstrapFields(2, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        fields = BootstrapFields(3, 3, 13, 37, bytes(range(32)), bytes(range(12)))
         serialized = serialize_bootstrap(fields)
         self.assertEqual(bootstrap_span(PUBLIC_KEY), 2048)  # 256-byte serialised envelope at 1 LSB.
         oaep_plaintext_limit = PUBLIC_KEY.key_size // 8 - 2 * 32 - 2
@@ -326,7 +2124,7 @@ class TestMaskedStego(unittest.TestCase):
                     aead_open(*changed)
 
     def test_bootstrap_parse_rejects_malformed_inputs(self) -> None:
-        fields = BootstrapFields(2, 3, 13, 37, bytes(range(32)), bytes(range(12)))
+        fields = BootstrapFields(3, 3, 13, 37, bytes(range(32)), bytes(range(12)))
         serialized = serialize_bootstrap(fields)
         malformed = []
         malformed.append(serialized[:-1])
@@ -418,11 +2216,53 @@ class TestMaskedStego(unittest.TestCase):
         changed_bootstrap[0] ^= np.uint8(1)
         self.assertEqual(decode_carrier(changed_bootstrap, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Payload Missing")
 
+    def test_failed_results_keep_recovered_context_without_payload(self) -> None:
+        source = carrier(30000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
+        tampered = encoded.copy()
+        tampered[layout.start_unit + layout.footprint] ^= np.uint8(1)
+        expected_preserved = preserved_bit_count(
+            layout.total_units, layout.footprint, layout.lsb_count, layout.bootstrap_span
+        )
+        cases = (
+            ("Signature Invalid", encoded, OTHER_PUBLIC_KEY),
+            ("Tampered", tampered, PUBLIC_KEY),
+        )
+        for verdict, units, sender_key in cases:
+            with self.subTest(verdict=verdict), TemporaryDirectory() as directory_name:
+                output_path = Path(directory_name) / "payload.bin"
+                result = decode_carrier_source_to_payload_path(
+                    ArrayCarrier(units), IMAGE_MEDIA_CODE, context, sender_key,
+                    RECEIVER_PRIVATE_KEY, output_path,
+                )
+                self.assertEqual(result.verdict, verdict)
+                self.assertFalse(result.valid)
+                self.assertIsNone(result.payload)
+                self.assertIsNone(result.payload_path)
+                self.assertFalse(output_path.exists())
+                self.assertEqual(result.protocol_version, PROTOCOL_VERSION)
+                self.assertEqual(result.start_unit, 2048)
+                self.assertEqual(result.lsb_count, 3)
+                self.assertEqual(result.preserved_bits, expected_preserved)
+                self.assertEqual(
+                    result.preserved_ratio, expected_preserved / (layout.total_units * 8)
+                )
+                self.assertEqual(
+                    result.key_fingerprint, display_rsa_public_key_fingerprint(sender_key)
+                )
+        missing = decode_carrier(encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, OTHER_PRIVATE_KEY)
+        self.assertEqual(missing.verdict, "Payload Missing")
+        self.assertIsNone(missing.protocol_version)
+        self.assertIsNone(missing.start_unit)
+        self.assertIsNone(missing.lsb_count)
+        self.assertIsNone(missing.preserved_bits)
+        self.assertEqual(missing.key_fingerprint, display_rsa_public_key_fingerprint(PUBLIC_KEY))
+
     def test_signature_verification_precedes_decryption(self) -> None:
         source = carrier(30000)
         (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
         signature_invalid = embedded_bit_flip(encoded, layout.start_unit, layout.lsb_count, 0)
-        with patch("stego.core.aead_open", wraps=aead_open) as decrypt_mock:
+        with patch("stego.core._stream_decrypt", wraps=_stream_decrypt) as decrypt_mock:
             authentic = decode_carrier(
                 encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
             )
@@ -518,13 +2358,10 @@ class TestMaskedStego(unittest.TestCase):
         self.assertEqual(len(record_bytes), 116)
         self.assertNotIn(record_bytes, encoded.tobytes())
         self.assertFalse(ciphertext.startswith(b"\x24IMG-"))
-        self.assertTrue(
-            verify_signature(
-                encode_signing_input(IMAGE_MEDIA_CODE, context, layout, ciphertext),
-                signature,
-                PUBLIC_KEY,
-            )
+        result = decode_carrier(
+            encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
         )
+        self.assertEqual(result.verdict, "Authentic", result.detail)
         self.assertTrue(np.all(all_bits[packet_bits_length:] == 0))
 
     def test_relocated_packet_is_signature_invalid(self) -> None:
@@ -568,7 +2405,7 @@ class TestMaskedStego(unittest.TestCase):
         (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=3)
         fields = bootstrap_fields_from_carrier(encoded)
         cases = (
-            {"version": 1},
+            {"version": 2},
             {"lsb_count": 0},
             {"lsb_count": 9},
             {"ciphertext_length": 0},
@@ -584,6 +2421,8 @@ class TestMaskedStego(unittest.TestCase):
                 with patch("stego.core.read_lsb_bits", wraps=read_lsb_bits) as read_bits:
                     result = decode_carrier(changed, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
                 self.assertEqual(result.verdict, "Cannot Verify")
+                if "version" in changes:
+                    self.assertEqual(result.detail, "unsupported bootstrap version")
                 self.assertEqual(read_bits.call_count, 1)
 
     def test_valid_changed_geometry_is_signature_invalid(self) -> None:
@@ -695,6 +2534,370 @@ class TestMaskedStego(unittest.TestCase):
             self.assertEqual(wav_result.verdict, "Authentic")
             self.assertEqual(wav_result.payload.metadata, b"kind=audio")
 
+    def test_rgba_png_round_trip_preserves_alpha_and_hashes_it(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            png_input = directory / "rgba-input.png"
+            png_output = directory / "rgba-output.png"
+            png_tampered = directory / "rgba-tampered.png"
+            rgba = np.random.default_rng(12).integers(0, 256, (100, 100, 4), dtype=np.uint8)
+            rgba[:, :, 3] = np.arange(10000, dtype=np.uint8).reshape((100, 100))
+            rgba[0, 0, 3] = 0
+            Image.fromarray(rgba, mode="RGBA").save(png_input)
+            source = PngCarrier(png_input, 7)
+            self.assertEqual(source.channel_count, 4)
+            self.assertEqual(source.fixed_byte_count, 10000)
+            encode_png(png_input, png_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"rgba", b"")
+            with Image.open(png_output) as image:
+                encoded = np.asarray(image, dtype=np.uint8).copy()
+            self.assertTrue(np.array_equal(encoded[:, :, 3], rgba[:, :, 3]))
+            self.assertEqual(verify_png(png_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+            encoded[40, 50, 3] ^= np.uint8(1)
+            Image.fromarray(encoded, mode="RGBA").save(png_tampered)
+            self.assertEqual(verify_png(png_tampered, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Tampered")
+
+    def test_png_decoded_byte_cap_has_clear_error(self) -> None:
+        decoded_bytes = 20_000 * 20_000 * 3
+        limit = _PNG_MAX_DECODED_BYTES
+        detail = (
+            "PNG decoded size exceeds configured limit: "
+            f"{decoded_bytes} bytes > {limit} bytes"
+        )
+        with TemporaryDirectory() as directory_name:
+            input_path = Path(directory_name) / "oversized.png"
+            output_path = Path(directory_name) / "output.png"
+            encoded_png = oversized_rgb_png()
+            self.assertEqual(len(encoded_png), 66)
+            input_path.write_bytes(encoded_png)
+
+            with self.assertRaises(ValueError) as carrier_error:
+                PngCarrier(input_path)
+            self.assertEqual(str(carrier_error.exception), detail)
+
+            result = verify_png(input_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual((result.verdict, result.detail), ("Cannot Verify", detail))
+
+            with self.assertRaises(ValueError) as encode_error:
+                encode_png(
+                    input_path,
+                    output_path,
+                    PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY,
+                    2048,
+                    1,
+                    b"small payload",
+                    b"",
+                )
+            self.assertEqual(str(encode_error.exception), detail)
+            self.assertFalse(output_path.exists())
+
+    def test_png_format_errors_remain_specific(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            unsupported_images = (
+                ("palette", Image.new("P", (8, 8)), "PNG must be RGB or RGBA; palette and grayscale images are not supported"),
+                ("grayscale", Image.new("L", (8, 8)), "PNG must be RGB or RGBA; palette and grayscale images are not supported"),
+                ("gray-alpha", Image.new("LA", (8, 8)), "PNG must be RGB or RGBA; palette and grayscale images are not supported"),
+                ("sixteen-bit-gray", Image.fromarray(np.zeros((8, 8), dtype=np.uint16)), "PNG must be RGB or RGBA; palette and grayscale images are not supported"),
+            )
+            for name, image, message in unsupported_images:
+                with self.subTest(name=name):
+                    path = directory / f"{name}.png"
+                    image.save(path)
+                    with self.assertRaisesRegex(ValueError, message):
+                        PngCarrier(path)
+                    result = verify_png(path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                    self.assertEqual((result.verdict, result.detail), ("Cannot Verify", message))
+
+            rgb16_path = directory / "sixteen-bit-rgb.png"
+            write_png16(rgb16_path, np.zeros((8, 8, 3), dtype=np.uint16))
+            self.assertEqual(PngCarrier(rgb16_path)._bit_depth, 16)
+
+            invalid_depth_path = directory / "invalid-depth.png"
+            invalid_depth_header = struct.pack(">IIBBBBB", 8, 8, 4, 2, 0, 0, 0)
+            invalid_depth_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                + png_chunk(b"IHDR", invalid_depth_header)
+                + png_chunk(b"IDAT", zlib.compress(b"x"))
+                + png_chunk(b"IEND", b"")
+            )
+            depth_error = "PNG must use 8-bit or 16-bit RGB or RGBA samples"
+            with self.assertRaisesRegex(ValueError, depth_error):
+                PngCarrier(invalid_depth_path)
+            self.assertEqual(
+                verify_png(invalid_depth_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).detail,
+                depth_error,
+            )
+
+            animated_path = directory / "animated.png"
+            frame = Image.new("RGBA", (8, 8), (0, 0, 0, 255))
+            second_frame = Image.new("RGBA", (8, 8), (255, 0, 0, 255))
+            frame.save(animated_path, save_all=True, append_images=[second_frame], duration=50)
+            with self.assertRaisesRegex(ValueError, "animated PNG images are not supported"):
+                PngCarrier(animated_path)
+            animated_result = verify_png(animated_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(
+                (animated_result.verdict, animated_result.detail),
+                ("Cannot Verify", "animated PNG images are not supported"),
+            )
+
+            non_png_path = directory / "not-png.jpg"
+            Image.new("RGB", (8, 8)).save(non_png_path)
+            with self.assertRaisesRegex(UnSupportedFileType, "unsupported file type: JPEG"):
+                PngCarrier(non_png_path)
+            non_png_result = verify_png(non_png_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(non_png_result.verdict, "Cannot Verify")
+            self.assertEqual(non_png_result.detail, "unsupported file type: JPEG")
+
+    def test_version_2_png_bootstrap_is_cannot_verify_not_tampered(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "input.png"
+            v3_path = directory / "v3.png"
+            v2_path = directory / "v2-bootstrap.png"
+            Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8), mode="RGB").save(input_path)
+            encode_png(input_path, v3_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"version", b"")
+            with Image.open(v3_path) as image:
+                rgb = np.asarray(image, dtype=np.uint8).copy()
+            units = rgb.reshape(-1).copy()
+            fields = bootstrap_fields_from_carrier(units)
+            envelope = raw_bootstrap(2, fields.lsb_count, fields.start_unit, fields.ciphertext_length, fields.session_key, fields.aead_nonce)
+            span = bootstrap_span(RECEIVER_PRIVATE_KEY)
+            units[:span] = write_lsb_bits(units[:span], bytes_to_bit_sequence(envelope), BOOTSTRAP_LSB_COUNT)
+            Image.fromarray(units.reshape(rgb.shape), mode="RGB").save(v2_path)
+            result = verify_png(v2_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Cannot Verify")
+            self.assertEqual(result.detail, "unsupported bootstrap version")
+            # Only the version byte is reported before the bootstrap validates.
+            self.assertEqual(result.protocol_version, 2)
+            self.assertIsNone(result.start_unit)
+            self.assertIsNone(result.lsb_count)
+            self.assertIsNone(result.preserved_bits)
+            self.assertIsNone(result.payload)
+            self.assertEqual(result.key_fingerprint, display_rsa_public_key_fingerprint(PUBLIC_KEY))
+
+    def test_png_output_keeps_copyable_ancillary_chunks_outside_the_hash(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            plain_path = directory / "plain.png"
+            cover_path = directory / "cover.png"
+            output_path = directory / "output.png"
+            pixels = np.random.default_rng(7).integers(0, 256, (100, 100, 3), dtype=np.uint8)
+            Image.fromarray(pixels, mode="RGB").save(plain_path)
+            plain_chunks = png_chunk_list(plain_path.read_bytes())
+            old_time = png_chunk(b"tIME", struct.pack(">HBBBBB", 2026, 5, 17, 12, 30, 0))
+            encode_time = datetime(2031, 2, 3, 4, 5, 6, tzinfo=timezone.utc)
+            new_time = png_chunk(b"tIME", struct.pack(">HBBBBB", 2031, 2, 3, 4, 5, 6))
+            before_idat = [
+                png_chunk(b"iCCP", b"profile\x00\x00" + zlib.compress(b"icc bytes")),
+                png_chunk(b"sBIT", b"\x08\x08\x08"),
+                png_chunk(b"tEXt", b"Author\x00Alice"),
+                png_chunk(b"iTXt", b"Title\x00\x00\x00en\x00Title\x00Caf\xc3\xa9"),
+                png_chunk(b"zTXt", b"Comment\x00\x00" + zlib.compress(b"zipped text")),
+                png_chunk(b"pHYs", struct.pack(">IIB", 11811, 11811, 1)),
+                png_chunk(b"eXIf", b"MM\x00*\x00\x00\x00\x08\x00\x00"),
+                old_time,
+                png_chunk(b"PLTE", bytes(range(6))),
+                png_chunk(b"hIST", b"\x00\x01\x00\x02"),
+                png_chunk(b"prIv", b"safe private data"),
+                png_chunk(b"prIV", b"unsafe private data"),
+            ]
+            after_idat = [png_chunk(b"tEXt", b"Late\x00after IDAT"), png_chunk(b"prAv", b"x")]
+            idat = [chunk for chunk_type, chunk in plain_chunks if chunk_type == b"IDAT"]
+            cover_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + plain_chunks[0][1] + b"".join(before_idat)
+                + b"".join(idat) + b"".join(after_idat) + png_chunk(b"IEND", b"")
+            )
+            with patch("stego.media._utc_now", return_value=encode_time):
+                encode_png(cover_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"metadata", b"")
+
+            output_chunks = png_chunk_list(output_path.read_bytes())
+            types = [chunk_type for chunk_type, _ in output_chunks]
+            first_idat = types.index(b"IDAT")
+            last_idat = len(types) - 1 - types[::-1].index(b"IDAT")
+            self.assertEqual(types[0], b"IHDR")
+            self.assertEqual(types[-1], b"IEND")
+            # tIME is replaced in its position; sBIT, hIST, and prIV are dropped.
+            expected_before = [
+                new_time if chunk == old_time else chunk
+                for chunk in before_idat
+                if chunk[4:8] not in (b"sBIT", b"hIST", b"prIV")
+            ]
+            self.assertEqual([chunk for _, chunk in output_chunks[1:first_idat]], expected_before)
+            self.assertEqual([chunk for _, chunk in output_chunks[last_idat + 1:-1]], after_idat)
+            for dropped in (b"prIV", b"sBIT", b"hIST"):
+                self.assertNotIn(dropped, types)
+            self.assertEqual(types.count(b"IHDR"), 1)
+            self.assertEqual(types.count(b"pHYs"), 1)
+            self.assertEqual(types.count(b"iCCP"), 1)
+            self.assertEqual(types.count(b"tEXt"), 2)
+            time_chunk = output_chunks[types.index(b"tIME")][1]
+            self.assertEqual(struct.unpack(">I", time_chunk[-4:])[0], zlib.crc32(time_chunk[4:-4]))
+            with Image.open(output_path) as image:
+                image.load()
+                self.assertEqual(image.info["Author"], "Alice")
+            self.assertEqual(verify_png(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+            # The ancillary chunks are not hashed: a changed tEXt value still verifies.
+            changed_path = directory / "changed-text.png"
+            changed = output_path.read_bytes().replace(
+                png_chunk(b"tEXt", b"Author\x00Alice"), png_chunk(b"tEXt", b"Author\x00Mallory")
+            )
+            self.assertNotEqual(changed, output_path.read_bytes())
+            changed_path.write_bytes(changed)
+            with Image.open(changed_path) as image:
+                self.assertEqual(image.text["Author"], "Mallory")
+            self.assertEqual(verify_png(changed_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+            # A PNG editor must stop at an unknown critical chunk.
+            critical_path = directory / "critical.png"
+            critical_output = directory / "critical-output.png"
+            critical_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + plain_chunks[0][1] + png_chunk(b"CRIT", b"?")
+                + b"".join(idat) + png_chunk(b"IEND", b"")
+            )
+            with self.assertRaisesRegex(ValueError, "unknown critical PNG chunk: CRIT"):
+                encode_png(critical_path, critical_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse(critical_output.exists())
+
+    def test_png_time_is_not_added_and_duplicate_time_is_refused(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            plain_path = directory / "plain.png"
+            output_path = directory / "output.png"
+            Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8), mode="RGB").save(plain_path)
+            encode_png(plain_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            types = {chunk_type for chunk_type, _ in png_chunk_list(output_path.read_bytes())}
+            self.assertEqual(types, {b"IHDR", b"IDAT", b"IEND"})
+
+            chunks = png_chunk_list(plain_path.read_bytes())
+            time_chunk = png_chunk(b"tIME", struct.pack(">HBBBBB", 2026, 1, 1, 0, 0, 0))
+            twice_path = directory / "two-times.png"
+            twice_output = directory / "two-times-output.png"
+            twice_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + chunks[0][1] + time_chunk + time_chunk
+                + b"".join(chunk for _, chunk in chunks[1:])
+            )
+            with self.assertRaisesRegex(ValueError, "more than one tIME chunk"):
+                encode_png(twice_path, twice_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse(twice_output.exists())
+
+    def test_png_trns_is_refused_for_rgb_dropped_for_rgba_and_ignored_by_verify(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            pixels = np.random.default_rng(11).integers(0, 256, (100, 100, 4), dtype=np.uint8)
+            rgb_key_path = directory / "rgb-key.png"
+            rgb_key_output = directory / "rgb-key-output.png"
+            Image.fromarray(pixels[:, :, :3], mode="RGB").save(rgb_key_path, transparency=(1, 2, 3))
+            self.assertIn(b"tRNS", rgb_key_path.read_bytes())
+            with self.assertRaisesRegex(
+                ValueError,
+                "^RGB PNG with a tRNS colour key is not supported; convert the image to RGBA$",
+            ):
+                encode_png(rgb_key_path, rgb_key_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse(rgb_key_output.exists())
+
+            # tRNS is not allowed with RGBA; the encoder drops it.
+            rgba_plain = directory / "rgba-plain.png"
+            rgba_path = directory / "rgba-trns.png"
+            rgba_output = directory / "rgba-output.png"
+            Image.fromarray(pixels, mode="RGBA").save(rgba_plain)
+            chunks = png_chunk_list(rgba_plain.read_bytes())
+            rgba_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + chunks[0][1] + png_chunk(b"tRNS", b"\x00\x01\x00\x02\x00\x03")
+                + b"".join(chunk for _, chunk in chunks[1:])
+            )
+            encode_png(rgba_path, rgba_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertNotIn(b"tRNS", [chunk_type for chunk_type, _ in png_chunk_list(rgba_output.read_bytes())])
+            self.assertEqual(verify_png(rgba_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+            # Verification ignores a tRNS chunk added to an RGB stego file later.
+            rgb_plain = directory / "rgb-plain.png"
+            rgb_output = directory / "rgb-output.png"
+            rgb_added = directory / "rgb-added-trns.png"
+            Image.fromarray(pixels[:, :, :3], mode="RGB").save(rgb_plain)
+            encode_png(rgb_plain, rgb_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            stego_chunks = png_chunk_list(rgb_output.read_bytes())
+            rgb_added.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + stego_chunks[0][1] + png_chunk(b"tRNS", b"\x00\x01\x00\x02\x00\x03")
+                + b"".join(chunk for _, chunk in stego_chunks[1:])
+            )
+            self.assertEqual(verify_png(rgb_added, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+    def test_wav_output_copies_every_byte_outside_the_samples(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            plain_path = directory / "plain.wav"
+            cover_path = directory / "cover.wav"
+            output_path = directory / "output.wav"
+            write_pcm_wav(plain_path, 2, 2, 3000)
+            plain = plain_path.read_bytes()
+            fmt_chunk = plain[12:12 + 8 + 16]
+            frame_bytes = plain[44:]
+            info_list = riff_chunk(b"LIST", b"INFO" + riff_chunk(b"INAM", b"Cover song\x00"))
+            odd_chunk = riff_chunk(b"odd ", b"12345")
+            # The data chunk holds one extra byte after the last whole frame, then a pad byte.
+            data_chunk = riff_chunk(b"data", frame_bytes + b"\x7f")
+            after_chunk = riff_chunk(b"id3 ", b"ID3 tag after data")
+            body = b"WAVE" + fmt_chunk + info_list + odd_chunk + data_chunk + after_chunk
+            cover_path.write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
+            self.assertEqual(read_pcm_wav_info(cover_path).frame_count, 3000)
+
+            encode_wav(cover_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"chunks", b"")
+            cover = cover_path.read_bytes()
+            output = output_path.read_bytes()
+            self.assertEqual(len(output), len(cover))
+            samples_start = 12 + len(fmt_chunk) + len(info_list) + len(odd_chunk) + 8
+            samples_end = samples_start + len(frame_bytes)
+            self.assertEqual(output[:samples_start], cover[:samples_start])
+            self.assertEqual(output[samples_end:], cover[samples_end:])
+            self.assertEqual(output[samples_start + 1:samples_end:2], cover[samples_start + 1:samples_end:2])
+            self.assertNotEqual(output[samples_start:samples_end], cover[samples_start:samples_end])
+            self.assertEqual(verify_wav(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+            # The chunks outside the samples are not hashed: a changed LIST byte still verifies.
+            changed_path = directory / "changed-list.wav"
+            changed = bytearray(output)
+            name_offset = output.index(b"Cover song")
+            changed[name_offset] ^= 0x20
+            changed_path.write_bytes(changed)
+            self.assertEqual(verify_wav(changed_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+    def test_wav_data_chunk_that_disagrees_with_wave_is_rejected(self) -> None:
+        real_find = stego.media._find_wav_data_chunk
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            cover_path = directory / "cover.wav"
+            output_path = directory / "output.wav"
+            write_pcm_wav(cover_path, 1, 2, 6000)
+            for name, change in (("offset", (2, 0)), ("size", (0, 2))):
+                with self.subTest(changed=name):
+                    def disagreeing_find(source_file: object) -> tuple[int, int]:
+                        offset, size = real_find(source_file)
+                        return offset + change[0], size + change[1]
+
+                    with patch("stego.media._find_wav_data_chunk", disagreeing_find):
+                        with self.assertRaisesRegex(ValueError, "does not match the wave module"):
+                            encode_wav(cover_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+                    self.assertFalse(output_path.exists())
+
+    def test_failed_png_write_removes_incomplete_output(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "input.png"
+            output_path = directory / "output.png"
+            Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8), mode="RGB").save(input_path)
+
+            def write_partial_then_fail(self: PngCarrier, path: Path, *args: object) -> None:
+                Path(path).write_bytes(b"\x89PNG partial")
+                raise OSError("disk full")
+
+            with patch.object(PngCarrier, "rewrite_to_path", write_partial_then_fail):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    encode_png(input_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse(output_path.exists())
+            self.assertEqual(sorted(path.name for path in directory.iterdir()), ["input.png"])
+
     def test_wav_tampering_outside_footprint_is_tampered(self) -> None:
         with TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -707,10 +2910,15 @@ class TestMaskedStego(unittest.TestCase):
                 wav_file.setframerate(8000)
                 wav_file.writeframes(bytes(range(256)) * 80)
             layout, _ = encode_wav(wav_input, wav_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 5, b"WAV bytes", b"kind=audio")
-            wav_data = load_pcm_wav_from_path(wav_output)
-            changed = wav_frame_bytes_to_carrier(wav_data.frame_bytes, wav_data.sample_width)
-            changed[layout.start_unit + layout.footprint] ^= np.uint8(1)
-            save_pcm_wav_to_path(wav_data_with_carrier(wav_data, changed), wav_tampered)
+            changed_unit = layout.start_unit + layout.footprint
+
+            def flip_changed_unit(chunk_start: int, units: np.ndarray) -> np.ndarray:
+                changed = units.copy()
+                if chunk_start <= changed_unit < chunk_start + units.size:
+                    changed[changed_unit - chunk_start] ^= np.uint8(1)
+                return changed
+
+            WavCarrier(wav_output).rewrite_to_path(wav_tampered, flip_changed_unit)
             self.assertEqual(verify_wav(wav_tampered, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Tampered")
 
     def test_multibyte_wav_sample_stride_round_trips(self) -> None:
@@ -733,7 +2941,7 @@ class TestMaskedStego(unittest.TestCase):
                     wav_file.setsampwidth(sample_width)
                     wav_file.setframerate(8000)
                     wav_file.writeframes(frame_bytes)
-                original = load_pcm_wav_from_path(wav_input)
+                original_info, original_frame_bytes = reference_wav_data(wav_input)
                 for lsb_count in (1, 3, 8):
                     with self.subTest(sample_width=sample_width, lsb_count=lsb_count):
                         wav_output = directory / f"width-{sample_width}-k-{lsb_count}.wav"
@@ -751,9 +2959,10 @@ class TestMaskedStego(unittest.TestCase):
                         result = verify_wav(wav_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
                         self.assertEqual(result.verdict, "Authentic", result.detail)
                         self.assertEqual(result.payload.user_payload, payload)
-                        stego_data = load_pcm_wav_from_path(wav_output)
-                        original_samples = decode_pcm_samples(original.frame_bytes, sample_width)
-                        stego_samples = decode_pcm_samples(stego_data.frame_bytes, sample_width)
+                        stego_info, stego_frame_bytes = reference_wav_data(wav_output)
+                        self.assertEqual(stego_info, original_info)
+                        original_samples = decode_pcm_samples(original_frame_bytes, sample_width)
+                        stego_samples = decode_pcm_samples(stego_frame_bytes, sample_width)
                         max_delta = max(
                             abs(before - after)
                             for before, after in zip(original_samples, stego_samples)
@@ -763,48 +2972,66 @@ class TestMaskedStego(unittest.TestCase):
                             all(
                                 before == after
                                 for index, (before, after) in enumerate(
-                                    zip(original.frame_bytes, stego_data.frame_bytes)
+                                    zip(original_frame_bytes, stego_frame_bytes)
                                 )
                                 if index % sample_width != 0
                             )
                         )
+                    tampered_path = directory / f"width-{sample_width}-high-byte-tampered.wav"
+                    tampered_data = bytearray(reference_wav_data(wav_output)[1])
+                    tampered_data[3 * sample_width + 1] ^= 1
+                    with wave.open(str(tampered_path), "wb") as wav_file:
+                        wav_file.setnchannels(original_info.channels)
+                        wav_file.setsampwidth(original_info.sample_width)
+                        wav_file.setframerate(original_info.frame_rate)
+                        wav_file.writeframes(tampered_data)
+                    self.assertEqual(
+                        verify_wav(tampered_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict,
+                        "Tampered",
+                    )
 
     def test_multibyte_wav_capacity_uses_sample_count(self) -> None:
         sample_width = 2
         sample_count = 6000
         lsb_count = 3
-        wav_data = WavPcmData(1, sample_width, 8000, sample_count, bytes(sample_count * sample_width))
-        carrier = wav_frame_bytes_to_carrier(wav_data.frame_bytes, wav_data.sample_width)
-        context = encode_wav_media_context(wav_data, carrier.size)
-        span = bootstrap_span(RECEIVER_PUBLIC_KEY)
-        record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, 0)
-        maximum = max_user_payload_length(carrier.size, span, span, lsb_count, record_overhead)
-        self.assertGreater(maximum, 0)
-        before = carrier.copy()
-        encoded, layout, payload = encode_carrier(
-            carrier, AUDIO_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
-            span, lsb_count, b"x" * maximum, b"",
-        )
-        self.assertEqual(layout.total_units, sample_count)
-        self.assertEqual(encoded.size, sample_count)
-        self.assertEqual(len(payload.user_payload), maximum)
-        with self.assertRaisesRegex(ValueError, "user payload exceeds capacity"):
-            encode_carrier(
-                carrier, AUDIO_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
-                span, lsb_count, b"x" * (maximum + 1), b"",
+        with TemporaryDirectory() as directory_name:
+            path = Path(directory_name) / "capacity.wav"
+            write_pcm_wav(path, 1, sample_width, sample_count)
+            source = WavCarrier(path)
+            carrier_units = reference_wav_units(path)
+            context = source.media_context
+            span = bootstrap_span(RECEIVER_PUBLIC_KEY)
+            record_overhead = serialized_record_length(MEDIA_ID_SIZE, 0, 0)
+            maximum = max_user_payload_length(source.total_units, span, span, lsb_count, record_overhead)
+            self.assertGreater(maximum, 0)
+            before = carrier_units.copy()
+            encoded, layout, payload = encode_carrier(
+                carrier_units, AUDIO_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                span, lsb_count, b"x" * maximum, b"",
             )
-        self.assertTrue(np.array_equal(carrier, before))
+            self.assertEqual(layout.total_units, sample_count)
+            self.assertEqual(encoded.size, sample_count)
+            self.assertEqual(len(payload.user_payload), maximum)
+            with self.assertRaisesRegex(ValueError, "user payload exceeds capacity"):
+                encode_carrier(
+                    carrier_units, AUDIO_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                    span, lsb_count, b"x" * (maximum + 1), b"",
+                )
+            self.assertTrue(np.array_equal(carrier_units, before))
 
-    def test_wav_carrier_stride_validation(self) -> None:
-        carrier = wav_frame_bytes_to_carrier(bytes(range(12)), 3)
-        self.assertTrue(carrier.flags["C_CONTIGUOUS"])
-        self.assertEqual(carrier.tolist(), [0, 3, 6, 9])
-        with self.assertRaises(ValueError):
-            wav_frame_bytes_to_carrier(b"12345", 2)
+    def test_wav_carrier_reads_sample_stride(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            path = Path(directory_name) / "stride.wav"
+            write_pcm_wav(path, 1, 3, 4)
+            source = WavCarrier(path, chunk_bytes=3)
+            expected = reference_wav_units(path)
+            self.assertEqual(expected.size, 4)
+            self.assertEqual(source.read_units(0, source.total_units).tolist(), expected.tolist())
+            self.assertTrue(all(chunk.size <= 1 for chunk in source.iter_chunks()))
         for sample_width in (0, 5):
             with self.subTest(sample_width=sample_width):
                 with self.assertRaises(ValueError):
-                    wav_frame_bytes_to_carrier(b"1234", sample_width)
+                    WavPcmInfo(1, sample_width, 8000, 1)
 
     def test_generated_media_id_matches_constant(self) -> None:
         (_, _, payload), _ = encode_image_carrier()
@@ -1061,11 +3288,11 @@ class TestMaskedStego(unittest.TestCase):
             Image.new("P", (20, 20)).save(palette)
             Image.fromarray(np.zeros((20, 20), dtype=np.uint16)).save(sixteen)
             with self.assertRaises(UnSupportedFileType):
-                load_png_from_path(jpeg)
-            with self.assertRaisesRegex(ValueError, "unsupported RGB PNG"):
-                load_png_from_path(palette)
-            with self.assertRaisesRegex(ValueError, "unsupported RGB PNG"):
-                load_png_from_path(sixteen)
+                PngCarrier(jpeg)
+            with self.assertRaisesRegex(ValueError, "PNG must be RGB or RGBA; palette and grayscale images are not supported"):
+                PngCarrier(palette)
+            with self.assertRaisesRegex(ValueError, "PNG must be RGB or RGBA; palette and grayscale images are not supported"):
+                PngCarrier(sixteen)
             self.assertEqual(verify_png(jpeg, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Cannot Verify")
 
     def test_pem_helpers_round_trip(self):
@@ -1086,6 +3313,635 @@ class TestMaskedStego(unittest.TestCase):
             ec_path.write_bytes(ec_key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
             with self.assertRaisesRegex(TypeError, "RSA public key"):
                 load_rsa_public_key_pem(ec_path)
+
+
+def reference_v3_media_hash(unit_bytes: bytes, fixed_bytes: bytes, media_code: int, lsb_count: int, start_unit: int, footprint: int, bootstrap_span: int) -> bytes:
+    """Calculate a v3 hash from raw streams without production hash helpers."""
+    masked = bytearray(unit_bytes)
+    masked[0:bootstrap_span] = bytes(value & 0xFE for value in masked[0:bootstrap_span])
+    mask = (~((1 << lsb_count) - 1)) & 0xFF
+    masked[start_unit:start_unit + footprint] = bytes(
+        value & mask for value in masked[start_unit:start_unit + footprint]
+    )
+    preimage = (
+        b"INF2005-ACW1\x00MEDIA-HASH-V3\x00"
+        + struct.pack(">BB", media_code, lsb_count)
+        + len(unit_bytes).to_bytes(8, "big")
+        + len(fixed_bytes).to_bytes(8, "big")
+        + start_unit.to_bytes(8, "big")
+        + footprint.to_bytes(8, "big")
+        + bootstrap_span.to_bytes(8, "big")
+        + hashlib.sha256(masked).digest()
+        + hashlib.sha256(fixed_bytes).digest()
+    )
+    return hashlib.sha256(preimage).digest()
+
+
+def reference_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_count: int, start_unit: int, footprint: int, bootstrap_span: int) -> bytes:
+    """Calculate the array reference through the independent raw-byte oracle."""
+    return reference_v3_media_hash(
+        carrier_units.tobytes(), b"", media_code, lsb_count, start_unit,
+        footprint, bootstrap_span,
+    )
+
+
+def streamed_hash(source: CarrierSource, media_code: int, lsb_count: int, start_unit: int, footprint: int, bootstrap_span: int) -> bytes:
+    """Hash paired source chunks using the production streaming hasher."""
+    hasher = MaskedMediaHasher(
+        media_code, lsb_count, source.total_units, start_unit, footprint,
+        bootstrap_span, source.fixed_byte_count,
+    )
+    for units, fixed_bytes in source.iter_chunks_with_fixed_bytes():
+        hasher.update(units, fixed_bytes)
+    return hasher.digest()
+
+
+def random_units(size: int, seed: int = 7) -> np.ndarray:
+    return np.random.default_rng(seed).integers(0, 256, size, dtype=np.uint8)
+
+
+def write_pcm_wav(path: Path, channels: int, sample_width: int, frame_count: int, seed: int = 3) -> None:
+    frame_bytes = random_units(frame_count * channels * sample_width, seed).tobytes()
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(8000)
+        wav_file.writeframes(frame_bytes)
+
+
+def reference_wav_data(path: Path) -> tuple[WavPcmInfo, bytes]:
+    """Read WAV header and frames directly as a small test-local reference."""
+    with wave.open(str(path), "rb") as wav_file:
+        info = WavPcmInfo(
+            wav_file.getnchannels(),
+            wav_file.getsampwidth(),
+            wav_file.getframerate(),
+            wav_file.getnframes(),
+        )
+        return info, wav_file.readframes(info.frame_count)
+
+
+def reference_wav_units(path: Path) -> np.ndarray:
+    """Extract each sample's least-significant byte with the wave module oracle."""
+    info, frame_bytes = reference_wav_data(path)
+    return np.frombuffer(frame_bytes, dtype=np.uint8)[::info.sample_width].copy()
+
+
+class ShortCarrier(ArrayCarrier):
+    """Declare every unit but yield one unit fewer."""
+
+    def iter_chunks(self) -> Iterator[np.ndarray]:
+        chunks = list(super().iter_chunks())
+        chunks[-1] = chunks[-1][:-1]
+        yield from chunks
+
+
+class LongCarrier(ArrayCarrier):
+    """Declare every unit but yield one unit more."""
+
+    def iter_chunks(self) -> Iterator[np.ndarray]:
+        yield from super().iter_chunks()
+        yield np.zeros(1, dtype=np.uint8)
+
+
+class ReadTrackingCarrier(ArrayCarrier):
+    """Record bounded ranges requested by a decoder."""
+
+    def __init__(self, carrier_units: np.ndarray, chunk_units: int = DEFAULT_CHUNK_BYTES) -> None:
+        super().__init__(carrier_units, chunk_units)
+        self.read_ranges: list[tuple[int, int]] = []
+
+    def read_units(self, start_unit: int, count: int) -> np.ndarray:
+        self.read_ranges.append((start_unit, count))
+        return super().read_units(start_unit, count)
+
+
+class TestChunkedCarrier(unittest.TestCase):
+    SPAN = bootstrap_span(RECEIVER_PUBLIC_KEY)
+
+    def test_four_mib_payload_k8_performance_and_encode_memory(self) -> None:
+        """A packed 4 MiB WAV packet stays within normal time and memory limits."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "large-input.wav"
+            output_path = directory / "large-output.wav"
+            payload = bytes(range(256)) * (4 * 1024 * 1024 // 256)
+            frame_count = len(payload) + 8192
+            with wave.open(str(input_path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(1)
+                wav_file.setframerate(8000)
+                remaining = frame_count
+                block = bytes(1024 * 1024)
+                while remaining:
+                    frames = min(remaining, len(block))
+                    wav_file.writeframesraw(block[:frames])
+                    remaining -= frames
+                wav_file.writeframes(b"")
+
+            tracemalloc.start()
+            started = time.perf_counter()
+            encode_wav(
+                input_path,
+                output_path,
+                PRIVATE_KEY,
+                RECEIVER_PUBLIC_KEY,
+                2048,
+                8,
+                payload,
+                b"kind=performance",
+            )
+            encode_seconds = time.perf_counter() - started
+            _, peak_bytes = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+
+            started = time.perf_counter()
+            result = verify_wav(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            verify_seconds = time.perf_counter() - started
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload.user_payload, payload)
+            self.assertLess(
+                encode_seconds + verify_seconds,
+                10.0,
+                f"encode={encode_seconds:.3f}s verify={verify_seconds:.3f}s",
+            )
+            memory_limit = 4 * len(payload) + 16 * 1024 * 1024
+            self.assertLess(
+                peak_bytes,
+                memory_limit,
+                f"encode peak={peak_bytes / 1024 / 1024:.2f} MiB; "
+                f"limit={memory_limit / 1024 / 1024:.2f} MiB",
+            )
+
+    def test_wav_carrier_media_properties(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            path = Path(directory_name) / "media-context.wav"
+            write_pcm_wav(path, 2, 2, 3001)
+            source = WavCarrier(path, 64)
+            info = read_pcm_wav_info(path)
+            self.assertEqual(source.media_code, AUDIO_MEDIA_CODE)
+            self.assertEqual(
+                source.media_context,
+                struct.pack(">HBIQ", info.channels, info.sample_width, info.frame_rate, info.frame_count),
+            )
+
+    def test_v3_raw_reference_hash_matches_png_and_wav_chunk_streams(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            cases: list[tuple[str, Path, bytes, bytes, int]] = []
+            for channels in (3, 4):
+                image = np.random.default_rng(100 + channels).integers(
+                    0, 256, (90, 91, channels), dtype=np.uint8
+                )
+                path = directory / f"channels-{channels}.png"
+                Image.fromarray(image, mode="RGB" if channels == 3 else "RGBA").save(path)
+                with Image.open(path) as decoded:
+                    raw_pixels = np.asarray(decoded, dtype=np.uint8).copy()
+                unit_bytes = raw_pixels[:, :, :3].tobytes()
+                fixed_bytes = b"" if channels == 3 else raw_pixels[:, :, 3].tobytes()
+                cases.append((f"png-{channels}", path, unit_bytes, fixed_bytes, IMAGE_MEDIA_CODE))
+
+            for channels, sample_width in ((1, 1), (2, 2), (1, 3), (2, 4)):
+                path = directory / f"wav-{channels}-{sample_width}.wav"
+                write_pcm_wav(path, channels, sample_width, 6000 // channels, seed=channels + sample_width)
+                info, raw_samples = reference_wav_data(path)
+                matrix = np.frombuffer(raw_samples, dtype=np.uint8).reshape((-1, info.sample_width))
+                cases.append((
+                    f"wav-{channels}-{sample_width}", path, matrix[:, 0].tobytes(),
+                    matrix[:, 1:].tobytes(), AUDIO_MEDIA_CODE,
+                ))
+
+            for name, path, unit_bytes, fixed_bytes, media_code in cases:
+                start_unit = self.SPAN + 19
+                footprint = 1000
+                expected = reference_v3_media_hash(
+                    unit_bytes, fixed_bytes, media_code, 3, start_unit, footprint, self.SPAN
+                )
+                with self.subTest(name=name):
+                    for chunk_size in (1, 7, 17, 1024):
+                        if name.startswith("png"):
+                            source = PngCarrier(path, chunk_size)
+                        else:
+                            source = WavCarrier(path, chunk_size)
+                        self.assertEqual(source.fixed_byte_count, len(fixed_bytes))
+                        self.assertEqual(
+                            streamed_hash(source, media_code, 3, start_unit, footprint, self.SPAN),
+                            expected,
+                        )
+
+    def test_lsb_range_transform_crosses_chunk_edges(self) -> None:
+        source = random_units(12000)
+        bit_sequence = np.random.default_rng(19).integers(0, 2, 179, dtype=np.uint8)
+        region_start = 2077
+        for lsb_count in (1, 3, 8):
+            touched_units = ceil_unit_count(bit_sequence.size, lsb_count)
+            expected = source.copy()
+            expected[region_start:region_start + touched_units] = write_lsb_bits(
+                expected[region_start:region_start + touched_units], bit_sequence, lsb_count
+            )
+            for chunk_units in (13, 64, 997, 2048):
+                with self.subTest(lsb_count=lsb_count, chunk_units=chunk_units):
+                    transformed = ArrayCarrier(source, chunk_units).rewrite(
+                        lsb_range_transform(region_start, bit_sequence, lsb_count)
+                    )
+                    self.assertTrue(np.array_equal(transformed, expected))
+
+    def test_streamed_hash_equals_whole_array_reference(self) -> None:
+        cases = (
+            (0, 0, 0),
+            (5000, 2048, 0),
+            (5000, 2048, 1),
+            (5000, 2048, 2952),
+            (24000, 3001, 17),
+        )
+        for total, start, footprint in cases:
+            for lsb_count in (1, 3, 8):
+                with self.subTest(total=total, start=start, footprint=footprint, lsb_count=lsb_count):
+                    source = random_units(total)
+                    span = min(start, self.SPAN)
+                    expected = reference_masked_media_hash(source, AUDIO_MEDIA_CODE, lsb_count, start, footprint, span)
+                    self.assertEqual(calculate_masked_media_hash(source, AUDIO_MEDIA_CODE, lsb_count, start, footprint, span), expected)
+                    self.assertEqual(streamed_hash(ArrayCarrier(source, 997), AUDIO_MEDIA_CODE, lsb_count, start, footprint, span), expected)
+
+    def test_chunk_size_does_not_change_digest(self) -> None:
+        source = random_units(12000)
+        expected = reference_masked_media_hash(source, IMAGE_MEDIA_CODE, 3, 4000, 3000, self.SPAN)
+        for chunk_units in (1, 2, 7, 64, 2047, 2048, 2049, 4096, 12000, 50000):
+            with self.subTest(chunk_units=chunk_units):
+                self.assertEqual(
+                    streamed_hash(ArrayCarrier(source, chunk_units), IMAGE_MEDIA_CODE, 3, 4000, 3000, self.SPAN),
+                    expected,
+                )
+
+    def test_masks_cross_chunk_edges(self) -> None:
+        source = random_units(12000)
+        start, footprint = 4000, 3000
+        cases = {
+            "bootstrap crosses one edge": 1000,
+            "packet crosses one edge": 4500,
+            "packet spans many chunks": 250,
+        }
+        for name, chunk_units in cases.items():
+            for lsb_count in (1, 3, 8):
+                with self.subTest(case=name, lsb_count=lsb_count):
+                    carrier_source = ArrayCarrier(source, chunk_units)
+                    edges = set(range(chunk_units, source.size, chunk_units))
+                    if name.startswith("bootstrap"):
+                        self.assertTrue(any(0 < edge < self.SPAN for edge in edges))
+                    elif name.startswith("packet crosses"):
+                        self.assertEqual(sum(start < edge < start + footprint for edge in edges), 1)
+                    else:
+                        self.assertGreater(sum(start < edge < start + footprint for edge in edges), 5)
+                    baseline = streamed_hash(carrier_source, IMAGE_MEDIA_CODE, lsb_count, start, footprint, self.SPAN)
+                    self.assertEqual(baseline, reference_masked_media_hash(source, IMAGE_MEDIA_CODE, lsb_count, start, footprint, self.SPAN))
+                    for edge in sorted(edges)[:3]:
+                        for unit in (edge - 1, edge):
+                            masked_bits = 1 if unit < self.SPAN else lsb_count if start <= unit < start + footprint else 0
+                            if masked_bits:
+                                inside = source.copy()
+                                inside[unit] ^= np.uint8((1 << masked_bits) - 1)
+                                self.assertEqual(streamed_hash(ArrayCarrier(inside, chunk_units), IMAGE_MEDIA_CODE, lsb_count, start, footprint, self.SPAN), baseline)
+                            if masked_bits < 8:
+                                outside = source.copy()
+                                outside[unit] ^= np.uint8(1 << masked_bits)
+                                self.assertNotEqual(streamed_hash(ArrayCarrier(outside, chunk_units), IMAGE_MEDIA_CODE, lsb_count, start, footprint, self.SPAN), baseline)
+
+    def test_alignment_padding_units_are_masked(self) -> None:
+        source = carrier(10000)
+        (encoded, layout, _), context = encode_image_carrier(source, start=2048, k=5, user_payload=b"x")
+        self.assertGreater(layout.pad_bits, 0)
+        last_unit = layout.start_unit + layout.footprint - 1
+        changed = source.copy()
+        changed[last_unit] ^= np.uint8(0b11111)
+        for chunk_units in (1, 13, last_unit - 1, last_unit, last_unit + 1):
+            with self.subTest(chunk_units=chunk_units):
+                self.assertEqual(
+                    streamed_hash(ArrayCarrier(changed, chunk_units), IMAGE_MEDIA_CODE, 5, layout.start_unit, layout.footprint, layout.bootstrap_span),
+                    streamed_hash(ArrayCarrier(source, chunk_units), IMAGE_MEDIA_CODE, 5, layout.start_unit, layout.footprint, layout.bootstrap_span),
+                )
+
+    def test_hasher_rejects_wrong_unit_counts(self) -> None:
+        hasher = MaskedMediaHasher(IMAGE_MEDIA_CODE, 3, 10, 4, 2, 2)
+        hasher.update(np.zeros(9, dtype=np.uint8))
+        with self.assertRaisesRegex(ValueError, "fewer units than total_units.*consumed_units=9.*total_units=10"):
+            hasher.digest()
+        with self.assertRaisesRegex(ValueError, "more units than total_units.*consumed_units=11"):
+            hasher.update(np.zeros(2, dtype=np.uint8))
+
+    def test_hasher_rejects_wrong_fixed_byte_counts(self) -> None:
+        hasher = MaskedMediaHasher(IMAGE_MEDIA_CODE, 3, 10, 4, 2, 2, 2)
+        hasher.update(np.zeros(10, dtype=np.uint8), b"x")
+        self.assertEqual(hasher.consumed_fixed_bytes, 1)
+        with self.assertRaisesRegex(ValueError, "fewer fixed bytes than fixed_byte_count"):
+            hasher.digest()
+
+        hasher = MaskedMediaHasher(IMAGE_MEDIA_CODE, 3, 10, 4, 2, 2, 1)
+        with self.assertRaisesRegex(ValueError, "more fixed bytes than fixed_byte_count"):
+            hasher.update(np.zeros(10, dtype=np.uint8), b"xy")
+
+    def test_short_and_long_carrier_streams_cannot_verify(self) -> None:
+        (encoded, layout, _), context = encode_image_carrier(carrier(10000))
+        self.assertEqual(decode_carrier_source(ArrayCarrier(encoded, 999), IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+        for source_type, detail in ((ShortCarrier, "fewer units"), (LongCarrier, "more units")):
+            with self.subTest(source=source_type.__name__):
+                result = decode_carrier_source(source_type(encoded, 999), IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                self.assertEqual(result.verdict, "Cannot Verify")
+                self.assertIn(detail, result.detail)
+                with self.assertRaisesRegex(ValueError, detail):
+                    encode_carrier_source_from(source_type(carrier(10000), 999))
+
+    def test_carrier_ranges_are_checked(self) -> None:
+        source = ArrayCarrier(carrier(10), 4)
+        self.assertEqual(source.read_units(8, 2).tolist(), [8, 9])
+        self.assertEqual(source.read_units(10, 0).size, 0)
+        for start_unit, count in ((9, 2), (11, 0)):
+            with self.subTest(start_unit=start_unit, count=count):
+                with self.assertRaisesRegex(CarrierAccessError, "out of bounds"):
+                    source.read_units(start_unit, count)
+        with self.assertRaises(ValueError):
+            ArrayCarrier(carrier(10), 0)
+
+    def test_embedding_requires_chunks_in_order(self) -> None:
+        encoding = encode_carrier_source_from(ArrayCarrier(carrier(10000)))
+        with self.assertRaisesRegex(ValueError, "in order"):
+            encoding.embed_chunk(5, np.zeros(5, dtype=np.uint8))
+
+    def test_array_input_change_between_passes_is_detected(self) -> None:
+        source = carrier(10000)
+        encoding = encode_carrier_source_from(ArrayCarrier(source))
+        source[9000] ^= np.uint8(0x80)
+        with self.assertRaisesRegex(ValueError, "carrier changed between encoding passes"):
+            ArrayCarrier(source).rewrite(encoding.embed_chunk)
+            encoding.finish()
+
+    def test_wav_units_hash_and_ranges_match_legacy_loader(self) -> None:
+        formats = ((1, 1), (1, 2), (2, 2), (2, 3), (1, 4), (3, 4))
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for channels, sample_width in formats:
+                with self.subTest(channels=channels, sample_width=sample_width):
+                    path = directory / f"c{channels}-w{sample_width}.wav"
+                    write_pcm_wav(path, channels, sample_width, 3001)
+                    expected = reference_wav_units(path)
+                    info, raw_samples = reference_wav_data(path)
+                    raw_matrix = np.frombuffer(raw_samples, dtype=np.uint8).reshape((-1, info.sample_width))
+                    fixed_bytes = raw_matrix[:, 1:].tobytes()
+                    expected_hash = reference_v3_media_hash(
+                        expected.tobytes(), fixed_bytes, AUDIO_MEDIA_CODE, 3, 2100, 500, 2048
+                    )
+                    for chunk_bytes in (1, 7 * channels * sample_width, 4096, 1 << 20):
+                        source = WavCarrier(path, chunk_bytes)
+                        self.assertEqual(source.total_units, expected.size)
+                        chunks = list(source.iter_chunks())
+                        self.assertTrue(all(chunk.size % channels == 0 for chunk in chunks))
+                        self.assertTrue(np.array_equal(np.concatenate(chunks), expected))
+                        for start_unit, count in ((0, 1), (1, channels * 5 + 1), (expected.size - 3, 3), (17, 0)):
+                            self.assertTrue(np.array_equal(source.read_units(start_unit, count), expected[start_unit:start_unit + count]))
+                        with self.assertRaises(CarrierAccessError):
+                            source.read_units(expected.size - 1, 2)
+                        self.assertEqual(
+                            streamed_hash(source, AUDIO_MEDIA_CODE, 3, 2100, 500, 2048),
+                            expected_hash,
+                        )
+                    info = read_pcm_wav_info(path)
+                    source = WavCarrier(path)
+                    self.assertEqual(source.media_context, encode_wav_media_context(info))
+
+    def test_unchanged_chunked_wav_output_is_byte_identical(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for channels, sample_width in ((1, 1), (2, 2), (2, 3), (1, 4)):
+                with self.subTest(channels=channels, sample_width=sample_width):
+                    path = directory / "input.wav"
+                    write_pcm_wav(path, channels, sample_width, 2500)
+                    rewritten = directory / "rewritten.wav"
+                    WavCarrier(path, 333).rewrite_to_path(rewritten, lambda start, units: units)
+                    self.assertEqual(rewritten.read_bytes(), path.read_bytes())
+
+    def test_wav_formats_round_trip_across_chunk_boundaries(self) -> None:
+        formats = ((1, 1), (1, 2), (2, 2), (2, 3), (1, 4))
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for channels, sample_width in formats:
+                path = directory / f"c{channels}-w{sample_width}.wav"
+                write_pcm_wav(path, channels, sample_width, 12000 // channels)
+                original_info, original_frame_bytes = reference_wav_data(path)
+                bytes_per_frame = channels * sample_width
+                for lsb_count in (1, 3, 8):
+                    for chunk_frames in (500 // channels, 97):
+                        with self.subTest(channels=channels, sample_width=sample_width, lsb_count=lsb_count, chunk_frames=chunk_frames):
+                            source = WavCarrier(path, chunk_frames * bytes_per_frame)
+                            chunk_units = source.frames_per_chunk * channels
+                            context = source.media_context
+                            payload = f"c={channels};w={sample_width};k={lsb_count};".encode("ascii").ljust(700, b"p")
+                            encoding = prepare_carrier_encoding(source, AUDIO_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, self.SPAN + 3, lsb_count, payload, b"chunked")
+                            layout = encoding.layout
+                            edges = range(chunk_units, source.total_units, chunk_units)
+                            self.assertTrue(any(0 < edge < layout.bootstrap_span for edge in edges))
+                            self.assertGreaterEqual(sum(layout.start_unit < edge < layout.start_unit + layout.footprint for edge in edges), 1)
+                            output = directory / "output.wav"
+                            source.rewrite_to_path(output, encoding.embed_chunk, encoding.update_fixed_bytes)
+                            encoding.finish()
+                            result = decode_carrier_source(WavCarrier(output, chunk_frames * bytes_per_frame), AUDIO_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                            self.assertEqual(result.verdict, "Authentic", result.detail)
+                            self.assertEqual(result.payload, encoding.payload)
+                            self.assertEqual(verify_wav(output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+                            stego_info, stego_frame_bytes = reference_wav_data(output)
+                            self.assertEqual(stego_info, original_info)
+                            before = np.frombuffer(original_frame_bytes, dtype=np.uint8).reshape(-1, sample_width)
+                            after = np.frombuffer(stego_frame_bytes, dtype=np.uint8).reshape(-1, sample_width)
+                            self.assertTrue(np.array_equal(before[:, 1:], after[:, 1:]))
+                            changed = np.flatnonzero(before[:, 0] != after[:, 0])
+                            self.assertTrue(np.all((changed < layout.bootstrap_span) | ((changed >= layout.start_unit) & (changed < layout.start_unit + layout.footprint))))
+                            self.assertTrue(np.all((before[:layout.bootstrap_span, 0] ^ after[:layout.bootstrap_span, 0]) <= 1))
+                            stego_units = np.frombuffer(stego_frame_bytes, dtype=np.uint8)[::sample_width].copy()
+                            self.assertEqual(stego_units.size, layout.total_units)
+                            stego_matrix = np.frombuffer(stego_frame_bytes, dtype=np.uint8).reshape((-1, sample_width))
+                            fixed_bytes = stego_matrix[:, 1:].tobytes()
+                            self.assertEqual(
+                                reference_v3_media_hash(
+                                    stego_units.tobytes(), fixed_bytes, AUDIO_MEDIA_CODE,
+                                    lsb_count, layout.start_unit, layout.footprint,
+                                    layout.bootstrap_span,
+                                ),
+                                encoding.payload.media_hash,
+                            )
+
+    def test_truncated_wav_is_cannot_verify_before_protocol_reads(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "input.wav"
+            output = directory / "output.wav"
+            write_pcm_wav(path, 2, 2, 4000)
+            encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"truncate me", b"")
+            truncated = directory / "truncated.wav"
+            truncated.write_bytes(output.read_bytes()[:-1])
+            with self.assertRaisesRegex(ValueError, "shorter than its declared frame count"):
+                read_pcm_wav_info(truncated)
+            with patch("stego.core.decode_carrier_source", wraps=decode_carrier_source) as decode:
+                result = verify_wav(truncated, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Cannot Verify")
+            self.assertIn("shorter than its declared frame count", result.detail)
+            decode.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "shorter than its declared frame count"):
+                encode_wav(truncated, directory / "never.wav", PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse((directory / "never.wav").exists())
+
+    def test_mid_stream_read_failures_are_cannot_verify(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "input.wav"
+            output = directory / "output.wav"
+            write_pcm_wav(path, 1, 2, 12000)
+            encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"mid-stream", b"")
+            context = encode_wav_media_context(read_pcm_wav_info(output))
+
+            source = WavCarrier(output, 1024)
+            with open(output, "r+b") as handle:
+                handle.truncate(os.path.getsize(output) - 64)
+            result = decode_carrier_source(source, AUDIO_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Cannot Verify")
+            self.assertIn("masked media hash", result.detail)
+            self.assertIn("ended before its declared frame count", result.detail)
+
+            encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"mid-stream", b"")
+            real_readframes = wave.Wave_read.readframes
+            calls = []
+
+            def failing_readframes(wav_file: wave.Wave_read, frame_count: int) -> bytes:
+                calls.append(frame_count)
+                if len(calls) == 4:
+                    raise OSError("simulated device error")
+                return real_readframes(wav_file, frame_count)
+
+            source = WavCarrier(output, 1024)
+            with patch.object(wave.Wave_read, "readframes", failing_readframes):
+                result = decode_carrier_source(source, AUDIO_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Cannot Verify")
+            self.assertIn("could not read WAV frame data", result.detail)
+
+            source = WavCarrier(output, 1024)
+            write_pcm_wav(output, 2, 2, 6000)
+            result = decode_carrier_source(source, AUDIO_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Cannot Verify")
+            self.assertIn("header changed", result.detail)
+
+    def test_wav_input_change_between_passes_is_detected(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "input.wav"
+            output = directory / "output.wav"
+            write_pcm_wav(path, 1, 2, 8000)
+
+            source = WavCarrier(path, 4096)
+            context = source.media_context
+            encoding = prepare_carrier_encoding(source, AUDIO_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            flip_carrier_byte_of_last_sample(path, 2)
+            source.rewrite_to_path(output, encoding.embed_chunk, encoding.update_fixed_bytes)
+            with self.assertRaisesRegex(ValueError, "carrier changed between encoding passes"):
+                encoding.finish()
+
+            write_pcm_wav(path, 1, 2, 8000)
+            real_prepare = prepare_carrier_encoding
+
+            def prepare_then_change_input(*args: object) -> CarrierEncoding:
+                prepared = real_prepare(*args)
+                flip_carrier_byte_of_last_sample(path, 2)
+                return prepared
+
+            output.unlink()
+            with patch("stego.core.prepare_carrier_encoding", prepare_then_change_input):
+                with self.assertRaisesRegex(ValueError, "carrier changed between encoding passes"):
+                    encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"x", b"")
+            self.assertFalse(output.exists())
+
+    def test_streamed_wav_round_trip(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "input.wav"
+            output = directory / "output.wav"
+            write_pcm_wav(path, 2, 2, 5000)
+            encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"streamed", b"")
+            self.assertEqual(verify_wav(output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Authentic")
+
+    def test_wav_carrier_memory_does_not_grow_with_carrier_size(self) -> None:
+        peaks = {}
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            for megabytes in (2, 16):
+                path = directory / f"{megabytes}.wav"
+                output = directory / f"{megabytes}-out.wav"
+                write_large_pcm_wav(path, megabytes * 1024 * 1024)
+                tracemalloc.start()
+                try:
+                    encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"bounded", b"")
+                    result = verify_wav(output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                    peaks[megabytes] = tracemalloc.get_traced_memory()[1]
+                finally:
+                    tracemalloc.stop()
+                self.assertEqual(result.verdict, "Authentic")
+        self.assertLess(peaks[16], 8 * 1024 * 1024)
+        self.assertLess(peaks[16], peaks[2] * 2)
+
+
+def encode_carrier_source_from(source: CarrierSource) -> CarrierEncoding:
+    context = struct.pack(">II", source.total_units // 3, 1)
+    return prepare_carrier_encoding(source, IMAGE_MEDIA_CODE, context, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"hello", b"{}")
+
+
+def flip_carrier_byte_of_last_sample(path: Path, sample_width: int) -> None:
+    """Flip the top bit of the last sample's least-significant byte, which is a hashed carrier bit."""
+    with open(path, "r+b") as handle:
+        handle.seek(-sample_width, os.SEEK_END)
+        value = handle.read(1)[0]
+        handle.seek(-sample_width, os.SEEK_END)
+        handle.write(bytes((value ^ 0x80,)))
+
+
+def write_mono8_wav(path: Path, frame_count: int) -> None:
+    """Write a mono 8-bit WAV incrementally for file-payload tests."""
+    block = bytes((index % 251 for index in range(1024 * 1024)))
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(1)
+        wav_file.setframerate(8000)
+        remaining = frame_count
+        while remaining:
+            count = min(remaining, len(block))
+            wav_file.writeframesraw(block[:count])
+            remaining -= count
+
+
+def write_pattern_file(path: Path, byte_count: int) -> None:
+    """Write deterministic payload bytes in bounded blocks."""
+    block = bytes((index % 251 for index in range(1024 * 1024)))
+    with path.open("wb") as payload_file:
+        remaining = byte_count
+        while remaining:
+            count = min(remaining, len(block))
+            payload_file.write(block[:count])
+            remaining -= count
+
+
+def file_sha256(path: Path) -> bytes:
+    """Hash a file in bounded reads."""
+    hasher = hashlib.sha256()
+    with path.open("rb") as input_file:
+        while chunk := input_file.read(1024 * 1024):
+            hasher.update(chunk)
+    return hasher.digest()
+
+
+def write_large_pcm_wav(path: Path, frame_byte_count: int) -> None:
+    """Write 16-bit stereo PCM in blocks, without holding the whole file in memory."""
+    block = random_units(1024 * 1024).tobytes()
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(2)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(44100)
+        wav_file.setnframes(frame_byte_count // 4)
+        for _ in range(frame_byte_count // len(block)):
+            wav_file.writeframesraw(block)
 
 
 if __name__ == "__main__":

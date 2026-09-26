@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verify media — StegoVerify</title>
+  <meta name="description" content="Verify a received PNG, WAV, or MKV file and recover its authenticated payload.">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="verify-page">
+  <a class="skip-link" href="#verify-title">Skip to verification form</a>
+  <div class="page-shell">
+    <header class="site-header">
+      <div class="brand-row">
+        <a class="brand-mark" href="{{ url_for('web.index') }}" aria-label="StegoVerify home"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m16 2 12 7v14l-12 7L4 23V9Z M4 9l12 7 12-7 M16 16v14 M10 5v14l12 7 M22 5v14l-12 7"/></svg><span>StegoVerify</span></a>
+        <nav class="workflow-nav" aria-label="Workflows">
+          <a href="{{ url_for('web.index') }}#how-it-works">How it works</a>
+          <a href="{{ url_for('web.index') }}#encode-title">Encode</a>
+          <a class="is-current" aria-current="page" href="{{ url_for('web.verify_page') }}">Verify / Decode</a>
+        </nav>
+        <a class="header-cta" href="{{ url_for('web.index') }}#encode-title">Create media <span aria-hidden="true">↗</span></a>
+      </div>
+    </header>
+    <main id="top" class="verify-main">
+      <div class="verify-breadcrumb content-width"><a href="{{ url_for('web.index') }}">Home</a><span aria-hidden="true">/</span><span>Verify and decode</span><span class="verify-breadcrumb-code">RECEIVER WORKSPACE / V3</span></div>
+      <section id="verify-panel" class="verify-stage" aria-labelledby="verify-title">
+        <div class="verify-intro">
+          <p class="verify-kicker"><span aria-hidden="true"></span> RECEIVER / AUTHENTICATION</p>
+          <h1 id="verify-title" tabindex="-1">Proof beneath<br><span>the surface.</span></h1>
+          <p>Open the receiver’s bootstrap. Check the sender’s signature. Confirm media integrity before recovering the payload.</p>
+          <div class="verify-diagram" aria-hidden="true">
+            <svg viewBox="0 0 410 255" fill="none"><g stroke="#b4caff" stroke-opacity=".36"><path d="M50 115 205 27l155 88-155 88Z"/><path d="M50 151 205 63l155 88-155 88Z"/><path d="M50 115v36m155-124v36m155 52v36m-155 52v36" stroke-dasharray="3 5"/><path d="M97 115 205 53l108 62-108 62Z"/></g><path d="M110 115 205 60l95 55-95 55Z" fill="#87baff" fill-opacity=".15" stroke="#b8d4ff"/><path d="m166 115 39-23 39 23-39 23Z" fill="#bed8ff" fill-opacity=".16" stroke="#d2e4ff"/><path d="M192 115l9 8 18-21" stroke="#e0f1ff" stroke-width="2"/><g fill="#cfe2ff"><circle cx="50" cy="115" r="2"/><circle cx="205" cy="27" r="2"/><circle cx="360" cy="115" r="2"/><circle cx="205" cy="203" r="2"/></g><text x="23" y="223">01 / BOOTSTRAP</text><text x="152" y="223">02 / SIGNATURE</text><text x="296" y="223">03 / HASH</text></svg>
+          </div>
+          <p class="verify-stage-note">RECEIVER-GATED · LOCAL PROCESSING · PROTOCOL V3</p>
+        </div>
+        <section class="verify-card" aria-labelledby="verify-form-title">
+          <div class="verify-card-head"><span class="eyebrow">01 / DECODE AND VERIFY</span><span class="verify-card-mark" aria-hidden="true">V</span></div>
+          <h2 id="verify-form-title">Decode and verify media</h2>
+          <p class="verify-form-lede">Upload the received file, the sender’s trusted public key, and your encrypted private key.</p>
+          <form id="decode-form" enctype="multipart/form-data">
+            <label>Received stego file<input id="decode-file" name="stego" type="file" accept=".png,.wav,.mkv,image/png,audio/wav,video/x-matroska" required></label>
+            <div class="field-grid">
+              <label>Sender public key (.pem)<input name="sender_public_key" type="file" accept=".pem,text/plain" required></label>
+              <label>Receiver encrypted private key (.pem)<input name="receiver_private_key" type="file" accept=".pem,text/plain" required></label>
+            </div>
+            <label>Receiver private-key password<input name="receiver_key_password" type="password" minlength="8" required autocomplete="off"></label>
+            <p class="verify-form-note">No original cover, start location, or LSB count is needed. The receiver’s private key recovers them from the encrypted bootstrap.</p>
+            <button type="submit" class="primary">Verify and decrypt payload <span aria-hidden="true">→</span></button>
+          </form>
+          <div id="decode-progress" class="result" role="status" aria-live="polite"></div>
+          <section id="decode-result" class="result" aria-label="Verification result" tabindex="-1" hidden></section>
+        </section>
+      </section>
+      <section class="verify-explainer content-width" aria-labelledby="verify-explainer-title"><div><p class="eyebrow">THE VERIFICATION SEQUENCE</p><h2 id="verify-explainer-title">Three checks.<br><span>One clear verdict.</span></h2></div><ol><li><span>01 / ACCESS</span><strong>Open the bootstrap</strong><p>Your private key recovers the packet geometry and AES session material.</p></li><li><span>02 / IDENTITY</span><strong>Verify the sender</strong><p>The trusted public key checks the signature before decryption.</p></li><li><span>03 / INTEGRITY</span><strong>Check the media</strong><p>The full media hash decides whether the preserved content still matches.</p></li></ol></section>
+    </main>
+    <footer class="content-width"><a href="{{ url_for('web.index') }}">StegoVerify <span>/ protocol v3</span></a><span>Built for the proof beneath the surface.</span><a href="{{ url_for('web.index') }}#encode-title">Create protected media ↗</a></footer>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.15/dist/gsap.min.js" defer></script>
+  <script src="{{ url_for('static', filename='motion.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='verify.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='navigation.js') }}" defer></script>
+</body>
+</html>

@@ -54,14 +54,14 @@ def anchors(path: Path) -> set[str]:
     return found
 
 
-def destination(value: str) -> tuple[str, str]:
+def destination(value: str) -> tuple[str, str, str]:
     value = value.strip()
     if value.startswith("<") and ">" in value:
         value = value[1:value.index(">")]
     else:
         value = value.split(maxsplit=1)[0] if value else value
     parsed = urlsplit(value)
-    return unquote(parsed.path), unquote(parsed.fragment)
+    return unquote(parsed.path), unquote(parsed.fragment), parsed.scheme
 
 
 def main() -> int:
@@ -72,8 +72,8 @@ def main() -> int:
 
     for source in files:
         for match in MARKDOWN_LINK.finditer(source.read_text(encoding="utf-8")):
-            target_text, fragment = destination(match.group(1))
-            if target_text.startswith(("http://", "https://", "mailto:")):
+            target_text, fragment, scheme = destination(match.group(1))
+            if scheme.lower() in {"http", "https", "mailto"}:
                 continue
             if not target_text and not fragment:
                 continue

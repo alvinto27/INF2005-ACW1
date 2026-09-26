@@ -6,6 +6,7 @@ from os import PathLike
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import utils
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -121,24 +122,35 @@ def aead_open(key: bytes, nonce: bytes, aad: bytes, ciphertext: bytes) -> bytes:
     return AESGCM(key).decrypt(nonce, ciphertext, aad)
 
 
-def sign_bytes(signing_input: bytes, private_key: rsa.RSAPrivateKey) -> bytes:
-    """Sign bytes with RSA-PSS and return the fixed-size signature bytes."""
-    signing_input = _require_bytes(signing_input, "signing_input")
-    signature = validate_rsa_private_key(private_key).sign(signing_input, rsa_pss_padding(), hashes.SHA256())
+def _sign_digest(digest: bytes, private_key: rsa.RSAPrivateKey) -> bytes:
+    """Sign a SHA-256 digest with the protocol RSA-PSS parameters."""
+    digest = _require_bytes(digest, "digest")
+    if len(digest) != hashes.SHA256.digest_size:
+        raise ValueError("digest must contain exactly 32 bytes")
+    signature = validate_rsa_private_key(private_key).sign(
+        digest, rsa_pss_padding(), utils.Prehashed(hashes.SHA256())
+    )
     if len(signature) != RSA_SIGNATURE_SIZE:
         raise ValueError("RSA signature has an unexpected length")
     return signature
 
 
-def verify_signature(signing_input: bytes, signature: bytes, public_key: rsa.RSAPublicKey) -> bool:
-    """Check an RSA-PSS signature and return whether it is valid."""
-    signing_input = _require_bytes(signing_input, "signing_input")
+def _verify_digest(
+    digest: bytes, signature: bytes, public_key: rsa.RSAPublicKey
+) -> bool:
+    """Check a precomputed SHA-256 digest with the protocol RSA-PSS parameters."""
+    digest = _require_bytes(digest, "digest")
     signature = _require_bytes(signature, "signature")
     public_key = validate_rsa_public_key(public_key)
-    if len(signature) != RSA_SIGNATURE_SIZE:
+    if len(digest) != hashes.SHA256.digest_size or len(signature) != RSA_SIGNATURE_SIZE:
         return False
     try:
-        public_key.verify(signature, signing_input, rsa_pss_padding(), hashes.SHA256())
+        public_key.verify(
+            signature,
+            digest,
+            rsa_pss_padding(),
+            utils.Prehashed(hashes.SHA256()),
+        )
     except InvalidSignature:
         return False
     return True

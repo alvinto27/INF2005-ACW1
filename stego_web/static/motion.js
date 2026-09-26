@@ -60,10 +60,15 @@
   function intro() {
     if (!available()) return;
     const timeline = window.gsap.timeline({defaults: {ease: 'power3.out'}});
-    timeline.from('.brand-row', {autoAlpha: 0, y: -12, duration: 0.45})
-      .from('.hero-copy > *', {autoAlpha: 0, y: 24, duration: 0.6, stagger: 0.08}, '-=0.15')
-      .from('.wizard-shell', {autoAlpha: 0, y: 28, duration: 0.7}, '-=0.25')
-      .from('.decode-panel', {autoAlpha: 0, y: 18, duration: 0.5}, '-=0.4');
+    timeline.from('.brand-row', {autoAlpha: 0, y: -12, duration: 0.45});
+    if (document.querySelector('.hero-copy')) {
+      timeline.from('.hero-copy > *', {autoAlpha: 0, y: 24, duration: 0.6, stagger: 0.08}, '-=0.15')
+        .from('.hero-visual', {autoAlpha: 0, y: 20, duration: 0.9, clearProps: 'transform,opacity,visibility'}, '-=0.5')
+        .from('.trust-strip', {autoAlpha: 0, y: 10, duration: 0.5, clearProps: 'transform,opacity,visibility'}, '-=0.4');
+    } else {
+      timeline.from('.verify-intro > *', {autoAlpha: 0, y: 18, duration: 0.5, stagger: 0.07}, '-=0.12')
+        .from('.verify-card', {autoAlpha: 0, y: 22, duration: 0.55}, '-=0.45');
+    }
   }
 
   window.StegoMotion = {available, intro, progress, pulse, reveal, stagger, success, transitionCard};
