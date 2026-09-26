@@ -51,7 +51,7 @@ python -m pip install -r requirements-notebook.txt
 Encoding requires:
 
 1. an image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF) or audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus) source; the output is a lossless PNG or WAV, and real video covers are refused;
-2. either a UTF-8 message or one arbitrary payload file;
+2. either a UTF-8 message or one arbitrary payload file; its MIME and filename claims are generated automatically from the selected input and are read-only in the browser; the server ignores submitted claim overrides;
 3. an encrypted sender RSA private key and its password;
 4. the intended receiver's RSA public key;
 5. a packet start unit at or after the 2,048-unit RSA-2048 bootstrap span; and
@@ -72,9 +72,12 @@ The original cover and the previous shared start-location secret are not inputs.
 After an `Authentic` result, the protocol writes only the recovered payload to a
 private temporary file, then publishes it in `instance/recovered-payloads` and
 returns a download URL. It checks MIME signatures and text UTF-8 in bounded reads.
-The browser previews text, PNG, JPEG, WAV, and MP3 only when the signed MIME claim
-agrees with the recovered bytes. The verify JSON returns a URL, not payload
-bytes. These recovered files stay without an expiry. Delete them manually. Anyone
+The browser previews text, PNG, JPEG, GIF, WebP, AVIF, BMP, WAV, MP3, Ogg,
+FLAC, MP4, and WebM only when the signed MIME claim agrees with a bounded
+signature check of the recovered bytes. Video payloads use a native controls
+player. SVG, HTML, XML, PDF, Matroska, and other non-allowlisted formats remain
+download-only. The verify JSON returns a URL, not payload bytes. These recovered
+files stay without an expiry. Delete them manually. Anyone
 who can read the server's instance folder can read the recovered payloads.
 
 Payload verification uses temporary files under `.stego-staging-*` directories.

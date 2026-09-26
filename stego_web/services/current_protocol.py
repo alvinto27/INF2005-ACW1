@@ -33,8 +33,53 @@ _METADATA_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}\Z")
 _MIME_TYPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*/[A-Za-z0-9][A-Za-z0-9.+-]*\Z")
 _RESERVED_METADATA_KEYS = frozenset({"flow", "team", "sender", "mime", "name"})
 _PREVIEW_MIME_TYPES = frozenset(
-    {"text/plain", "image/png", "image/jpeg", "audio/wav", "audio/mpeg"}
+    {
+        "text/plain",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/avif",
+        "image/bmp",
+        "audio/wav",
+        "audio/mpeg",
+        "audio/ogg",
+        "audio/flac",
+        "audio/mp4",
+        "audio/webm",
+        "video/mp4",
+        "video/webm",
+        "video/ogg",
+    }
 )
+_PAYLOAD_MIME_BY_EXTENSION = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".wav": "audio/wav",
+    ".wave": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".opus": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".m4b": "audio/mp4",
+    ".aac": "audio/mp4",
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".ogv": "video/ogg",
+    ".mkv": "video/x-matroska",
+    ".svg": "image/svg+xml",
+    ".pdf": "application/pdf",
+}
+_AMBIGUOUS_PAYLOAD_MIMES = {
+    ".ogg": frozenset({"audio/ogg", "video/ogg"}),
+    ".oga": frozenset({"audio/ogg"}),
+    ".webm": frozenset({"audio/webm", "video/webm"}),
+}
 
 
 @dataclass(frozen=True)
@@ -50,6 +95,8 @@ class WebEncodingResult:
     preserved_ratio: float
     source_converted: bool
     source_format: str
+    payload_mime: str
+    payload_name: str
 
 
 @dataclass(frozen=True)
@@ -101,6 +148,9 @@ class CurrentProtocolService:
             payload_name,
             extra_metadata,
         )
+        metadata_values, _ = self._parse_metadata(metadata.decode("utf-8"))
+        payload_mime = metadata_values["mime"]
+        payload_name = metadata_values["name"]
         sender_private_key = self._load_private_key(
             sender_private_key_pem, sender_key_password, "sender private key"
         )
@@ -163,6 +213,8 @@ class CurrentProtocolService:
                 kept_bits / total_bits if total_bits else 0.0,
                 source_converted,
                 source_format,
+                payload_mime,
+                payload_name,
             )
         except Exception:
             output_path.unlink(missing_ok=True)
@@ -431,21 +483,108 @@ class CurrentProtocolService:
 
     @staticmethod
     def _sniff_payload_mime(payload_path: Path) -> str | None:
-        """Recognize payload types from a bounded prefix read."""
+        """Recognize safe preview types from a fixed 4 KiB prefix."""
         with payload_path.open("rb") as payload_file:
-            payload = payload_file.read(12)
+            payload = payload_file.read(4096)
         if payload.startswith(b"\x89PNG\r\n\x1a\n"):
             return "image/png"
         if payload.startswith(b"\xff\xd8\xff"):
             return "image/jpeg"
-        if len(payload) >= 12 and payload[:4] == b"RIFF" and payload[8:12] == b"WAVE":
-            return "audio/wav"
+        if payload.startswith((b"GIF87a", b"GIF89a")):
+            return "image/gif"
+        if payload.startswith(b"BM"):
+            return "image/bmp"
+        if len(payload) >= 12 and payload[:4] == b"RIFF":
+            if payload[8:12] == b"WAVE":
+                return "audio/wav"
+            if payload[8:12] == b"WEBP":
+                return "image/webp"
         if payload.startswith(b"%PDF-"):
             return "application/pdf"
         if payload.startswith(b"ID3") or (
             len(payload) >= 2 and payload[0] == 0xFF and payload[1] & 0xE0 == 0xE0
         ):
             return "audio/mpeg"
+        if payload.startswith(b"fLaC"):
+            return "audio/flac"
+        if payload.startswith(b"OggS"):
+            codec_header = CurrentProtocolService._ogg_first_packet(payload)
+            if codec_header.startswith((b"\x01vorbis", b"OpusHead")):
+                return "audio/ogg"
+            if codec_header.startswith(b"\x80theora"):
+                return "video/ogg"
+        if payload.startswith(b"\x1aE\xdf\xa3"):
+            return "video/webm" if CurrentProtocolService._ebml_doc_type(payload) == "webm" else None
+        return CurrentProtocolService._iso_bmff_mime(payload)
+
+    @staticmethod
+    def _ogg_first_packet(payload: bytes) -> bytes:
+        """Return the first Ogg packet prefix when its page is in the bounded read."""
+        if len(payload) < 27 or payload[4] != 0:
+            return b""
+        segment_count = payload[26]
+        table_end = 27 + segment_count
+        if table_end > len(payload):
+            return b""
+        lacing_values = payload[27:table_end]
+        packet_size = 0
+        for segment_size in lacing_values:
+            packet_size += segment_size
+            if segment_size < 255:
+                packet_end = table_end + packet_size
+                if packet_end > len(payload):
+                    return b""
+                return payload[table_end:packet_end]
+        return b""
+
+    @staticmethod
+    def _ebml_doc_type(payload: bytes) -> str | None:
+        """Read an EBML DocType element from the bounded file prefix."""
+        marker = b"\x42\x82"
+        offset = payload.find(marker, 4)
+        if offset < 0 or offset + 3 > len(payload):
+            return None
+        first_size_byte = payload[offset + 2]
+        mask = 0x80
+        size_width = 1
+        while size_width <= 8 and not first_size_byte & mask:
+            mask >>= 1
+            size_width += 1
+        if size_width > 8 or offset + 2 + size_width > len(payload):
+            return None
+        size = first_size_byte & (mask - 1)
+        for byte in payload[offset + 3:offset + 2 + size_width]:
+            size = (size << 8) | byte
+        start = offset + 2 + size_width
+        end = start + size
+        if size > 32 or end > len(payload):
+            return None
+        return payload[start:end].decode("ascii", errors="ignore").lower()
+
+    @staticmethod
+    def _iso_bmff_mime(payload: bytes) -> str | None:
+        """Classify common ISO-BMFF preview types from ftyp brands."""
+        if len(payload) < 16 or payload[4:8] != b"ftyp":
+            return None
+        box_size = int.from_bytes(payload[:4], "big")
+        if box_size < 16:
+            return None
+        end = min(box_size, len(payload))
+        brands = [payload[8:12]]
+        brands.extend(
+            payload[offset:offset + 4]
+            for offset in range(16, end - 3, 4)
+        )
+        if any(brand in {b"avif", b"avis"} for brand in brands):
+            return "image/avif"
+        if any(brand in {b"M4A ", b"M4B ", b"M4P ", b"mp4a"} for brand in brands):
+            return "audio/mp4"
+        video_brands = {
+            b"isom", b"iso2", b"mp41", b"mp42", b"avc1", b"M4V ",
+            b"iso5", b"iso6", b"av01", b"dash",
+        }
+        if any(brand in video_brands for brand in brands):
+            return "video/mp4"
         return None
 
     @staticmethod
@@ -457,7 +596,7 @@ class CurrentProtocolService:
             return False
         if sniffed is not None:
             return declared == sniffed
-        if declared in {"image/png", "image/jpeg", "audio/wav", "audio/mpeg", "application/pdf"}:
+        if declared in (_PREVIEW_MIME_TYPES - {"text/plain"}) | {"application/pdf"}:
             return False
         if declared == "text/plain":
             decoder = codecs.getincrementaldecoder("utf-8")()
@@ -478,8 +617,15 @@ def infer_payload_claim(
     if is_message:
         return "text/plain", "message.txt"
     safe_input = (filename or "payload.bin").replace("\\", "/").split("/")[-1]
-    guessed = mimetypes.guess_type(safe_input)[0]
-    mime = guessed or (
-        uploaded_mime if uploaded_mime and uploaded_mime != "application/octet-stream" else None
-    )
+    extension = Path(safe_input).suffix.lower()
+    mime = _PAYLOAD_MIME_BY_EXTENSION.get(extension)
+    if extension in _AMBIGUOUS_PAYLOAD_MIMES:
+        if uploaded_mime in _AMBIGUOUS_PAYLOAD_MIMES[extension]:
+            mime = uploaded_mime
+        else:
+            mime = "video/webm" if extension == ".webm" else "audio/ogg"
+    if mime is None:
+        mime = mimetypes.guess_type(safe_input)[0]
+    if mime is None and uploaded_mime and uploaded_mime != "application/octet-stream":
+        mime = uploaded_mime
     return mime or "application/octet-stream", safe_input or "payload.bin"

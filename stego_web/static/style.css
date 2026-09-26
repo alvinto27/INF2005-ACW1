@@ -107,6 +107,8 @@ form, label { display: grid; gap: .45rem; }
 .field-grid, .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: .9rem; margin-top: 1rem; }
 input, textarea, select, button { width: 100%; padding: .82rem .9rem; border: 1px solid var(--line); border-radius: 11px; color: var(--ink); background: #091416; font: inherit; transition: border-color .2s, box-shadow .2s, background .2s, transform .2s, opacity .2s; }
 input:hover, textarea:hover, select:hover { border-color: var(--line-bright); }
+.generated-claim input[readonly] { border-color: #33494b; color: #9aafad; background: #101e20; cursor: default; }
+.claim-hint { margin: .25rem 0 0; }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); outline: 0; box-shadow: 0 0 0 3px rgb(98 239 184 / 11%); }
 textarea { min-height: 92px; resize: vertical; }
 button { position: relative; border-color: var(--accent); color: #06110d; background: var(--accent); box-shadow: 0 8px 24px rgb(98 239 184 / 10%); font-weight: 800; cursor: pointer; }

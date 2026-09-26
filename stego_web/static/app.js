@@ -11,6 +11,8 @@ const coverName = document.querySelector('#cover-name');
 const coverMeta = document.querySelector('#cover-meta');
 const payloadFile = document.querySelector('#payload-file');
 const secretMessage = document.querySelector('#secret-message');
+const payloadMime = document.querySelector('#payload-mime');
+const payloadName = document.querySelector('#payload-name');
 const motion = window.StegoMotion;
 let currentStep = 0;
 let transitionPending = false;
@@ -155,14 +157,54 @@ coverDrop.addEventListener('drop', event => {
   handleCoverFile(file);
 });
 
-payloadFile.addEventListener('change', () => {
+const payloadMimeByExtension = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp', wav: 'audio/wav',
+  wave: 'audio/wav', mp3: 'audio/mpeg', flac: 'audio/flac', opus: 'audio/ogg', m4a: 'audio/mp4',
+  m4b: 'audio/mp4', aac: 'audio/mp4', mp4: 'video/mp4', m4v: 'video/mp4',
+  ogv: 'video/ogg', mkv: 'video/x-matroska', svg: 'image/svg+xml', pdf: 'application/pdf',
+};
+
+function safePayloadName(name) {
+  const basename = name.replace(/\\/g, '/').split('/').pop().trim();
+  return basename.replace(/[^A-Za-z0-9._ -]/g, '_').replace(/^[. ]+/, '').slice(0, 120)
+    || 'recovered-payload.bin';
+}
+
+function updatePayloadClaims() {
   const file = payloadFile.files[0];
+  if (secretMessage.value.trim()) {
+    payloadMime.value = 'text/plain';
+    payloadName.value = 'message.txt';
+  } else if (file) {
+    const extension = file.name.split('.').pop().toLowerCase();
+    const suppliedMime = file.type.toLowerCase();
+    const ambiguousMime = {
+      ogg: ['audio/ogg', 'video/ogg'], oga: ['audio/ogg'],
+      webm: ['audio/webm', 'video/webm'],
+    };
+    const fallbackMime = extension === 'webm' ? 'video/webm'
+      : ['ogg', 'oga'].includes(extension) ? 'audio/ogg'
+        : payloadMimeByExtension[extension] || suppliedMime || 'application/octet-stream';
+    const mime = ambiguousMime[extension]?.includes(suppliedMime)
+      ? suppliedMime
+      : fallbackMime;
+    payloadMime.value = mime;
+    payloadName.value = safePayloadName(file.name);
+  } else {
+    payloadMime.value = '';
+    payloadName.value = '';
+  }
+}
+
+payloadFile.addEventListener('change', () => {
   secretMessage.setCustomValidity('');
-  if (!file) return;
-  if (!document.querySelector('#payload-name').value) document.querySelector('#payload-name').value = file.name;
-  if (!document.querySelector('#payload-mime').value && file.type) document.querySelector('#payload-mime').value = file.type;
+  updatePayloadClaims();
 });
-secretMessage.addEventListener('input', () => secretMessage.setCustomValidity(''));
+secretMessage.addEventListener('input', () => {
+  secretMessage.setCustomValidity('');
+  updatePayloadClaims();
+});
 
 const lsb = document.querySelector('#encode-lsb');
 const lsbDescriptions = [
@@ -239,7 +281,8 @@ encodeForm.addEventListener('submit', async event => {
     const sourceNote = data.source_converted
       ? ` Your ${formatLabels[data.source_format] || data.source_format.toUpperCase()} source was converted to a lossless ${data.media_type === 'image' ? 'PNG' : 'WAV'} before embedding.`
       : '';
-    document.querySelector('#success-summary').textContent = `Protocol v${data.protocol_version}: packet starts at unit ${data.start_location}, uses ${data.lsb_bits} LSB, and preserves ${preserved}% of carrier bits.${sourceNote}`;
+    const sealedClaim = ` Sealed payload claim: ${data.payload.name} (${data.payload.mime}).`;
+    document.querySelector('#success-summary').textContent = `Protocol v${data.protocol_version}: packet starts at unit ${data.start_location}, uses ${data.lsb_bits} LSB, and preserves ${preserved}% of carrier bits.${sealedClaim}${sourceNote}`;
     document.querySelector('#download-links').replaceChildren(
       downloadLink(stegoUrl, data.filename, 'Download stego media'),
       downloadLink(textUrl(data.sender_public_key_pem), 'sender-public-key.pem', 'Download sender public key'),
@@ -257,6 +300,7 @@ encodeForm.addEventListener('submit', async event => {
 
 document.querySelector('#start-over').addEventListener('click', async () => {
   encodeForm.reset();
+  updatePayloadClaims();
   handleCoverFile(null);
   document.querySelector('#stego-preview').textContent = 'Awaiting encode';
   document.querySelector('#download-links').replaceChildren();

@@ -79,6 +79,10 @@
       const audio = document.createElement('audio');
       audio.src = url; audio.controls = true;
       section.append(audio);
+    } else if (mime.startsWith('video/')) {
+      const video = document.createElement('video');
+      video.src = url; video.controls = true;
+      section.append(video);
     }
     return section;
   }

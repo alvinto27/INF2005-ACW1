@@ -21,6 +21,7 @@ from PIL import Image
 from stego import (
     BOOTSTRAP_LSB_COUNT,
     PROTOCOL_VERSION,
+    PayloadRecord,
     bit_sequence_to_bytes,
     bootstrap_span,
     bytes_to_bit_sequence,
@@ -40,7 +41,10 @@ from stego.sources import (
     _decoded_image_frames,
 )
 from stego_web import create_app
-from stego_web.services.current_protocol import CurrentProtocolService
+from stego_web.services.current_protocol import (
+    CurrentProtocolService,
+    infer_payload_claim,
+)
 
 
 PASSWORD = "test-password"
@@ -233,6 +237,7 @@ class WebApplicationTests(unittest.TestCase):
         message: str = "authenticated message",
         payload: tuple[bytes, str] | None = None,
         payload_mime: str = "",
+        payload_name: str = "",
     ) -> object:
         """Post one valid encoding request and return its Flask response."""
         data: dict[str, object] = {
@@ -258,6 +263,8 @@ class WebApplicationTests(unittest.TestCase):
             data["payload_file"] = (io.BytesIO(payload[0]), payload[1])
         if payload_mime:
             data["payload_mime"] = payload_mime
+        if payload_name:
+            data["payload_name"] = payload_name
         response = self.client.post(
             "/encode", data=data, content_type="multipart/form-data"
         )
@@ -337,6 +344,9 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIn(b"receiver_public_key", response.data)
         self.assertIn(b"receiver_private_key", response.data)
         self.assertIn(b"payload_file", response.data)
+        self.assertIn(b'id="payload-mime" name="payload_mime" readonly aria-readonly="true"', response.data)
+        self.assertIn(b'id="payload-name" name="payload_name" readonly aria-readonly="true"', response.data)
+        self.assertIn(b"Generated automatically from the payload", response.data)
         self.assertIn(b"PNG, JPEG, WebP, AVIF, BMP, TIFF, GIF", response.data)
         self.assertIn(b"WAV, MP3, AAC/M4A, FLAC, ALAC, Ogg Vorbis/Opus", response.data)
         self.assertIn(b"lossless PNG or WAV", response.data)
@@ -380,6 +390,8 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(encoded["bootstrap_span"], 2048)
         self.assertFalse(encoded["source_converted"])
         self.assertEqual(encoded["source_format"], "png")
+        self.assertEqual(encoded["payload"]["mime"], "text/plain")
+        self.assertEqual(encoded["payload"]["name"], "message.txt")
         decoded = self.decode(encoded, "stego.png")
         self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
         report = decoded.get_json()
@@ -389,6 +401,8 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["start_location"], 2048)
         self.assertEqual(report["lsb_bits"], 3)
         self.assertEqual(report["payload"]["metadata"]["team"], "P1-4")
+        self.assertEqual(report["payload"]["metadata"]["mime"], "text/plain")
+        self.assertEqual(report["payload"]["metadata"]["name"], "message.txt")
         self.assertNotIn("user_payload_base64", report["payload"])
         payload_response = self.get_payload(report["payload"])
         self.assertEqual(payload_response.get_data(), b"authenticated message")
@@ -426,7 +440,8 @@ class WebApplicationTests(unittest.TestCase):
                 sample_png(),
                 "cover.png",
                 payload=(payload, "image.png"),
-                payload_mime="image/png",
+                payload_mime="application/pdf",
+                payload_name="spoof.pdf",
             )
         input_opens = [
             call for call in av_open.call_args_list if call.kwargs.get("mode") == "r"
@@ -439,6 +454,10 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
         report = decoded.get_json()
         self.assertEqual(report["verdict"], "Authentic")
+        self.assertEqual(encoded_response.get_json()["payload"]["mime"], "image/png")
+        self.assertEqual(encoded_response.get_json()["payload"]["name"], "image.png")
+        self.assertEqual(report["payload"]["metadata"]["mime"], "image/png")
+        self.assertEqual(report["payload"]["metadata"]["name"], "image.png")
         self.assertTrue(report["payload"]["preview_allowed"])
         self.assertEqual(self.get_payload(report["payload"]).get_data(), payload)
         self.assertFalse(any(path.name.startswith(".stego-staging-") for path in self.payload_dir.iterdir()))
@@ -659,7 +678,6 @@ class WebApplicationTests(unittest.TestCase):
             "cover.wav",
             lsb_bits=2,
             payload=(payload, "clip.wav"),
-            payload_mime="audio/wav",
         )
         self.assertEqual(
             encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
@@ -866,10 +884,109 @@ class WebApplicationTests(unittest.TestCase):
                     self.assertFalse(report["payload_extracted"])
                     self.assert_no_recovered_payloads()
 
+    def test_native_media_preview_signatures_match_claims(self) -> None:
+        """Supported browser media families preview only after bounded sniffing."""
+        def ftyp(brand: bytes, compatible: bytes) -> bytes:
+            return struct.pack(">I4s4sI4s", 24, b"ftyp", brand, 0, compatible)
+
+        def ogg_page(packet: bytes) -> bytes:
+            return (
+                b"OggS\x00\x02" + bytes(20) + bytes([1, len(packet)]) + packet
+            )
+
+        cases = (
+            ("image/gif", b"GIF89a tiny image"),
+            ("image/webp", b"RIFF\x04\x00\x00\x00WEBP"),
+            ("image/avif", ftyp(b"avif", b"avif")),
+            ("image/bmp", b"BM\x00\x00tiny bitmap"),
+            ("audio/ogg", ogg_page(b"\x01vorbis")),
+            ("audio/ogg", ogg_page(b"OpusHead")),
+            ("audio/flac", b"fLaC"),
+            ("audio/mp4", ftyp(b"M4A ", b"mp42")),
+            ("video/mp4", ftyp(b"isom", b"mp41")),
+            ("video/webm", b"\x1aE\xdf\xa3\x42\x82\x84webm"),
+            ("video/ogg", ogg_page(b"\x80theora")),
+        )
+        service = CurrentProtocolService()
+        with tempfile.TemporaryDirectory() as directory_name:
+            path = Path(directory_name) / "payload.bin"
+            for mime, fixture in cases:
+                with self.subTest(mime=mime, fixture=fixture[:12]):
+                    path.write_bytes(fixture)
+                    record = PayloadRecord(
+                        "IMG-test", 1, bytes(16), bytes(32), b"",
+                        f"mime={mime};name=fixture.bin".encode(),
+                    )
+                    result = service._verified_payload(record, path)
+                    self.assertEqual(result["sniffed_mime"], mime)
+                    self.assertTrue(result["type_agrees"])
+                    self.assertTrue(result["preview_allowed"])
+
+    def test_preview_excludes_svg_and_matroska(self) -> None:
+        """Active SVG and Matroska files stay download-only."""
+        cases = (
+            ("image/svg+xml", b"<svg xmlns='http://www.w3.org/2000/svg'></svg>"),
+            ("video/x-matroska", b"\x1aE\xdf\xa3\x42\x82\x88matroska"),
+        )
+        service = CurrentProtocolService()
+        with tempfile.TemporaryDirectory() as directory_name:
+            path = Path(directory_name) / "payload.bin"
+            for mime, fixture in cases:
+                with self.subTest(mime=mime):
+                    path.write_bytes(fixture)
+                    record = PayloadRecord(
+                        "IMG-test", 1, bytes(16), bytes(32), b"",
+                        f"mime={mime};name=fixture.bin".encode(),
+                    )
+                    result = service._verified_payload(record, path)
+                    self.assertFalse(result["preview_allowed"])
+
+    def test_payload_claim_extension_mappings_match_native_preview_types(self) -> None:
+        """Server extension claims cover MIME types missing from host databases."""
+        cases = (
+            ("image.avif", "image/avif"),
+            ("clip.m4a", "audio/mp4"),
+            ("clip.aac", "audio/mp4"),
+            ("sound.flac", "audio/flac"),
+            ("sound.opus", "audio/ogg"),
+            ("clip.webm", "video/webm"),
+        )
+        for filename, expected_mime in cases:
+            with self.subTest(filename=filename):
+                self.assertEqual(
+                    infer_payload_claim(filename, "application/octet-stream", False),
+                    (expected_mime, filename),
+                )
+
+    def test_inferred_gif_claim_ignores_client_overrides_and_previews(self) -> None:
+        """A GIF file replaces a previous video claim and previews by its own type."""
+        gif_payload = b"GIF89a tiny payload"
+        encoded_response = self.encode(
+            sample_png(),
+            "cover.png",
+            payload=(gif_payload, "selected.gif"),
+            payload_mime="video/x-matroska",
+            payload_name="old-video.mkv",
+        )
+        self.assertEqual(encoded_response.status_code, 200)
+        encoded = encoded_response.get_json()
+        self.assertEqual(encoded["payload"]["mime"], "image/gif")
+        self.assertEqual(encoded["payload"]["name"], "selected.gif")
+
+        report = self.decode(encoded, "stego.png").get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertEqual(report["payload"]["metadata"]["mime"], "image/gif")
+        self.assertEqual(report["payload"]["metadata"]["name"], "selected.gif")
+        self.assertTrue(report["payload"]["preview_allowed"])
+        response = self.get_payload(report["payload"])
+        self.assertEqual(response.mimetype, "image/gif")
+        self.assertFalse(response.headers["Content-Disposition"].startswith("attachment;"))
+        self.assertEqual(response.get_data(), gif_payload)
+
     def test_mime_mismatch_disables_preview_without_invalidating_signature(self) -> None:
-        """A false typed-payload claim remains authenticated but is not rendered."""
+        """A file name claim that disagrees with its bytes is not rendered."""
         encoded = self.encode(
-            sample_png(), "cover.png", payload_mime="image/png"
+            sample_png(), "cover.png", payload=(b"GIF89a tiny payload", "x.png")
         ).get_json()
         report = self.decode(encoded, "stego.png").get_json()
         self.assertEqual(report["verdict"], "Authentic")
@@ -889,7 +1006,6 @@ class WebApplicationTests(unittest.TestCase):
             sample_png(),
             "cover.png",
             payload=(pdf_bytes, "assignment.pdf"),
-            payload_mime="application/pdf",
         ).get_json()
         report = self.decode(encoded, "stego.png").get_json()
         self.assertEqual(report["verdict"], "Authentic")

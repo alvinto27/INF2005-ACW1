@@ -46,7 +46,7 @@
           <div class="field-grid"><label>Team ID<input name="team_id" value="P1-4" required></label><label>Sender<input name="sender" placeholder="Your name" required></label></div>
           <label>Secret message<textarea id="secret-message" name="secret_message" rows="3" placeholder="Enter a message, or leave blank and upload a payload file below"></textarea></label>
           <label>Payload file<input id="payload-file" name="payload_file" type="file"></label>
-          <div class="field-grid"><label>Payload MIME claim<input id="payload-mime" name="payload_mime" placeholder="Derived automatically, e.g. image/png"></label><label>Payload filename claim<input id="payload-name" name="payload_name" placeholder="Derived automatically"></label></div>
+          <div class="field-grid"><label class="generated-claim">Payload MIME claim<input id="payload-mime" name="payload_mime" readonly aria-readonly="true" placeholder="Generated automatically"></label><label class="generated-claim">Payload filename claim<input id="payload-name" name="payload_name" readonly aria-readonly="true" placeholder="Generated automatically"></label></div><p class="hint claim-hint">Generated automatically from the payload.</p>
           <label>Additional authenticated metadata<textarea name="metadata" rows="2" placeholder="Optional key=value entries, e.g. project=INF2005;case=demo"></textarea></label>
           <div class="wizard-actions"><span></span><button type="button" class="next">Validate input <span>-&gt;</span></button></div>
         </section>

@@ -68,6 +68,9 @@ def encode() -> Response | tuple[Response, int]:
                 _required_form_value("sender"),
                 request.form.get("metadata", "").strip(),
             )
+        payload_fields = protocol_service.payload_record(result.payload)
+        payload_fields["mime"] = result.payload_mime
+        payload_fields["name"] = result.payload_name
         return jsonify(
             ok=True,
             protocol_version=PROTOCOL_VERSION,
@@ -84,7 +87,7 @@ def encode() -> Response | tuple[Response, int]:
             capacity_bytes=result.payload_capacity,
             preserved_bits=result.preserved_bits,
             preserved_ratio=result.preserved_ratio,
-            payload=protocol_service.payload_record(result.payload),
+            payload=payload_fields,
             media_hash=result.payload.media_hash.hex(),
             sender_public_key_pem=result.sender_public_key_pem.decode("ascii"),
             pipeline_steps=[
@@ -333,15 +336,13 @@ def _payload_input(directory: Path) -> tuple[Path, str, str]:
         upload.save(payload_path)
         if payload_path.stat().st_size == 0:
             raise ValueError("payload file is empty")
-        default_mime, default_name = infer_payload_claim(
+        payload_mime, payload_name = infer_payload_claim(
             upload.filename, upload.mimetype, False
         )
     else:
         payload_path.write_bytes(message.encode("utf-8"))
-        default_mime, default_name = infer_payload_claim(None, None, True)
-    mime = request.form.get("payload_mime", "").strip() or default_mime
-    name = request.form.get("payload_name", "").strip() or default_name
-    return payload_path, mime, name
+        payload_mime, payload_name = infer_payload_claim(None, None, True)
+    return payload_path, payload_mime, payload_name
 
 
 def _error(

@@ -8,7 +8,7 @@
 
 ## Encode request
 
-`POST /encode` accepts an image source (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF) or an audio source (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), a message or payload file, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. It writes a lossless PNG for images and WAV for audio. A real video track is refused with `video covers are not supported in the web app`; web video support is not part of this stage. A video track marked as attached cover art is ignored when the source also has audio.
+`POST /encode` accepts an image source (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF) or an audio source (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), a message or payload file, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them.
 
 Flask saves the cover and payload to request-scoped temporary files. PNG and RIFF/WAVE use the fast signature path. For other sources, the service inspects PyAV streams and uses `detect_source_family()` to select the image or audio converter. The source is decoded once. Converted PNG/WAV snapshots live beside the uploaded cover in the request temporary directory, not in the output directory; the request removes them after success or failure. Strict PNG and PCM WAV carriers bypass conversion and keep their current ancillary data. Key PEMs remain byte inputs.
 
@@ -47,6 +47,8 @@ The `/encode` JSON response keeps its existing fields and adds:
 | --- | --- |
 | `source_converted` | `true` when the uploaded source was converted to canonical PNG/WAV; strict PNG and PCM WAV return `false`. |
 | `source_format` | Detected source label, such as `jpeg`, `mp3`, `m4a`, `ogg-opus`, `png`, or `wav`. |
+| `payload.mime` | The final MIME claim sealed in the authenticated metadata. |
+| `payload.name` | The final filename claim sealed in the authenticated metadata. |
 
 The browser shows a short conversion note, for example: “Your JPEG source was converted to a lossless PNG before embedding.”
 
@@ -66,7 +68,16 @@ For example, `Signature Invalid`, `Cannot Decrypt`, and `Tampered` keep `frame_v
 
 Only an `Authentic` result includes `payload_url` and parsed typed metadata. The library atomically publishes authenticated payload bytes to `instance/recovered-payloads`; the route writes a small sidecar containing `download_name`, `serve_mime`, and `preview_allowed`. If sidecar creation fails, the payload is removed. The response contains a URL, not payload bytes or Base64.
 
-The service recognizes PNG, JPEG, WAV, MP3, and PDF magic. It allows inline preview only when the metadata is unambiguous, the declared MIME agrees with recognized bytes, and the MIME is one of `text/plain`, `image/png`, `image/jpeg`, `audio/wav`, or `audio/mpeg`. Text is checked as UTF-8 in bounded chunks. The browser inserts response text with `textContent`, prevents duplicate submits, and handles JSON and transport failures. A signed false MIME claim does not change the cryptographic verdict; the payload is saved but not rendered.
+The service reads at most a 4 KiB prefix to recognize preview types; it does not decode uploaded media. It allows inline preview only when the metadata is unambiguous, the declared MIME agrees with recognized bytes, and the MIME is in this allowlist:
+
+| Preview | MIME types |
+| --- | --- |
+| Text | `text/plain` (checked as UTF-8 in bounded chunks) |
+| Images | `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/avif`, `image/bmp` |
+| Audio | `audio/wav`, `audio/mpeg`, `audio/ogg`, `audio/flac`, `audio/mp4`, `audio/webm` |
+| Video | `video/mp4`, `video/webm`, `video/ogg` |
+
+The browser uses native image, audio, and video elements for allowed media. WebM is conservatively sniffed as `video/webm`; an audio-only WebM claim does not match that sniff and stays download-only. Matroska, SVG, HTML, XML, PDF, and other non-allowlisted types remain download-only. A signed false MIME claim does not change the cryptographic verdict; the payload is saved but not rendered. The browser inserts response text with `textContent`, prevents duplicate submits, and handles JSON and transport failures.
 
 `GET /payload/<id>` validates the token and sidecar, sets a safe MIME type and download name, and applies `nosniff`, a restrictive Content Security Policy, and `Cache-Control: no-store`. Files have no expiry. Recovered payloads are plaintext on disk; anyone who can read the instance folder can read them. Use host-level access controls outside a trusted localhost deployment.
 
