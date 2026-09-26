@@ -11,6 +11,8 @@ const coverName = document.querySelector('#cover-name');
 const coverMeta = document.querySelector('#cover-meta');
 const payloadFile = document.querySelector('#payload-file');
 const secretMessage = document.querySelector('#secret-message');
+const payloadMime = document.querySelector('#payload-mime');
+const payloadName = document.querySelector('#payload-name');
 const motion = window.StegoMotion;
 let currentStep = 0;
 let transitionPending = false;
@@ -91,10 +93,10 @@ document.querySelectorAll('.next').forEach(button => button.addEventListener('cl
     button.disabled = true;
     card.classList.add('is-busy');
     status.textContent = 'Preparing integrity context...';
-    detail.textContent = 'The server will bind carrier geometry and preserved bits during encoding.';
+    detail.textContent = 'The server will bind the layout and all declared media sample bytes during encoding.';
     await new Promise(resolve => setTimeout(resolve, 450));
     status.textContent = 'Integrity inputs ready';
-    detail.textContent = 'The masked-media SHA-256 hash will be encrypted inside the signed record.';
+    detail.textContent = 'The full media SHA-256 hash will be encrypted inside the signed record.';
     card.classList.remove('is-busy');
     button.disabled = false;
     motion.pulse(card.querySelector('.process-box'));
@@ -109,27 +111,33 @@ document.querySelectorAll('.back').forEach(button => button.addEventListener('cl
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} bytes`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
 function handleCoverFile(file) {
   if (!file) {
     coverInput.setCustomValidity('');
-    coverName.textContent = 'Drop a PNG or WAV here';
-    coverMeta.textContent = 'Maximum request size is controlled by the local server.';
+    coverName.textContent = 'Drop an image, audio, or video file here';
+    coverMeta.textContent = 'Maximum upload size is limited by free disk space and the carrier backend.';
     coverDrop.classList.remove('has-file', 'has-error');
     return;
   }
-  const supported = /\.(png|wav)$/i.test(file.name);
-  coverInput.setCustomValidity(supported ? '' : 'Choose a PNG or WAV file.');
-  coverDrop.classList.toggle('has-file', supported);
-  coverDrop.classList.toggle('has-error', !supported);
+  coverInput.setCustomValidity('');
+  coverDrop.classList.add('has-file');
+  coverDrop.classList.remove('has-error');
   coverName.textContent = file.name;
-  coverMeta.textContent = supported ? `${formatBytes(file.size)} - ${file.type || 'type detected by server'}` : 'Choose a file ending in .png or .wav.';
-  if (supported) {
-    renderMedia(document.querySelector('#cover-preview'), URL.createObjectURL(file), file.type || (file.name.toLowerCase().endsWith('.wav') ? 'audio/wav' : 'image/png'));
-    motion.pulse(coverDrop);
-  }
+  coverMeta.textContent = `${formatBytes(file.size)} - ${file.type || 'type detected by server'}`;
+  const extension = file.name.split('.').pop().toLowerCase();
+  const fallbackMimes = {
+    mp4: 'video/mp4', mov: 'video/quicktime', mkv: 'video/x-matroska',
+    webm: 'video/webm', avi: 'video/x-msvideo',
+    wav: 'audio/wav', mp3: 'audio/mpeg', aac: 'audio/aac', m4a: 'audio/mp4',
+    flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
+  };
+  const previewMime = file.type || fallbackMimes[extension] || 'image/png';
+  renderMedia(document.querySelector('#cover-preview'), URL.createObjectURL(file), previewMime, true);
+  motion.pulse(coverDrop);
 }
 
 coverInput.addEventListener('change', event => handleCoverFile(event.target.files[0]));
@@ -156,14 +164,54 @@ coverDrop.addEventListener('drop', event => {
   handleCoverFile(file);
 });
 
-payloadFile.addEventListener('change', () => {
+const payloadMimeByExtension = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp', wav: 'audio/wav',
+  wave: 'audio/wav', mp3: 'audio/mpeg', flac: 'audio/flac', opus: 'audio/ogg', m4a: 'audio/mp4',
+  m4b: 'audio/mp4', aac: 'audio/mp4', mp4: 'video/mp4', m4v: 'video/mp4',
+  ogv: 'video/ogg', mkv: 'video/x-matroska', svg: 'image/svg+xml', pdf: 'application/pdf',
+};
+
+function safePayloadName(name) {
+  const basename = name.replace(/\\/g, '/').split('/').pop().trim();
+  return basename.replace(/[^A-Za-z0-9._ -]/g, '_').replace(/^[. ]+/, '').slice(0, 120)
+    || 'recovered-payload.bin';
+}
+
+function updatePayloadClaims() {
   const file = payloadFile.files[0];
+  if (secretMessage.value.trim()) {
+    payloadMime.value = 'text/plain';
+    payloadName.value = 'message.txt';
+  } else if (file) {
+    const extension = file.name.split('.').pop().toLowerCase();
+    const suppliedMime = file.type.toLowerCase();
+    const ambiguousMime = {
+      ogg: ['audio/ogg', 'video/ogg'], oga: ['audio/ogg'],
+      webm: ['audio/webm', 'video/webm'],
+    };
+    const fallbackMime = extension === 'webm' ? 'video/webm'
+      : ['ogg', 'oga'].includes(extension) ? 'audio/ogg'
+        : payloadMimeByExtension[extension] || suppliedMime || 'application/octet-stream';
+    const mime = ambiguousMime[extension]?.includes(suppliedMime)
+      ? suppliedMime
+      : fallbackMime;
+    payloadMime.value = mime;
+    payloadName.value = safePayloadName(file.name);
+  } else {
+    payloadMime.value = '';
+    payloadName.value = '';
+  }
+}
+
+payloadFile.addEventListener('change', () => {
   secretMessage.setCustomValidity('');
-  if (!file) return;
-  if (!document.querySelector('#payload-name').value) document.querySelector('#payload-name').value = file.name;
-  if (!document.querySelector('#payload-mime').value && file.type) document.querySelector('#payload-mime').value = file.type;
+  updatePayloadClaims();
 });
-secretMessage.addEventListener('input', () => secretMessage.setCustomValidity(''));
+secretMessage.addEventListener('input', () => {
+  secretMessage.setCustomValidity('');
+  updatePayloadClaims();
+});
 
 const lsb = document.querySelector('#encode-lsb');
 const lsbDescriptions = [
@@ -224,15 +272,34 @@ encodeForm.addEventListener('submit', async event => {
   button.disabled = true;
   button.classList.add('is-loading');
   resultBox.className = 'result operation-status is-loading';
-  resultBox.textContent = 'Hashing, encrypting, signing, and embedding payload...';
+  const coverFile = coverInput.files[0];
+  const isVideo = Boolean(coverFile && (
+    coverFile.type.startsWith('video/') || /\.(mp4|mov|mkv|webm|avi)$/i.test(coverFile.name)
+  ));
+  resultBox.textContent = isVideo
+    ? 'Processing video; this can take a while...'
+    : 'Hashing, encrypting, signing, and embedding payload...';
   try {
     const response = await fetch('/encode', {method: 'POST', body: new FormData(encodeForm)});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error ?? 'Encode failed');
-    const stegoUrl = base64Url(data.stego_base64, data.mime_type);
+    const stegoUrl = data.stego_url;
     renderMedia(document.querySelector('#stego-preview'), stegoUrl, data.mime_type);
     const preserved = (data.preserved_ratio * 100).toFixed(4);
-    document.querySelector('#success-summary').textContent = `Protocol v${data.protocol_version}: packet starts at unit ${data.start_location}, uses ${data.lsb_bits} LSB, and preserves ${preserved}% of carrier bits.`;
+    const formatLabels = {
+      jpeg: 'JPEG', webp: 'WebP', avif: 'AVIF', bmp: 'BMP', tiff: 'TIFF', gif: 'GIF',
+      png: 'PNG', wav: 'WAV', mp3: 'MP3', aac: 'AAC', m4a: 'M4A', flac: 'FLAC',
+      mp4: 'MP4', matroska: 'Matroska', webm: 'WebM', mov: 'MOV', avi: 'AVI',
+      alac: 'ALAC', 'ogg-vorbis': 'Ogg Vorbis', 'ogg-opus': 'Ogg Opus',
+    };
+    const outputNote = data.media_type === 'video'
+      ? ` The output is a lossless Matroska (.mkv) video that browsers do not play inline. It is ${formatBytes(data.file_size)}; FFV1 output can be large.`
+      : '';
+    const sourceNote = data.source_converted && data.media_type !== 'video'
+      ? ` Your ${formatLabels[data.source_format] || data.source_format.toUpperCase()} source was converted to a lossless ${data.media_type === 'image' ? 'PNG' : 'WAV'} before embedding.`
+      : '';
+    const sealedClaim = ` Sealed payload claim: ${data.payload.name} (${data.payload.mime}).`;
+    document.querySelector('#success-summary').textContent = `Protocol v${data.protocol_version}: packet starts at unit ${data.start_location}, uses ${data.lsb_bits} LSB, and preserves ${preserved}% of carrier bits.${sealedClaim}${sourceNote}${outputNote}`;
     document.querySelector('#download-links').replaceChildren(
       downloadLink(stegoUrl, data.filename, 'Download stego media'),
       downloadLink(textUrl(data.sender_public_key_pem), 'sender-public-key.pem', 'Download sender public key'),
@@ -250,6 +317,7 @@ encodeForm.addEventListener('submit', async event => {
 
 document.querySelector('#start-over').addEventListener('click', async () => {
   encodeForm.reset();
+  updatePayloadClaims();
   handleCoverFile(null);
   document.querySelector('#stego-preview').textContent = 'Awaiting encode';
   document.querySelector('#download-links').replaceChildren();
@@ -258,17 +326,28 @@ document.querySelector('#start-over').addEventListener('click', async () => {
   await showStep(0);
 });
 
-function renderMedia(container, url, mime) {
+function renderMedia(container, url, mime, checkVideoSupport = false) {
+  if (mime.startsWith('video/')) {
+    const probe = document.createElement('video');
+    if (mime === 'video/x-matroska' || (checkVideoSupport && !probe.canPlayType(mime))) {
+      container.textContent = 'No preview for this format.';
+      return;
+    }
+    probe.src = url;
+    probe.controls = true;
+    probe.setAttribute('aria-label', 'Video preview');
+    probe.addEventListener('error', () => {
+      container.textContent = 'No preview for this format.';
+    }, {once: true});
+    container.replaceChildren(probe);
+    return;
+  }
   const isAudio = mime.startsWith('audio/');
   const element = document.createElement(isAudio ? 'audio' : 'img');
   element.src = url;
   element.controls = isAudio;
   element.alt = 'Media preview';
   container.replaceChildren(element);
-}
-function base64Url(value, mime) {
-  const bytes = Uint8Array.from(atob(value), character => character.charCodeAt(0));
-  return URL.createObjectURL(new Blob([bytes], {type: mime}));
 }
 function textUrl(value) { return URL.createObjectURL(new Blob([value], {type: 'application/x-pem-file'})); }
 function downloadLink(url, filename, label) {

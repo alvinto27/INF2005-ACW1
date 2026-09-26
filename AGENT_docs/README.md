@@ -1,32 +1,37 @@
 # Documentation — INF2005-ACW1
 
-This index lists durable documentation for the Flask application and both retained signed payload protocols. The `docs/` directory holds the supplied assignment specification; `AGENT_docs/` holds records maintained by the project.
+This index lists durable documentation for the Flask application and the current signed masked-media protocol. The `docs/` directory holds the supplied assignment specification; `AGENT_docs/` holds project records.
 
 ## Navigation
 
-For repository structure and implementation entry points, see [Agent Navigation Map](AGENT_MAP.md). See [AGENTS.md](../AGENTS.md) for the documentation checker's link policy.
+For repository structure and implementation entry points, see the [Agent Navigation Map](AGENT_MAP.md). See [AGENTS.md](../AGENTS.md) for repository instructions and the documentation checker's link policy.
 
 ## Repository entry points
 
-- [README](../README.md) — setup and the masked-media integrity invariant.
-- [stego package](../stego/__init__.py) — public API for the modular signed steganography implementation.
-- [test_stego.py](../test_stego.py) — masked-media protocol implementation tests.
-- [Flask application](../run.py) — localhost GUI entry point.
-- [test_webapp.py](../test_webapp.py) — Flask pipeline and verification tests.
-- [test_payload_protocol.py](../test_payload_protocol.py) — retained legacy `STG1` payload protocol tests.
+- [README](../README.md) — setup and protocol use.
+- [stego package](../stego/__init__.py) — public API.
+- [test_stego.py](../test_stego.py) — protocol, PNG/WAV carrier, and source-conversion tests.
+- [test_video.py](../test_video.py) — video protocol and carrier tests; PyAV is required.
+- [Flask application](../run.py) — localhost entry point.
+- [test_webapp.py](../test_webapp.py) — Flask integration tests.
 - [AGENTS](../AGENTS.md) — agent working instructions.
 
-## Records
+## Current guides
 
+- [Current Protocol](CURRENT-PROTOCOL.md) — active version 3 hash, wire format, typed metadata, discovery behavior, verdicts, capacity, and compatibility.
+- [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) — bounded carrier access, payload APIs, staging cleanup, measurements, and file boundary.
+- [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) — approved design, implementation details, test record, and video performance measurements for media code 3 (`VID-`).
+- [Web Application Guide](WEB-APPLICATION-GUIDE.md) — request contracts, response handling, payload previews, and requirement coverage.
+
+## Historical records and project status
+
+- [PyAV Migration Record](PYAV-MIGRATION-RECORD.md) — migration stages, user decisions, and measured implementation evidence. Current rules remain in the current guides.
+- [Protocol Version 1 History](PROTOCOL-V1-HISTORY.md) — earlier design decisions, rejected alternatives, measurements, and lessons.
+- [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md) — historical version 2 design and accepted trade-offs. Its current wire-format claims are superseded by Current Protocol; its analysis remains historical.
+- [Protocol Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md) — outcomes and measurements from the historical version 2 work.
+- [Work Not Built](WORK-NOT-BUILT.md) — assignment work that remains to be demonstrated or assembled.
+- [KISS Reduction Specification](REDUCTION-SPEC.md) — reduction goals and constraints.
+- [KISS Reduction Record](KISS-REDUCTION-RECORD.md) — historical reduction outcome, measurements, decisions, and lessons.
+- [Merge Leftover Removal](MERGE-LEFTOVER-REMOVAL.md) — removed files, import evidence, authorship, and merge history.
 - [Agent Navigation Map](AGENT_MAP.md) — repository paths and Git boundaries.
 - [Assignment Specification Transcription](../docs/INF2005-ACW1-spec_v5-f2f.md) — visible assignment requirements transcribed from the supplied PDF; hidden prompt injection excluded.
-- [Protocol Design](PROTOCOL-DESIGN.md#protocol-design) — the current reduced encrypted packet, fixed-width fields, hashing, signing, receiver bootstrap, verdicts, refusal behavior, typed-payload metadata, and version 1 design history.
-- [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md) — historical protocol version 2 design; stages 0 through 6b complete and 6c cancelled. Its wire-format claims are superseded by the reduction record; its field-binding audit and accepted trade-offs remain useful.
-- [Protocol Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md) — what each completed stage of the version 2 plan changed, what was measured, and what it taught. The plan holds intent; this holds outcome.
-- [Streaming Carrier Plan](STREAMING-CARRIER-PLAN.md#streaming-carrier-plan) — **deferred and upcoming.** Why whole-carrier arrays force the 64 MiB WAV cap, why the cap and seekable chunked access are one topic, what the change would cost, and the conditions for revisiting it.
-- [Work Not Built](WORK-NOT-BUILT.md#work-not-built) — assignment work that remains to be built, demonstrated, or assembled.
-- [KISS Reduction Specification](REDUCTION-SPEC.md) — the approved reduction goals and constraints.
-- [KISS Reduction Record](KISS-REDUCTION-RECORD.md) — the committed reduction outcome, measurements, decisions, and lessons.
-- [Flask Application Status](IMPLEMENTATION-STATUS.md) — current web inputs, protocol-v2 integration, requirement coverage, and request flow.
-- [Flask Decoding and Verification](DECODING-VERIFICATION.md) — receiver-gated verification inputs, response fields, payload-preview controls, tests, and limitations.
-- [Protocol Compatibility](PROTOCOL-COMPATIBILITY.md) — the boundary between active version-2 web files and retained legacy `STG1` files.

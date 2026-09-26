@@ -1,17 +1,17 @@
 ---
 name: inf2005-acw1
-description: Flask steganography application on the masked-media protocol, with a retained legacy protocol module.
+description: Flask steganography application on the masked-media protocol version 3.
 ---
 
 # INF2005-ACW1
 
-This repository provides a localhost Flask steganography application on the reduced masked-media protocol and retains the earlier `STG1` protocol as a tested legacy module. Read the [Agent Navigation Map](AGENT_docs/AGENT_MAP.md), [documentation index](AGENT_docs/README.md), and [protocol compatibility record](AGENT_docs/PROTOCOL-COMPATIBILITY.md) before changing files.
+This repository provides a localhost Flask steganography application on masked-media protocol version 3. Read the [Agent Navigation Map](AGENT_docs/AGENT_MAP.md), [documentation index](AGENT_docs/README.md), and [current protocol](AGENT_docs/CURRENT-PROTOCOL.md) before changing files.
 
 ## Read first
 
 1. [Agent Navigation Map](AGENT_docs/AGENT_MAP.md) — repository structure and map chain.
 2. [Documentation index](AGENT_docs/README.md) — durable records and current repository documentation.
-3. [Protocol compatibility](AGENT_docs/PROTOCOL-COMPATIBILITY.md) — boundaries between the web format and masked-media format.
+3. [Current protocol](AGENT_docs/CURRENT-PROTOCOL.md) — active wire format, integrity checks, and compatibility rules.
 4. [README](README.md) — setup, application flow, and integrity behavior.
 
 ## Commands
@@ -28,16 +28,16 @@ bash scripts/install-hooks.sh
 ## State
 
 - This is a standalone Python module repository with no package build configuration or CI workflow.
-- The `stego/` package requires Python 3.10+ and uses `cryptography`, NumPy, and Pillow.
-- The Flask application in `stego_web/` uses the current `stego/` protocol through `stego_web/services/current_protocol.py`.
-- `payload_protocol.py` and the earlier web service modules remain as legacy, test-covered code; they are not used by the active Flask routes.
-- `test_stego.py`, `test_payload_protocol.py`, and `test_webapp.py` are all active test entry points.
+- The `stego/` package requires Python 3.10+ and uses PyAV, `cryptography`, and NumPy. Pillow is only for tests and the demonstration notebook.
+- The active Flask routes use the `stego/` protocol through `stego_web/services/current_protocol.py`; the earlier `STG1` implementation and its web services have been removed.
+- `test_stego.py`, `test_video.py`, and `test_webapp.py` are the active test modules.
 
 ## Conventions
 
-- Keep `payload_protocol.py` byte-only and legacy-compatible; do not route new Flask media operations through it.
+- Commit the notebook with all outputs cleared.
+- The notebook is an API demonstration of the main flows, not the reference for API behaviour, and it does not show every feature. Keep notebook changes minimal; prove behaviour with tests.
 - Keep the masked-media protocol media-neutral and use its fixed `stego/` PNG and WAV adapters for file I/O.
-- Preserve both documented packet formats and verification verdicts. The active Flask routes accept only protocol version 2; do not present legacy `STG1` files as interoperable.
+- Preserve protocol version 3 and its documented verification verdicts. The active Flask routes accept only protocol version 3; do not present older masked-media or `STG1` files as interoperable.
 - Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in the existing three test modules unless the repository adopts a different layout.
 - Annotate every function and method parameter and return type, including private helpers; use `-> None` when nothing is returned.
 - Use plain built-in types and `|` unions, write `X | None` instead of `Optional`, and write `str | bytes | PathLike[str]` inline at each site rather than defining an alias. Annotate carrier arrays as `np.ndarray` without dtype or shape; let docstrings carry that detail, and do not import from `typing` unless there is no other way.

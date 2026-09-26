@@ -1,5 +1,7 @@
 # KISS Reduction Record
 
+> Snapshot note: this record describes the state at its final commit (57 tests then). Protocol version 3 is active; see [Current Protocol](CURRENT-PROTOCOL.md).
+
 This record describes the completed reduction of the version 2 protocol. The
 [Reduction Specification](REDUCTION-SPEC.md) states the goal and scope. The former
 implementation work order has been folded into this record, which states the
@@ -206,7 +208,7 @@ notebook robustness without changing the protocol design:
 
 The current claims that required correction were updated in
 [Work Not Built](WORK-NOT-BUILT.md): the typed-content link now targets
-[Typed Payload Metadata](PROTOCOL-DESIGN.md#typed-payload-metadata), the nested
+[Typed Payload Metadata](CURRENT-PROTOCOL.md#typed-payload-metadata), the nested
 content-header claim is gone, and the Banana/WAV capacity figures now match the
 reduced code. The GUI, live transfer, explanations, innovation statement, and
 submission package remain outside this repository as stated there.

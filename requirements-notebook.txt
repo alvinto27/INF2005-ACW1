@@ -1,4 +1,4 @@
-# Optional dependencies for running and regenerating the demonstration notebook.
+# Optional dependencies for running the demonstration notebook.
 ipykernel==7.3.0
-# Regenerates the committed notebook outputs.
+# Runs the notebook from the command line.
 nbconvert==7.17.1
