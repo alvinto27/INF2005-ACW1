@@ -9,6 +9,7 @@ from fractions import Fraction
 from os import PathLike, fspath
 from pathlib import Path
 
+import av
 import numpy as np
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -315,8 +316,6 @@ class VideoCarrier(CarrierSource):
 
     The constructor makes a bounded validation/counting pass. Later reads
     reopen and decode the input; frame and sample arrays are not retained.
-    PyAV is imported only when a carrier is opened, so importing ``stego`` does
-    not require PyAV.
     """
 
     def __init__(
@@ -382,9 +381,7 @@ class VideoCarrier(CarrierSource):
         return self._audio_frames_per_channel
 
     def _open(self) -> object:
-        """Open an input container with a local PyAV import."""
-        import av
-
+        """Open an input container with PyAV."""
         return av.open(fspath(self._path), mode="r")
 
     @staticmethod

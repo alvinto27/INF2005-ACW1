@@ -28,7 +28,7 @@ bash scripts/install-hooks.sh
 ## State
 
 - This is a standalone Python module repository with no package build configuration or CI workflow.
-- The `stego/` package requires Python 3.10+ and uses `cryptography`, NumPy, and Pillow.
+- The `stego/` package requires Python 3.10+ and uses PyAV, `cryptography`, and NumPy. Pillow is only for tests and the demonstration notebook.
 - The active Flask routes use the `stego/` protocol through `stego_web/services/current_protocol.py`; the earlier `STG1` implementation and its web services have been removed.
 - `test_stego.py` and `test_webapp.py` are the active test entry points.
 

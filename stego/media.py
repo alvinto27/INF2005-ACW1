@@ -1,6 +1,6 @@
 """Read and write strict RGB/RGBA PNG and uncompressed PCM WAV carriers.
 
-PNG images are decoded whole by Pillow, then exposed through bounded chunks by
+PNG images are decoded whole by PyAV, then exposed through bounded chunks by
 ``PngCarrier``. PCM WAV files are read in bounded chunks by ``WavCarrier``.
 
 Rewrites keep carrier metadata that is outside the masked media hash: PNG
@@ -11,6 +11,7 @@ declared PCM samples.
 import io
 import os
 import struct
+import tempfile
 import wave
 import zlib
 from collections.abc import Callable, Iterator
@@ -18,8 +19,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from os import PathLike, fspath
 
+import av
 import numpy as np
-from PIL import Image, UnidentifiedImageError
 
 from .bits import (
     _validate_carrier_units,
@@ -91,59 +92,72 @@ def _load_png_buffer_from_path(
     """Load one checked PNG into a single decoded byte buffer."""
     if not isinstance(image_path, (str, bytes, PathLike)):
         raise TypeError("image_path must be a filesystem path")
-    try:
-        with Image.open(image_path) as image:
-            if image.format != "PNG":
-                raise UnSupportedFileType(f"unsupported file type: {image.format or 'unknown'}")
-            if getattr(image, "is_animated", False) or getattr(image, "n_frames", 1) != 1:
-                raise ValueError("animated PNG images are not supported")
-            _validate_rgb_png_header(image_path)
-            if image.mode not in (PNG_CARRIER_MODE, PNG_ALPHA_CARRIER_MODE):
-                raise ValueError("PNG must be RGB or RGBA; palette and grayscale images are not supported")
-            image.load()
-            width, height = image.size
-            channels = RGB_CHANNEL_COUNT if image.mode == PNG_CARRIER_MODE else RGBA_CHANNEL_COUNT
-            if height < 1 or width < 1:
-                raise ValueError("image dimensions must be greater than zero")
-            # Copy public Pillow row bands into one full-image backing buffer.
-            # The temporary tobytes() result is limited to an 8 MiB band.
-            pixels = bytearray(height * width * channels)
-            rows_per_band = max(1, (8 * 1024 * 1024) // (width * channels))
-            offset = 0
-            for row_start in range(0, height, rows_per_band):
-                row_end = min(height, row_start + rows_per_band)
-                with image.crop((0, row_start, width, row_end)) as band:
-                    band_bytes = band.tobytes()
-                    band_size = len(band_bytes)
-                    pixels[offset:offset + band_size] = band_bytes
-                offset += band_size
-                del band_bytes
-            if offset != len(pixels):
-                raise ValueError("unreadable PNG image")
-            pixel_buffer = memoryview(pixels).toreadonly()
-            shape = (height, width, channels)
-        return pixel_buffer, shape
-    except Image.DecompressionBombError as error:
-        max_image_pixels = Image.MAX_IMAGE_PIXELS
-        if max_image_pixels is None:
-            raise
-        width, height = _validate_rgb_png_header(image_path)
-        pixels = width * height
-        limit = 2 * max_image_pixels
+    with open(image_path, "rb") as image_file:
+        signature = image_file.read(8)
+    if signature != _PNG_SIGNATURE:
+        try:
+            with av.open(os.fsdecode(image_path), mode="r") as non_png:
+                file_type = non_png.format.name.split(",")[0].upper().replace("_PIPE", "")
+        except (OSError, av.error.FFmpegError):
+            file_type = "unknown"
+        raise UnSupportedFileType(f"unsupported file type: {file_type}")
+    width, height = _validate_rgb_png_header(image_path)
+    with open(image_path, "rb") as image_file:
+        image_file.seek(25)
+        colour_type = image_file.read(1)[0]
+    if width < 1 or height < 1:
+        raise ValueError("image dimensions must be greater than zero")
+    pixels_count = width * height
+    if pixels_count > _PNG_PIXEL_LIMIT:
         raise ValueError(
-            f"PNG image is too large: {pixels:,} pixels exceeds the limit of {limit:,}"
-        ) from error
-    except UnSupportedFileType:
+            f"PNG image is too large: {pixels_count:,} pixels exceeds the limit of {_PNG_PIXEL_LIMIT:,}"
+        )
+    try:
+        with open(image_path, "rb") as image_file:
+            image_file.seek(8)
+            while True:
+                chunk_header = image_file.read(8)
+                if len(chunk_header) != 8:
+                    raise ValueError("unreadable PNG image")
+                chunk_length, chunk_type = struct.unpack(">I4s", chunk_header)
+                if chunk_type == b"acTL":
+                    raise ValueError("animated PNG images are not supported")
+                if chunk_type == b"IEND":
+                    break
+                image_file.seek(chunk_length + 4, os.SEEK_CUR)
+        with av.open(os.fsdecode(image_path), mode="r") as container:
+            if "png" not in container.format.name.lower():
+                raise UnSupportedFileType(
+                    f"unsupported file type: {container.format.name.split(',')[0].upper()}"
+                )
+            stream = container.streams.video[0]
+            codec = stream.codec_context
+            codec.options = {**codec.options, "max_pixels": str(_PNG_PIXEL_LIMIT)}
+            if codec.width != width or codec.height != height:
+                raise ValueError("unreadable PNG image")
+            pixel_format = codec.format.name if codec.format is not None else ""
+            if pixel_format in ("pal8", "gray", "gray8", "ya8"):
+                raise ValueError("PNG must be RGB or RGBA; palette and grayscale images are not supported")
+            channels = RGB_CHANNEL_COUNT if colour_type == 2 else RGBA_CHANNEL_COUNT
+            decoded: np.ndarray | None = None
+            frame_count = 0
+            for frame in container.decode(stream):
+                frame_count += 1
+                if frame_count > 1:
+                    raise ValueError("animated PNG images are not supported")
+                decoded = frame.to_ndarray(format="rgb24" if channels == RGB_CHANNEL_COUNT else "rgba")
+            if decoded is None or decoded.shape != (height, width, channels):
+                raise ValueError("unreadable PNG image")
+            pixel_buffer = memoryview(decoded).cast("B").toreadonly()
+            del decoded, frame
+        return pixel_buffer, (height, width, channels)
+    except (UnSupportedFileType, ValueError):
         raise
-    except ValueError:
-        raise
-    except UnidentifiedImageError as error:
+    except (OSError, av.error.FFmpegError, IndexError) as error:
         with open(image_path, "rb") as image_file:
             signature = image_file.read(8)
-        if signature == b"\x89PNG\r\n\x1a\n":
-            raise ValueError("unreadable PNG image") from error
-        raise UnSupportedFileType("unsupported file type: unknown") from error
-    except OSError as error:
+        if signature != _PNG_SIGNATURE:
+            raise UnSupportedFileType("unsupported file type: unknown") from error
         raise ValueError("unreadable PNG image") from error
 
 
@@ -178,6 +192,7 @@ def encode_png_media_context(image_shape: tuple[int, int, int], carrier_unit_cou
 
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_PNG_PIXEL_LIMIT = 178_956_970
 _PNG_IMAGE_CHUNKS = frozenset((b"IHDR", b"IDAT", b"IEND"))
 # Known chunks copied unchanged. They stay true after embedding because only
 # low bits change. PLTE is only a suggested palette in truecolour PNGs.
@@ -280,11 +295,11 @@ def _png_copied_chunks(source_file: io.BufferedIOBase) -> tuple[list[tuple[int, 
 
 
 class _PngChunkSplicer:
-    """Pass Pillow's PNG bytes to a file and insert copied source chunks.
+    """Pass encoded PNG bytes to a file and insert copied source chunks.
 
     The copied chunks go immediately before the first IDAT chunk and
-    immediately before IEND. Pillow must write only IHDR, IDAT, and IEND, so
-    no chunk type is written twice. Memory does not grow with the image size.
+    immediately before IEND. Only IHDR, IDAT, and IEND from PyAV are kept;
+    all encoder ancillary chunks are dropped.
     """
 
     def __init__(self, output_file: io.BufferedIOBase, source_file: io.BufferedIOBase, before: list[tuple[int, int] | bytes], after: list[tuple[int, int] | bytes]) -> None:
@@ -295,18 +310,20 @@ class _PngChunkSplicer:
         self._after = after
         self._pending = bytearray()
         self._remaining = 0
+        self._discarding = False
         self._signature_done = False
         self._types: list[bytes] = []
         self._written = 0
 
     def write(self, data: bytes) -> int:
-        """Parse Pillow's PNG stream in any write size and copy it through."""
+        """Parse an encoded PNG stream in any write size and copy it through."""
         view = memoryview(data).cast("B")
         size = len(view)
         while view:
             if self._remaining:
                 count = min(self._remaining, len(view))
-                self._output.write(view[:count])
+                if not self._discarding:
+                    self._output.write(view[:count])
                 self._remaining -= count
                 view = view[count:]
                 continue
@@ -320,7 +337,7 @@ class _PngChunkSplicer:
         return size
 
     def _take_header(self, header: bytes) -> None:
-        """Handle the PNG signature or one chunk header from Pillow."""
+        """Handle the PNG signature or one chunk header from PyAV."""
         if not self._signature_done:
             if header != _PNG_SIGNATURE:
                 raise ValueError("the PNG encoder did not write a PNG signature")
@@ -328,18 +345,21 @@ class _PngChunkSplicer:
             self._output.write(header)
             return
         length, chunk_type = struct.unpack(">I4s", header)
-        if (
-            chunk_type not in _PNG_IMAGE_CHUNKS
-            or (chunk_type == b"IHDR") != (not self._types)
+        if chunk_type not in _PNG_IMAGE_CHUNKS and not chunk_type[0:1].islower():
+            raise ValueError(f"unexpected PNG chunk from the encoder: {chunk_type!r}")
+        if chunk_type in _PNG_IMAGE_CHUNKS and (
+            (chunk_type == b"IHDR") != (not self._types)
             or self._types[-1:] == [b"IEND"]
         ):
             raise ValueError(f"unexpected PNG chunk from the encoder: {chunk_type!r}")
+        self._discarding = chunk_type not in _PNG_IMAGE_CHUNKS
         if chunk_type == b"IDAT" and b"IDAT" not in self._types:
             self._copy_chunks(self._before)
         elif chunk_type == b"IEND":
             self._copy_chunks(self._after)
-        self._types.append(chunk_type)
-        self._output.write(header)
+        if not self._discarding:
+            self._types.append(chunk_type)
+            self._output.write(header)
         self._remaining = length + 4
 
     def _copy_chunks(self, chunks: list[tuple[int, int] | bytes]) -> None:
@@ -364,39 +384,74 @@ class _PngChunkSplicer:
             raise ValueError("the PNG encoder did not write a complete image")
 
 
-def _save_png_array_to_path(image_array: np.ndarray, output_path: str | bytes | PathLike[str], chunk_source_path: str | bytes | PathLike[str] | None = None) -> None:
-    """Save a checked RGB or RGBA image array as a PNG file.
-
-    When chunk_source_path is given, copy its ancillary chunks into the new
-    file as described in ``_png_copied_chunks``. IHDR, IDAT, and IEND always
-    come from the new image.
-    """
-    image_array = _validate_png_array(image_array)
+def _save_png_frame_to_path(
+    frame: av.VideoFrame,
+    output_path: str | bytes | PathLike[str],
+    chunk_source_path: str | bytes | PathLike[str] | None = None,
+) -> None:
+    """Encode a filled PyAV frame and copy safe source ancillary chunks."""
     if not isinstance(output_path, (str, bytes, PathLike)):
         raise TypeError("output_path must be a filesystem path")
-    mode = PNG_CARRIER_MODE if image_array.shape[2] == RGB_CHANNEL_COUNT else PNG_ALPHA_CARRIER_MODE
-    if chunk_source_path is None:
+    before: list[tuple[int, int] | bytes] = []
+    after: list[tuple[int, int] | bytes] = []
+    if chunk_source_path is not None:
         try:
-            Image.fromarray(image_array, mode=mode).save(output_path, format="PNG")
-        except (OSError, ValueError) as error:
-            raise ValueError("could not save PNG") from error
-        return
-    try:
-        source_file = open(chunk_source_path, "rb")
-    except OSError as error:
-        raise ValueError("could not reopen the PNG carrier") from error
-    with source_file:
-        try:
-            before, after = _png_copied_chunks(source_file)
+            with open(chunk_source_path, "rb") as source_file:
+                before, after = _png_copied_chunks(source_file)
         except OSError as error:
             raise ValueError("could not read the PNG carrier chunks") from error
+    encoded_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temporary_file:
+            encoded_path = temporary_file.name
+        container = av.open(encoded_path, mode="w", format="image2pipe")
         try:
-            with open(output_path, "wb") as output_file:
+            stream = container.add_stream("png")
+            stream.width = frame.width
+            stream.height = frame.height
+            stream.pix_fmt = frame.format.name
+            stream.codec_context.options = {
+                **stream.codec_context.options,
+                "compression_level": "1",
+                "pred": "up",
+            }
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                container.mux(packet)
+        finally:
+            container.close()
+        if chunk_source_path is None:
+            source_file = open(encoded_path, "rb")
+        else:
+            try:
+                source_file = open(chunk_source_path, "rb")
+            except OSError as error:
+                raise ValueError("could not reopen the PNG carrier") from error
+        try:
+            with open(output_path, "wb") as output_file, open(encoded_path, "rb") as encoded_file:
                 splicer = _PngChunkSplicer(output_file, source_file, before, after)
-                Image.fromarray(image_array, mode=mode).save(splicer, format="PNG")
+                while block := encoded_file.read(DEFAULT_CHUNK_BYTES):
+                    splicer.write(block)
                 splicer.finish()
-        except (OSError, ValueError) as error:
-            raise ValueError("could not save PNG") from error
+        finally:
+            source_file.close()
+    except (OSError, av.error.FFmpegError) as error:
+        raise ValueError("could not save PNG") from error
+    finally:
+        if encoded_path is not None:
+            try:
+                os.unlink(encoded_path)
+            except OSError:
+                pass
+
+
+def _save_png_array_to_path(image_array: np.ndarray, output_path: str | bytes | PathLike[str], chunk_source_path: str | bytes | PathLike[str] | None = None) -> None:
+    """Save a checked RGB or RGBA array with the PyAV PNG encoder."""
+    image_array = _validate_png_array(image_array)
+    mode = PNG_CARRIER_MODE if image_array.shape[2] == RGB_CHANNEL_COUNT else PNG_ALPHA_CARRIER_MODE
+    frame = av.VideoFrame.from_ndarray(
+        image_array, format="rgb24" if mode == PNG_CARRIER_MODE else "rgba"
+    )
+    _save_png_frame_to_path(frame, output_path, chunk_source_path)
 
 
 class PngCarrier(CarrierSource):
@@ -501,9 +556,12 @@ class PngCarrier(CarrierSource):
         transform: Callable[[int, np.ndarray], np.ndarray],
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
     ) -> None:
-        """Write transformed RGB units while preserving the source alpha bytes."""
-        output_image = np.empty(self._shape, dtype=np.uint8)
-        output_pixels = output_image.reshape((-1, self._channel_count))
+        """Write transformed RGB units into one PyAV frame, preserving alpha."""
+        height, width, _ = self._shape
+        pixel_format = "rgb24" if self._channel_count == RGB_CHANNEL_COUNT else "rgba"
+        frame = av.VideoFrame(width, height, format=pixel_format)
+        plane = memoryview(frame.planes[0]).cast("B")
+        row_stride = frame.planes[0].line_size
         unit_offset = 0
         pixel_offset = 0
         for original, fixed_bytes in self.iter_chunks_with_fixed_bytes():
@@ -513,16 +571,28 @@ class PngCarrier(CarrierSource):
                 transform(unit_offset, original), original.size
             )
             pixel_count = original.size // RGB_CHANNEL_COUNT
-            output_pixels[
-                pixel_offset:pixel_offset + pixel_count, :RGB_CHANNEL_COUNT
-            ] = replaced.reshape((pixel_count, RGB_CHANNEL_COUNT))
             if self._channel_count == RGBA_CHANNEL_COUNT:
-                output_pixels[
-                    pixel_offset:pixel_offset + pixel_count, RGB_CHANNEL_COUNT
-                ] = np.frombuffer(fixed_bytes, dtype=np.uint8)
+                output_pixels = np.empty((pixel_count, RGBA_CHANNEL_COUNT), dtype=np.uint8)
+                output_pixels[:, :RGB_CHANNEL_COUNT] = replaced.reshape(
+                    (pixel_count, RGB_CHANNEL_COUNT)
+                )
+                output_pixels[:, RGB_CHANNEL_COUNT] = np.frombuffer(fixed_bytes, dtype=np.uint8)
+                output_bytes = memoryview(output_pixels).cast("B")
+            else:
+                output_bytes = memoryview(replaced).cast("B")
+            channel_count = self._channel_count
+            chunk_pixel_offset = 0
+            while chunk_pixel_offset < pixel_count:
+                row, column = divmod(pixel_offset + chunk_pixel_offset, width)
+                row_pixels = min(pixel_count - chunk_pixel_offset, width - column)
+                byte_count = row_pixels * channel_count
+                destination = row * row_stride + column * channel_count
+                source = chunk_pixel_offset * channel_count
+                plane[destination:destination + byte_count] = output_bytes[source:source + byte_count]
+                chunk_pixel_offset += row_pixels
             unit_offset += original.size
             pixel_offset += pixel_count
-        _save_png_array_to_path(output_image, output_path, self._path)
+        _save_png_frame_to_path(frame, output_path, self._path)
 
 
 def _validate_wav_format(channels: int, sample_width: int, frame_rate: int, frame_count: int) -> tuple[int, int, int, int]:

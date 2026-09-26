@@ -66,7 +66,7 @@ The encoder and verifier mask the same carrier regions before hashing. The hash 
 
 A PNG carrier unit is one 8-bit R, G, or B value; an RGBA pixel still has only three carrier units. A WAV carrier unit is one PCM sample's low byte, not one file byte. For multi-byte samples the other bytes are fixed data and are hashed. Capacity therefore scales by `1 / sample_width` compared with counting all sample bytes.
 
-Accept only single-frame, 8-bit PNG images in RGB or RGBA mode. Reject palette, grayscale, 16-bit, animated, and other PNG modes. A non-PNG file keeps `UnSupportedFileType`. Format errors remain specific: unsupported mode reports `PNG must be RGB or RGBA; palette and grayscale images are not supported`; non-8-bit samples report `PNG must use 8-bit RGB or RGBA samples`; animation reports `animated PNG images are not supported`; and images above twice Pillow's configured pixel limit report the pixel count and limit.
+Accept only single-frame, 8-bit PNG images in RGB or RGBA mode. Reject palette, grayscale, 16-bit, animated, and other PNG modes. A non-PNG file keeps `UnSupportedFileType`. Format errors remain specific: unsupported mode reports `PNG must be RGB or RGBA; palette and grayscale images are not supported`; non-8-bit samples report `PNG must use 8-bit RGB or RGBA samples`; animation reports `animated PNG images are not supported`; and images above the fixed PyAV pixel limit of 178,956,970 report the pixel count and limit.
 
 ## Wire format and signing
 

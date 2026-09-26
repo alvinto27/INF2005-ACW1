@@ -1,6 +1,5 @@
-"""Protocol-level video carrier tests, with PyAV-backed tests optional."""
+"""Protocol-level video carrier tests using required PyAV."""
 
-import importlib.util
 import os
 import subprocess
 import struct
@@ -740,27 +739,6 @@ class CarrierOutputCheckTests(unittest.TestCase):
             self.assertTrue(source.opened_output.output_closed)
 
 
-@unittest.skipUnless(importlib.util.find_spec("av"), "PyAV is not installed")
-class PyAVLazyImportTests(unittest.TestCase):
-    def test_importing_stego_does_not_import_pyav(self) -> None:
-        script = (
-            "import importlib.abc, sys; "
-            "sys.meta_path.insert(0, type('BlockAv', (), {"
-            "'find_spec': lambda self, fullname, *args: "
-            "(_ for _ in ()).throw(ModuleNotFoundError('av unavailable')) "
-            "if fullname == 'av' else None})()); "
-            "import stego; assert 'av' not in sys.modules"
-        )
-        subprocess.run([sys.executable, "-c", script], check=True)
-
-
-@unittest.skipUnless(importlib.util.find_spec("av"), "PyAV is not installed")
-class PyAVAvailabilityTests(unittest.TestCase):
-    def test_pyav_is_available_for_video_backend_tests(self) -> None:
-        self.assertIsNotNone(importlib.util.find_spec("av"))
-
-
-@unittest.skipUnless(importlib.util.find_spec("av"), "PyAV is not installed")
 class VideoCarrierReadTests(unittest.TestCase):
     def test_rgb_video_units_context_and_frame_timing_are_exact(self) -> None:
         with TemporaryDirectory() as directory:

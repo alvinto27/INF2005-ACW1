@@ -11,7 +11,7 @@ For repository structure and implementation entry points, see the [Agent Navigat
 - [README](../README.md) — setup and protocol use.
 - [stego package](../stego/__init__.py) — public API.
 - [test_stego.py](../test_stego.py) — protocol and PNG/WAV carrier tests.
-- [test_video.py](../test_video.py) — video protocol and carrier tests; PyAV-backed tests skip when PyAV is unavailable.
+- [test_video.py](../test_video.py) — video protocol and carrier tests; PyAV is required.
 - [Flask application](../run.py) — localhost entry point.
 - [test_webapp.py](../test_webapp.py) — Flask integration tests.
 - [AGENTS](../AGENTS.md) — agent working instructions.

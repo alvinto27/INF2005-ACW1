@@ -4,7 +4,7 @@
 
 ## Entry points
 
-`run.py` creates the Flask app from `stego_web`. Routes in `stego_web/routes.py` use `stego_web/services/current_protocol.py`; the adapter calls the public file-backed APIs from `stego`. The browser verification controller is `stego_web/static/verify.js`. The main encode wizard is `stego_web/static/app.js`.
+`run.py` creates the Flask app from `stego_web`. Routes in `stego_web/routes.py` use `stego_web/services/current_protocol.py`; the adapter calls the public file-backed APIs from `stego`. PyAV is required for runtime PNG and WAV I/O; Pillow is not used by the application. The browser verification controller is `stego_web/static/verify.js`. The main encode wizard is `stego_web/static/app.js`.
 
 ## Encode request
 

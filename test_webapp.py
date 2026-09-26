@@ -11,6 +11,7 @@ import zlib
 from pathlib import Path
 from unittest.mock import patch
 
+import av
 import numpy as np
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -30,6 +31,7 @@ from stego import (
     seal_to_public_key,
     write_lsb_bits,
 )
+from stego.media import _PNG_PIXEL_LIMIT
 from stego_web import create_app
 from stego_web.services.current_protocol import CurrentProtocolService
 
@@ -66,7 +68,7 @@ def sample_palette_png() -> bytes:
 
 
 def oversized_rgb_png() -> bytes:
-    """Build a 66-byte RGB PNG above Pillow's decompression bomb error limit."""
+    """Build a 66-byte RGB PNG above the fixed PyAV pixel limit."""
     def chunk(chunk_type: bytes, data: bytes) -> bytes:
         checksum = zlib.crc32(chunk_type + data) & 0xFFFFFFFF
         return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", checksum)
@@ -302,14 +304,17 @@ class WebApplicationTests(unittest.TestCase):
     def test_png_payload_file_upload_round_trip(self) -> None:
         """PNG carrier uploads preserve an uploaded typed payload file."""
         payload = b"\x89PNG\r\n\x1a\nsmall uploaded PNG payload"
-        with patch("stego.media.Image.open", wraps=Image.open) as png_open:
+        with patch("stego.media.av.open", wraps=av.open) as av_open:
             encoded_response = self.encode(
                 sample_png(),
                 "cover.png",
                 payload=(payload, "image.png"),
                 payload_mime="image/png",
             )
-        png_open.assert_called_once()
+        input_opens = [
+            call for call in av_open.call_args_list if call.kwargs.get("mode") == "r"
+        ]
+        self.assertEqual(len(input_opens), 1, "the uploaded PNG cover must be decoded once")
         self.assertEqual(
             encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
         )
@@ -396,13 +401,11 @@ class WebApplicationTests(unittest.TestCase):
         )
 
     def test_oversized_png_errors_reach_encode_and_verify(self) -> None:
-        """Pillow's bomb error becomes a clear encode error and verify report."""
-        if Image.MAX_IMAGE_PIXELS is None:
-            self.skipTest("Pillow image limit is disabled")
+        """The fixed PyAV pixel cap gives a clear encode error and verify report."""
         pixel_count = 20_000 * 10_000
-        limit = 2 * Image.MAX_IMAGE_PIXELS
+        limit = _PNG_PIXEL_LIMIT
         if pixel_count <= limit:
-            self.skipTest("test PNG does not exceed Pillow's configured error threshold")
+            self.skipTest("test PNG does not exceed the configured PyAV pixel limit")
         detail = (
             f"PNG image is too large: {pixel_count:,} pixels exceeds the limit of {limit:,}"
         )

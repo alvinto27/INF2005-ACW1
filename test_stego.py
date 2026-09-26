@@ -42,6 +42,7 @@ from stego.core import (
 )
 from stego.layout import calculate_masked_media_hash
 from stego.media import (
+    _PNG_PIXEL_LIMIT,
     _save_png_array_to_path,
     encode_png_media_context,
     encode_wav_media_context,
@@ -95,7 +96,7 @@ def riff_chunk(chunk_id: bytes, data: bytes) -> bytes:
 
 
 def oversized_rgb_png() -> bytes:
-    """Build a 66-byte RGB PNG whose IHDR exceeds Pillow's bomb error limit."""
+    """Build a 66-byte RGB PNG whose IHDR exceeds the PyAV pixel limit."""
     header = struct.pack(">IIBBBBB", 20_000, 10_000, 8, 2, 0, 0, 0)
     return (
         b"\x89PNG\r\n\x1a\n"
@@ -1555,12 +1556,10 @@ class TestMaskedStego(unittest.TestCase):
             self.assertEqual(verify_png(png_tampered, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Tampered")
 
     def test_png_decompression_bomb_has_clear_error(self) -> None:
-        if Image.MAX_IMAGE_PIXELS is None:
-            self.skipTest("Pillow image limit is disabled")
         pixel_count = 20_000 * 10_000
-        limit = 2 * Image.MAX_IMAGE_PIXELS
+        limit = _PNG_PIXEL_LIMIT
         if pixel_count <= limit:
-            self.skipTest("test PNG does not exceed Pillow's configured error threshold")
+            self.skipTest("test PNG does not exceed the configured PyAV pixel limit")
         detail = (
             f"PNG image is too large: {pixel_count:,} pixels exceeds the limit of {limit:,}"
         )
@@ -1723,6 +1722,9 @@ class TestMaskedStego(unittest.TestCase):
             for dropped in (b"prIV", b"sBIT", b"hIST"):
                 self.assertNotIn(dropped, types)
             self.assertEqual(types.count(b"IHDR"), 1)
+            self.assertEqual(types.count(b"pHYs"), 1)
+            self.assertEqual(types.count(b"iCCP"), 1)
+            self.assertEqual(types.count(b"tEXt"), 2)
             time_chunk = output_chunks[types.index(b"tIME")][1]
             self.assertEqual(struct.unpack(">I", time_chunk[-4:])[0], zlib.crc32(time_chunk[4:-4]))
             with Image.open(output_path) as image:

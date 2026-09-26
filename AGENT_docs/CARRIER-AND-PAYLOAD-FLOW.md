@@ -6,7 +6,7 @@
 
 `CarrierSource` supplies bounded carrier-unit reads to `stego/core.py`. `PngCarrier`, `WavCarrier`, and `VideoCarrier` are the public file-backed implementations. The internal array backend is not part of the package API. `read_units()` reads a bounded range; `iter_chunks()` returns units in order; `iter_chunks_with_fixed_bytes()` pairs unit chunks with fixed media bytes from the same read. `rewrite_to_path()` writes sequentially and may hash fixed bytes during that same read.
 
-PNG keeps one read-only decoded pixel buffer, about one decoded image size D. Bounded reads avoid full RGB and alpha copies. Rewriting adds one output image, about 2 x D total. Pillow still decodes the whole image. WAV reads whole PCM frames in bounded chunks; carrier working memory does not grow with frame count. One PNG unit is an 8-bit R, G, or B value. One WAV unit is the low byte of one PCM sample.
+PyAV decodes PNG to one read-only pixel buffer, about one decoded image size D. The dimensions are checked from IHDR before decode, with the fixed 178,956,970-pixel limit also passed to FFmpeg. Bounded reads avoid full RGB and alpha copies. Rewriting adds one output image, about 2 x D total. WAV reads whole PCM frames in bounded chunks; carrier working memory does not grow with frame count. One PNG unit is an 8-bit R, G, or B value. One WAV unit is the low byte of one PCM sample.
 
 ### Metadata in the output
 
@@ -20,7 +20,7 @@ WAV output is a copy of the input file with only the declared sample bytes patch
 
 The header, `LIST`/`INFO`, `cue `, `bext`, other chunks before or after `data`, pad bytes, and data bytes after the last whole frame stay byte-for-byte the same. The output length equals the input length. The callbacks run in the same order as before, and `fixed_bytes_callback` receives the original fixed bytes.
 
-PNG output uses Pillow for IHDR, IDAT, and IEND. `_png_copied_chunks()` reads the input chunk list and selects chunks by the PNG rule for editors that change image data. Embedding changes only low bits; width, height, colour type, and bit depth stay the same. A chunk is kept only if it stays true after that change:
+PNG output uses the PyAV PNG encoder for IHDR, IDAT, and IEND; encoder ancillary chunks are dropped. `_png_copied_chunks()` reads the input chunk list and selects chunks by the PNG rule for editors that change image data. Embedding changes only low bits; width, height, colour type, and bit depth stay the same. A chunk is kept only if it stays true after that change:
 
 | Input chunk | Output |
 | --- | --- |
@@ -35,15 +35,15 @@ PNG output uses Pillow for IHDR, IDAT, and IEND. `_png_copied_chunks()` reads th
 | Unknown critical chunk (first letter uppercase) | Encode stops with `ValueError`, as the PNG specification requires |
 | `IHDR`, `IDAT`, `IEND` | Taken from the new image |
 
-`_PngChunkSplicer` receives the bytes that Pillow writes, parses them as PNG chunks, and writes them to the output file. It inserts the copied chunks that came before the first input IDAT immediately before the first new IDAT, and the copied chunks that came after IDAT immediately before IEND. The copied chunks keep their order, data, and CRC; only a replaced `tIME` gets new data and a new CRC. `_utc_now()` supplies the time; tests patch it. The time is read only in the rewrite pass. If Pillow writes a chunk other than IHDR, IDAT, or IEND, the splicer raises `ValueError`, so no chunk type is written twice.
+`_PngChunkSplicer` receives bytes from the PyAV PNG encoder, parses the PNG chunks, drops encoder ancillary chunks, and writes the image chunks to the output file. It inserts the copied chunks that came before the first input IDAT immediately before the first new IDAT, and the copied chunks that came after IDAT immediately before IEND. The copied chunks keep their order, data, and CRC; only a replaced `tIME` gets new data and a new CRC. `_utc_now()` supplies the time; tests patch it. The time is read only in the rewrite pass. PyAV ancillary chunks are discarded; unexpected critical chunks cause `ValueError`, so no chunk type is written twice.
 
-Pillow's `PngInfo.add()` is not used: Pillow moves or drops chunks that come through `pnginfo`. For example, it drops `pHYs`, `iCCP`, `eXIf`, and `tRNS`, and it writes text chunks before IDAT. The splicer holds only chunk offsets, the new `tIME` chunk, and one copy block, so it does not add a decoded-image copy.
+The splicer holds only chunk offsets, the new `tIME` chunk, and one copy block, so it does not add a decoded-image copy.
 
 These rules apply only to encoding. `PngCarrier` loading and verification do not read ancillary chunks. A stego file that later gets a `tRNS` chunk or other metadata verifies as before.
 
 ## Video carrier backend
 
-`VideoCarrier` is the file-backed media-code-3 backend in `stego/video.py`. It performs a bounded scan, then reopens and decodes for range reads, hashing, and rewriting. It exposes ordered RGB low-byte and audio-low-byte carrier units, plus fixed timing, RGB high-byte, alpha, and audio-high-byte data. It supports canonical integer video depths from 8 through 16 bits, with or without alpha; see [Current Protocol](CURRENT-PROTOCOL.md#video-plus-audio-media-code-3). PyAV imports stay inside video operations; importing `stego` and using PNG/WAV do not require PyAV. PyAV is pinned as a normal dependency in `requirements.txt`.
+`VideoCarrier` is the file-backed media-code-3 backend in `stego/video.py`. It performs a bounded scan, then reopens and decodes for range reads, hashing, and rewriting. It exposes ordered RGB low-byte and audio-low-byte carrier units, plus fixed timing, RGB high-byte, alpha, and audio-high-byte data. It supports canonical integer video depths from 8 through 16 bits, with or without alpha; see [Current Protocol](CURRENT-PROTOCOL.md#video-plus-audio-media-code-3). PyAV is a required dependency in `requirements.txt` and is imported at module load. PNG, WAV, and video media I/O use PyAV.
 
 Only video sources that set `requires_output_check=True` use the additive `CarrierSource.open_rewritten_output(path)` hook. `CarrierEncoding.check_output(source)` verifies output context, embedded transforms, unit/fixed-byte counts, and the masked hash. Core `_rewrite_checked()` owns the sequence: rewrite, open and validate the output reader, close it, then call `finish()`. Any failure removes the incomplete output. Existing PNG/WAV sources use the default no-check behavior.
 
@@ -157,7 +157,7 @@ File payload streaming was measured on an 8-bit mono WAV at `k=8`: 8 MiB encode 
 
 ### PNG carrier memory
 
-The same 4341 x 26191 RGBA PNG (about 434 MiB decoded) was used. New encode and verify times are medians of three separate-process runs after one source read; old times are single runs under a different rule. The first encode run of each series was slower (about 9.5 s in two series); the cause was not determined. Verify runs did not show this. Peak RSS includes Python and native Pillow allocations and is not a limit or guarantee.
+The same 4341 x 26191 RGBA PNG (about 434 MiB decoded) was used. New encode and verify times are medians of three separate-process runs after one source read; old times are single runs under a different rule. The first encode run of each series was slower (about 9.5 s in two series); the cause was not determined. Verify runs did not show this. Peak RSS includes Python and native decoder/encoder allocations and is not a limit or guarantee.
 
 | Operation | Old time | New time | Old peak RSS | New peak RSS |
 | --- | ---: | ---: | ---: | ---: |
@@ -167,6 +167,19 @@ The same 4341 x 26191 RGBA PNG (about 434 MiB decoded) was used. New encode and 
 The PNG chunk carry-over did not change these figures. For each version, three separate-process encode runs of the same PNG gave a median of 5.68 s and about 947 MiB peak RSS. The output kept the input `bKGD` chunk.
 
 A separate fixed-key check on RGB and RGBA carriers compared full carrier-unit reads and identity-rewrite outputs; both matched exactly. The encoded files were not compared because encoding uses random nonce material.
+
+#### PyAV PNG migration (M-S1)
+
+The before run used revision `515cc65`; the after run used the PyAV PNG implementation. Each operation ran in three fresh processes with a small payload. The large source was 4341 × 26191 RGBA (113,695,131 pixels). Times and peak RSS include Python startup and native media buffers; RSS is a host-specific measurement, not a limit.
+
+| Source | Operation | Before median | Before peak RSS | After median | After peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `samples/Banana.png` | Encode | 0.350 s | 80.5 MiB | 0.098 s | 94.7 MiB |
+| `samples/Banana.png` | Verify | 0.063 s | 80.8 MiB | 0.038 s | 75.1 MiB |
+| 4341 × 26191 RGBA | Encode | 5.365 s | 948.1 MiB | 3.517 s | 1870.8 MiB |
+| 4341 × 26191 RGBA | Verify | 2.106 s | 948.0 MiB | 1.351 s | 938.2 MiB |
+
+The PyAV PNG encoder uses `compression_level=1` and `pred=up`, selected from the large-image measurement. Direct writes into a PyAV frame removed the full output ndarray and saved 431 MiB (about 19%) from the first S1 encode peak. Keeping the decoded ndarray as a read-only view removed a decode copy and reduced verify peak by about 430 MiB. Setting encoder `thread_count=1` did not reduce peak RSS. Final large-image encode peak is 1.97 times the before peak; verify peak is 1.0% below it. The 2400×2400 RGBA memory test passes with its original `2.5 × decoded bytes + 2 MiB` traced-memory bound. These are host-specific measurements, not guarantees.
 
 ## 10. Whole-file WAV cap
 
@@ -181,7 +194,7 @@ Flask accepts requests up to 256 MiB. Carrier and payload uploads go to request-
 - GCM emits unauthenticated plaintext before the tag check; private staging and delayed publication are mandatory.
 - Temporary disk space is proportional to encrypted and staged plaintext payload sizes. A crash may leave plaintext staging as described by the cleanup rule.
 - Atomic replacement requires staging and output paths on the same filesystem.
-- The web request limit is 256 MiB; PNG image size limits follow Pillow configuration.
+- The web request limit is 256 MiB; PNG images have a fixed 178,956,970-pixel limit enforced before decode and by FFmpeg.
 
 ## 12. Web boundary follow-up
 
