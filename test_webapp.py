@@ -31,7 +31,7 @@ from stego import (
     seal_to_public_key,
     write_lsb_bits,
 )
-from stego.media import _PNG_PIXEL_LIMIT
+from stego.media import _PNG_MAX_DECODED_BYTES
 from stego_web import create_app
 from stego_web.services.current_protocol import CurrentProtocolService
 
@@ -44,6 +44,25 @@ def sample_png() -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (96, 96), (46, 112, 99)).save(output, format="PNG")
     return output.getvalue()
+
+
+def sample_16bit_png() -> bytes:
+    """Return an RGB 16-bit PNG written with the PyAV PNG encoder."""
+    with tempfile.TemporaryDirectory() as directory_name:
+        path = Path(directory_name) / "cover.png"
+        pixels = np.arange(96 * 96 * 3, dtype=np.uint16).reshape((96, 96, 3))
+        container = av.open(str(path), mode="w", format="image2pipe")
+        try:
+            stream = container.add_stream("png")
+            stream.width = 96
+            stream.height = 96
+            stream.pix_fmt = "rgb48be"
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb48be")
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                container.mux(packet)
+        finally:
+            container.close()
+        return path.read_bytes()
 
 
 def sample_rgba_png() -> tuple[bytes, np.ndarray]:
@@ -68,12 +87,12 @@ def sample_palette_png() -> bytes:
 
 
 def oversized_rgb_png() -> bytes:
-    """Build a 66-byte RGB PNG above the fixed PyAV pixel limit."""
+    """Build a 66-byte RGB PNG above the decoded-byte cap."""
     def chunk(chunk_type: bytes, data: bytes) -> bytes:
         checksum = zlib.crc32(chunk_type + data) & 0xFFFFFFFF
         return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", checksum)
 
-    header = struct.pack(">IIBBBBB", 20_000, 10_000, 8, 2, 0, 0, 0)
+    header = struct.pack(">IIBBBBB", 20_000, 20_000, 8, 2, 0, 0, 0)
     return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", header)
@@ -253,6 +272,22 @@ class WebApplicationTests(unittest.TestCase):
         self.assertNotIn(b"original_cover", response.data)
         self.assertIn(b"gsap@3.15", response.data)
 
+    def test_16bit_png_cover_works_through_web_routes(self) -> None:
+        """The web routes encode and verify a native 16-bit PNG cover."""
+        encoded_response = self.encode(sample_16bit_png(), "cover-16.png", lsb_bits=3)
+        self.assertEqual(
+            encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
+        )
+        decoded_response = self.decode(encoded_response.get_json(), "stego-16.png")
+        self.assertEqual(
+            decoded_response.status_code, 200, decoded_response.get_data(as_text=True)
+        )
+        report = decoded_response.get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertEqual(
+            self.get_payload(report["payload"]).get_data(), b"authenticated message"
+        )
+
     def test_png_message_round_trip_recovers_geometry_and_metadata(self) -> None:
         """PNG encoding and receiver-gated decoding expose authenticated data."""
         encoded_response = self.encode(sample_png(), "cover.png", lsb_bits=3)
@@ -401,13 +436,12 @@ class WebApplicationTests(unittest.TestCase):
         )
 
     def test_oversized_png_errors_reach_encode_and_verify(self) -> None:
-        """The fixed PyAV pixel cap gives a clear encode error and verify report."""
-        pixel_count = 20_000 * 10_000
-        limit = _PNG_PIXEL_LIMIT
-        if pixel_count <= limit:
-            self.skipTest("test PNG does not exceed the configured PyAV pixel limit")
+        """The fixed decoded-byte cap gives a clear encode error and verify report."""
+        decoded_bytes = 20_000 * 20_000 * 3
+        limit = _PNG_MAX_DECODED_BYTES
         detail = (
-            f"PNG image is too large: {pixel_count:,} pixels exceeds the limit of {limit:,}"
+            "PNG decoded size exceeds configured limit: "
+            f"{decoded_bytes} bytes > {limit} bytes"
         )
         png_bytes = oversized_rgb_png()
         self.assertEqual(len(png_bytes), 66)

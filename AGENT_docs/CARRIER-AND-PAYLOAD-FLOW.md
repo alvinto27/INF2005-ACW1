@@ -6,7 +6,7 @@
 
 `CarrierSource` supplies bounded carrier-unit reads to `stego/core.py`. `PngCarrier`, `WavCarrier`, and `VideoCarrier` are the public file-backed implementations. The internal array backend is not part of the package API. `read_units()` reads a bounded range; `iter_chunks()` returns units in order; `iter_chunks_with_fixed_bytes()` pairs unit chunks with fixed media bytes from the same read. `rewrite_to_path()` writes sequentially and may hash fixed bytes during that same read.
 
-PyAV decodes PNG to one read-only pixel buffer, about one decoded image size D. The dimensions are checked from IHDR before decode, with the fixed 178,956,970-pixel limit also passed to FFmpeg. Bounded reads avoid full RGB and alpha copies. Rewriting adds one output image, about 2 x D total. WAV reads whole PCM frames in bounded chunks; carrier working memory does not grow with frame count. One PNG unit is an 8-bit R, G, or B value. One WAV unit is the low byte of one PCM sample.
+PyAV decodes 8-bit or 16-bit RGB/RGBA PNG to one read-only pixel buffer, about one decoded image size D. The decoded-byte size is checked from IHDR before decode against 715,827,880 bytes; FFmpeg also gets a format-specific `max_pixels` guard. Bounded reads avoid full RGB and alpha copies. Rewriting writes directly into one PyAV frame. A PNG unit is the low byte of one numeric R, G, or B sample value. WAV reads whole PCM frames in bounded chunks; carrier working memory does not grow with frame count. One WAV unit is the low byte of one PCM sample.
 
 ### Metadata in the output
 
@@ -181,6 +181,19 @@ The before run used revision `515cc65`; the after run used the PyAV PNG implemen
 
 The PyAV PNG encoder uses `compression_level=1` and `pred=up`, selected from the large-image measurement. Direct writes into a PyAV frame removed the full output ndarray and saved 431 MiB (about 19%) from the first S1 encode peak. Keeping the decoded ndarray as a read-only view removed a decode copy and reduced verify peak by about 430 MiB. Setting encoder `thread_count=1` did not reduce peak RSS. Final large-image encode peak is 1.97 times the before peak; verify peak is 1.0% below it. The 2400×2400 RGBA memory test passes with its original `2.5 × decoded bytes + 2 MiB` traced-memory bound. These are host-specific measurements, not guarantees.
 
+#### PyAV 16-bit PNG measurement (M-S2)
+
+The generated RGBA source was 7746 × 7746 pixels: 60,000,516 pixels and 480,004,128 decoded bytes. It was written by PyAV with a smooth deterministic pattern (41,930,550-byte PNG). Each encode and verify ran in three fresh processes with the same small payload. Peak RSS is a process maximum and includes PyAV and Python allocations.
+
+| Source | Operation | Median time | Median peak RSS |
+| --- | --- | ---: | ---: |
+| 16-bit RGBA, 7746 × 7746 | Encode | 5.129 s | 2011.6 MiB |
+| 16-bit RGBA, 7746 × 7746 | Verify | 1.843 s | 1519.6 MiB |
+| 8-bit RGBA, 4341 × 26191 (S1) | Encode | 3.517 s | 1870.8 MiB |
+| 8-bit RGBA, 4341 × 26191 (S1) | Verify | 1.351 s | 938.2 MiB |
+
+The two images have different decoded sizes (480,004,128 and 454,780,524 bytes). Treat these as host-specific examples, not a direct per-byte speed comparison.
+
 ## 10. Whole-file WAV cap
 
 `WavCarrier` reads whole PCM frames, verifies headers when reopening the file, checks the last declared frame on open, and preserves sample bytes outside the low-byte carrier unit. A short file fails early. File reads and early-end failures become `CarrierAccessError`; verification maps these to `Cannot Verify`. WAV output is a chunked copy of the input file with only the declared samples patched; see [Metadata in the output](#metadata-in-the-output). For a 96 MiB 16-bit stereo WAV, three separate-process encode runs took about 0.3 s with 54 MiB peak RSS, before and after this change. The whole-file `WavPcmData`, `load_pcm_wav_from_path`, and `MAX_WAV_FRAME_BYTES` cap are removed. The optional 72 MiB WAV test passes through the file-backed path with traced peak below 16 MiB.
@@ -194,7 +207,7 @@ Flask accepts requests up to 256 MiB. Carrier and payload uploads go to request-
 - GCM emits unauthenticated plaintext before the tag check; private staging and delayed publication are mandatory.
 - Temporary disk space is proportional to encrypted and staged plaintext payload sizes. A crash may leave plaintext staging as described by the cleanup rule.
 - Atomic replacement requires staging and output paths on the same filesystem.
-- The web request limit is 256 MiB; PNG images have a fixed 178,956,970-pixel limit enforced before decode and by FFmpeg.
+- The web request limit is 256 MiB; PNG images have a 715,827,880-byte decoded-size cap checked before decode; FFmpeg also receives a format-specific `max_pixels` limit.
 
 ## 12. Web boundary follow-up
 

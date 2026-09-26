@@ -1,22 +1,24 @@
 # INF2005-ACW1
 
 This project is a localhost Flask application for encrypting, signing, embedding,
-decoding, and verifying payloads in 8-bit RGB or RGBA PNG images and uncompressed
+decoding, and verifying payloads in 8-bit or 16-bit RGB or RGBA PNG images and uncompressed
 PCM WAV audio. The retained web layout uses protocol version 3 from the `stego`
 package.
 
 The protocol encrypts the complete payload record with AES-256-GCM, authenticates
 the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
-the intended receiver with RSA-OAEP. The version 3 full media hash covers the masked RGB units and RGBA alpha of
-PNG; the masked low byte and other bytes of each declared PCM sample; and video
-frame units, fixed bytes, and audio, as [Current Protocol](AGENT_docs/CURRENT-PROTOCOL.md)
-defines. PNG ancillary chunks and WAV chunks outside the
+the intended receiver with RSA-OAEP. The version 3 full media hash covers PNG RGB low-byte units and the fixed
+high-byte and alpha values; the masked low byte and other bytes of each declared
+PCM sample; and video frame units, fixed bytes, and audio, as [Current Protocol](AGENT_docs/CURRENT-PROTOCOL.md)
+defines, including 16-bit sample and fixed-byte order. PNG ancillary chunks and WAV chunks outside the
 declared samples are not covered. The encoded file keeps this metadata: PNG
 text, colour, EXIF, and other copyable ancillary chunks, and all WAV chunks
 outside the samples. A change to this metadata does not change the verdict.
 The encoder sets an existing PNG `tIME` to the encode time and drops `sBIT`
 and `hIST`. It refuses an RGB PNG with a `tRNS` colour key; convert that image
-to RGBA first.
+to RGBA first. The carrier accepts only single-frame 8-bit or 16-bit RGB/RGBA
+PNG images. Its decoded image size cannot exceed 715,827,880 bytes; see [Current
+Protocol](AGENT_docs/CURRENT-PROTOCOL.md) for sample and context rules.
 
 Requires Python 3.10+.
 
@@ -44,7 +46,7 @@ python -m pip install -r requirements-notebook.txt
 
 Encoding requires:
 
-1. an 8-bit RGB or RGBA PNG, or uncompressed PCM WAV cover;
+1. an 8-bit or 16-bit RGB or RGBA PNG, or uncompressed PCM WAV cover;
 2. either a UTF-8 message or one arbitrary payload file;
 3. an encrypted sender RSA private key and its password;
 4. the intended receiver's RSA public key;

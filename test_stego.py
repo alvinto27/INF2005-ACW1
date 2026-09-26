@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import av
 import numpy as np
 import stego
 from PIL import Image
@@ -42,7 +43,7 @@ from stego.core import (
 )
 from stego.layout import calculate_masked_media_hash
 from stego.media import (
-    _PNG_PIXEL_LIMIT,
+    _PNG_MAX_DECODED_BYTES,
     _save_png_array_to_path,
     encode_png_media_context,
     encode_wav_media_context,
@@ -79,6 +80,33 @@ def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", checksum)
 
 
+def write_png16(path: Path, pixels: np.ndarray) -> None:
+    """Write an RGB or RGBA 16-bit PNG with PyAV."""
+    channels = pixels.shape[2]
+    pixel_format = "rgb48be" if channels == 3 else "rgba64be"
+    container = av.open(str(path), mode="w", format="image2pipe")
+    try:
+        stream = container.add_stream("png")
+        stream.width = pixels.shape[1]
+        stream.height = pixels.shape[0]
+        stream.pix_fmt = pixel_format
+        frame = av.VideoFrame.from_ndarray(pixels, format=pixel_format)
+        for packet in (*stream.encode(frame), *stream.encode(None)):
+            container.mux(packet)
+    finally:
+        container.close()
+
+
+def read_png16(path: Path) -> np.ndarray:
+    """Decode a 16-bit PNG to native uint16 values with PyAV."""
+    with av.open(str(path), mode="r") as container:
+        frame = next(container.decode(container.streams.video[0]))
+        channels = 4 if frame.format.name.startswith("rgba") else 3
+        return frame.to_ndarray(
+            format="rgb48be" if channels == 3 else "rgba64be"
+        )
+
+
 def png_chunk_list(data: bytes) -> list[tuple[bytes, bytes]]:
     """Split PNG bytes into (chunk type, whole chunk bytes) pairs."""
     chunks = []
@@ -96,8 +124,8 @@ def riff_chunk(chunk_id: bytes, data: bytes) -> bytes:
 
 
 def oversized_rgb_png() -> bytes:
-    """Build a 66-byte RGB PNG whose IHDR exceeds the PyAV pixel limit."""
-    header = struct.pack(">IIBBBBB", 20_000, 10_000, 8, 2, 0, 0, 0)
+    """Build a 66-byte RGB PNG whose IHDR exceeds the decoded-byte cap."""
+    header = struct.pack(">IIBBBBB", 20_000, 20_000, 8, 2, 0, 0, 0)
     return (
         b"\x89PNG\r\n\x1a\n"
         + png_chunk(b"IHDR", header)
@@ -742,6 +770,162 @@ class TestPayloadStreaming(unittest.TestCase):
         elapsed, peak = self._assert_large_file_payload(64 * 1024 * 1024)
         self.assertGreater(elapsed, 0)
         self.assertLess(peak, 16 * 1024 * 1024)
+
+
+class TestPng16Bit(unittest.TestCase):
+    """Check native-depth PNG carrier values and fixed-byte rules."""
+
+    def test_low_byte_units_and_high_bytes_use_numeric_sample_order(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            path = Path(directory_name) / "known.png"
+            pixels = np.array([[[0x12AB, 0x34CD, 0x56EF]]], dtype=np.uint16)
+            write_png16(path, pixels)
+            source = PngCarrier(path)
+            self.assertTrue(np.array_equal(source.read_units(0, 3), [0xAB, 0xCD, 0xEF]))
+            _, fixed_bytes = next(source.iter_chunks_with_fixed_bytes())
+            self.assertEqual(fixed_bytes, bytes((0x12, 0x34, 0x56)))
+
+    def test_16bit_fixed_bytes_follow_independent_order_for_each_chunk_size(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            path = Path(directory_name) / "fixed.png"
+            values = np.arange(4 * 7 * 4, dtype=np.uint16).reshape((4, 7, 4))
+            values = (values * 997 + 0x1234).astype(np.uint16)
+            write_png16(path, values)
+            expected_high = (values[:, :, :3] >> 8).astype(np.uint8).tobytes()
+            expected_alpha = values[:, :, 3].astype("<u2").tobytes()
+            expected_fixed = expected_high + expected_alpha
+            self.assertEqual(PngCarrier(path, 6).fixed_byte_count, len(expected_fixed))
+            for chunk_units in (6, 27):
+                source = PngCarrier(path, chunk_units)
+                chunks = list(source.iter_chunks_with_fixed_bytes())
+                actual_units = np.concatenate([units for units, _ in chunks])
+                actual_fixed = b"".join(fixed for _, fixed in chunks)
+                expected_units = (values[:, :, :3] & 0xFF).astype(np.uint8).reshape(-1)
+                self.assertTrue(np.array_equal(actual_units, expected_units))
+                self.assertEqual(actual_fixed, expected_fixed)
+
+    def test_8bit_and_16bit_media_contexts_are_compatible_and_distinct(self) -> None:
+        self.assertEqual(
+            encode_png_media_context((7, 11, 3)), struct.pack(">IIB", 11, 7, 3)
+        )
+        self.assertEqual(len(encode_png_media_context((7, 11, 4))), 9)
+        context16 = encode_png_media_context((7, 11, 4), bit_depth=16)
+        self.assertEqual(context16, struct.pack(">IIBB", 11, 7, 4, 16))
+        self.assertEqual(len(context16), 10)
+
+    def test_rgb_and_rgba_16bit_encode_verify_and_tampering(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            generator = np.random.default_rng(916)
+            for channels in (3, 4):
+                source_path = directory / f"source-{channels}.png"
+                pixels = generator.integers(
+                    0, 65536, (120, 120, channels), dtype=np.uint16
+                )
+                write_png16(source_path, pixels)
+                for lsb_count in (1, 8):
+                    output_path = directory / f"encoded-{channels}-{lsb_count}.png"
+                    payload = f"16-bit-{channels}-{lsb_count}".encode()
+                    encode_png(
+                        source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                        2048, lsb_count, payload, b"kind=16-bit",
+                    )
+                    result = verify_png(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+                    self.assertEqual(result.verdict, "Authentic", result.detail)
+                    self.assertEqual(result.payload.user_payload, payload)
+                    output_pixels = read_png16(output_path)
+                    rgb_mask = np.uint16(0xFFFF ^ ((1 << lsb_count) - 1))
+                    self.assertTrue(
+                        np.array_equal(
+                            output_pixels[:, :, :3] & rgb_mask,
+                            pixels[:, :, :3] & rgb_mask,
+                        )
+                    )
+                    if channels == 4:
+                        self.assertTrue(
+                            np.array_equal(output_pixels[:, :, 3], pixels[:, :, 3])
+                        )
+
+                if channels == 4:
+                    encoded_path = directory / "encoded-tamper-base.png"
+                    encode_png(
+                        source_path, encoded_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                        2048, 3, b"tamper checks", b"",
+                    )
+                    for name, channel, mask in (
+                        ("low", 0, 0x0001),
+                        ("high", 0, 0x0100),
+                        ("alpha", 3, 0x0001),
+                    ):
+                        changed = read_png16(encoded_path)
+                        changed[-1, -1, channel] ^= np.uint16(mask)
+                        changed_path = directory / f"tampered-{name}.png"
+                        write_png16(changed_path, changed)
+                        result = verify_png(
+                            changed_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+                        )
+                        self.assertEqual(result.verdict, "Tampered", result.detail)
+
+    def test_16bit_rgb_trns_is_refused_and_encoder_phys_is_dropped(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.png"
+            output_path = directory / "encoded.png"
+            pixels = np.full((120, 120, 3), 0x12AB, dtype=np.uint16)
+            write_png16(source_path, pixels)
+            chunks = png_chunk_list(source_path.read_bytes())
+            self.assertIn(b"pHYs", [kind for kind, _ in chunks])
+            source_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                + chunks[0][1]
+                + b"".join(chunk for kind, chunk in chunks[1:] if kind != b"pHYs")
+            )
+            encode_png(
+                source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"no encoder pHYs", b"",
+            )
+            self.assertNotIn(b"pHYs", [kind for kind, _ in png_chunk_list(output_path.read_bytes())])
+
+            chunks = png_chunk_list(source_path.read_bytes())
+            trns_path = directory / "rgb-trns.png"
+            trns_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + chunks[0][1]
+                + png_chunk(b"tRNS", bytes(6))
+                + b"".join(chunk for _, chunk in chunks[1:])
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "^RGB PNG with a tRNS colour key is not supported; convert the image to RGBA$",
+            ):
+                encode_png(
+                    trns_path, directory / "refused.png", PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY, 2048, 3, b"payload", b"",
+                )
+
+    def test_decoded_byte_cap_boundaries_for_rgba_depths(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            eight_exact = directory / "rgba8-exact.png"
+            Image.fromarray(np.zeros((1, 100, 4), dtype=np.uint8), mode="RGBA").save(eight_exact)
+            eight_over = directory / "rgba8-over.png"
+            Image.fromarray(np.zeros((1, 101, 4), dtype=np.uint8), mode="RGBA").save(eight_over)
+            with patch("stego.media._PNG_MAX_DECODED_BYTES", 400):
+                self.assertEqual(PngCarrier(eight_exact).channel_count, 4)
+                with self.assertRaisesRegex(
+                    ValueError, "PNG decoded size exceeds configured limit: 404 bytes > 400 bytes"
+                ):
+                    PngCarrier(eight_over)
+
+            sixteen_exact = directory / "rgba16-exact.png"
+            write_png16(sixteen_exact, np.zeros((1, 100, 4), dtype=np.uint16))
+            sixteen_over = directory / "rgba16-over.png"
+            write_png16(sixteen_over, np.zeros((1, 101, 4), dtype=np.uint16))
+            with patch("stego.media._PNG_MAX_DECODED_BYTES", 800):
+                self.assertEqual(PngCarrier(sixteen_exact)._bit_depth, 16)
+                with self.assertRaisesRegex(
+                    ValueError, "PNG decoded size exceeds configured limit: 808 bytes > 800 bytes"
+                ):
+                    PngCarrier(sixteen_over)
 
 
 class TestMaskedStego(unittest.TestCase):
@@ -1555,13 +1739,12 @@ class TestMaskedStego(unittest.TestCase):
             Image.fromarray(encoded, mode="RGBA").save(png_tampered)
             self.assertEqual(verify_png(png_tampered, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).verdict, "Tampered")
 
-    def test_png_decompression_bomb_has_clear_error(self) -> None:
-        pixel_count = 20_000 * 10_000
-        limit = _PNG_PIXEL_LIMIT
-        if pixel_count <= limit:
-            self.skipTest("test PNG does not exceed the configured PyAV pixel limit")
+    def test_png_decoded_byte_cap_has_clear_error(self) -> None:
+        decoded_bytes = 20_000 * 20_000 * 3
+        limit = _PNG_MAX_DECODED_BYTES
         detail = (
-            f"PNG image is too large: {pixel_count:,} pixels exceeds the limit of {limit:,}"
+            "PNG decoded size exceeds configured limit: "
+            f"{decoded_bytes} bytes > {limit} bytes"
         )
         with TemporaryDirectory() as directory_name:
             input_path = Path(directory_name) / "oversized.png"
@@ -1614,13 +1797,23 @@ class TestMaskedStego(unittest.TestCase):
                     self.assertEqual((result.verdict, result.detail), ("Cannot Verify", message))
 
             rgb16_path = directory / "sixteen-bit-rgb.png"
-            write_rgb16_png(rgb16_path)
-            with self.assertRaisesRegex(ValueError, "PNG must use 8-bit RGB or RGBA samples"):
-                PngCarrier(rgb16_path)
-            rgb16_result = verify_png(rgb16_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            write_png16(rgb16_path, np.zeros((8, 8, 3), dtype=np.uint16))
+            self.assertEqual(PngCarrier(rgb16_path)._bit_depth, 16)
+
+            invalid_depth_path = directory / "invalid-depth.png"
+            invalid_depth_header = struct.pack(">IIBBBBB", 8, 8, 4, 2, 0, 0, 0)
+            invalid_depth_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                + png_chunk(b"IHDR", invalid_depth_header)
+                + png_chunk(b"IDAT", zlib.compress(b"x"))
+                + png_chunk(b"IEND", b"")
+            )
+            depth_error = "PNG must use 8-bit or 16-bit RGB or RGBA samples"
+            with self.assertRaisesRegex(ValueError, depth_error):
+                PngCarrier(invalid_depth_path)
             self.assertEqual(
-                (rgb16_result.verdict, rgb16_result.detail),
-                ("Cannot Verify", "PNG must use 8-bit RGB or RGBA samples"),
+                verify_png(invalid_depth_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY).detail,
+                depth_error,
             )
 
             animated_path = directory / "animated.png"
@@ -2352,22 +2545,6 @@ def streamed_hash(source: CarrierSource, media_code: int, lsb_count: int, start_
 
 def random_units(size: int, seed: int = 7) -> np.ndarray:
     return np.random.default_rng(seed).integers(0, 256, size, dtype=np.uint8)
-
-
-def write_rgb16_png(path: Path) -> None:
-    """Write a minimal valid 16-bit RGB PNG for format-error coverage."""
-    def chunk(chunk_type: bytes, data: bytes) -> bytes:
-        payload = chunk_type + data
-        return len(data).to_bytes(4, "big") + payload + zlib.crc32(payload).to_bytes(4, "big")
-
-    header = struct.pack(">IIBBBBB", 1, 1, 16, 2, 0, 0, 0)
-    image_data = zlib.compress(b"\x00" + bytes(6))
-    path.write_bytes(
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", header)
-        + chunk(b"IDAT", image_data)
-        + chunk(b"IEND", b"")
-    )
 
 
 def write_pcm_wav(path: Path, channels: int, sample_width: int, frame_count: int, seed: int = 3) -> None:

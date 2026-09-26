@@ -65,8 +65,8 @@ def _validate_png_array(image_array: np.ndarray) -> np.ndarray:
 
 def _validate_rgb_png_header(
     image_path: str | bytes | PathLike[str],
-) -> tuple[int, int]:
-    """Check that a PNG file has the supported 8-bit RGB or RGBA format."""
+) -> tuple[int, int, int, int]:
+    """Check the PNG header and return width, height, channels, and bit depth."""
     with open(image_path, "rb") as image_file:
         header = image_file.read(33)
     if len(header) != 33 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
@@ -79,16 +79,16 @@ def _validate_rgb_png_header(
     )
     if colour_type not in (2, 6):
         raise ValueError("PNG must be RGB or RGBA; palette and grayscale images are not supported")
-    if bit_depth != 8:
-        raise ValueError("PNG must use 8-bit RGB or RGBA samples")
+    if bit_depth not in (8, 16):
+        raise ValueError("PNG must use 8-bit or 16-bit RGB or RGBA samples")
     if compression != 0 or filter_method != 0:
         raise ValueError("unsupported PNG encoding")
-    return width, height
+    return width, height, RGB_CHANNEL_COUNT if colour_type == 2 else RGBA_CHANNEL_COUNT, bit_depth
 
 
 def _load_png_buffer_from_path(
     image_path: str | bytes | PathLike[str],
-) -> tuple[memoryview, tuple[int, int, int]]:
+) -> tuple[memoryview, tuple[int, int, int], int]:
     """Load one checked PNG into a single decoded byte buffer."""
     if not isinstance(image_path, (str, bytes, PathLike)):
         raise TypeError("image_path must be a filesystem path")
@@ -101,16 +101,14 @@ def _load_png_buffer_from_path(
         except (OSError, av.error.FFmpegError):
             file_type = "unknown"
         raise UnSupportedFileType(f"unsupported file type: {file_type}")
-    width, height = _validate_rgb_png_header(image_path)
-    with open(image_path, "rb") as image_file:
-        image_file.seek(25)
-        colour_type = image_file.read(1)[0]
+    width, height, channels, bit_depth = _validate_rgb_png_header(image_path)
     if width < 1 or height < 1:
         raise ValueError("image dimensions must be greater than zero")
-    pixels_count = width * height
-    if pixels_count > _PNG_PIXEL_LIMIT:
+    decoded_bytes = width * height * channels * (bit_depth // 8)
+    if decoded_bytes > _PNG_MAX_DECODED_BYTES:
         raise ValueError(
-            f"PNG image is too large: {pixels_count:,} pixels exceeds the limit of {_PNG_PIXEL_LIMIT:,}"
+            "PNG decoded size exceeds configured limit: "
+            f"{decoded_bytes} bytes > {_PNG_MAX_DECODED_BYTES} bytes"
         )
     try:
         with open(image_path, "rb") as image_file:
@@ -132,25 +130,40 @@ def _load_png_buffer_from_path(
                 )
             stream = container.streams.video[0]
             codec = stream.codec_context
-            codec.options = {**codec.options, "max_pixels": str(_PNG_PIXEL_LIMIT)}
+            # FFmpeg rejects small max_pixels values for tiny padded images;
+            # the IHDR byte check remains the exact limit for those cases.
+            max_pixels = max(
+                1_000_000,
+                _PNG_MAX_DECODED_BYTES // (channels * (bit_depth // 8)) + 1,
+            )
+            codec.options = {**codec.options, "max_pixels": str(max_pixels)}
             if codec.width != width or codec.height != height:
                 raise ValueError("unreadable PNG image")
             pixel_format = codec.format.name if codec.format is not None else ""
-            if pixel_format in ("pal8", "gray", "gray8", "ya8"):
+            allowed_formats = (
+                {"rgb24", "rgba"}
+                if bit_depth == 8
+                else {"rgb48be", "rgba64be"}
+            )
+            if pixel_format not in allowed_formats:
                 raise ValueError("PNG must be RGB or RGBA; palette and grayscale images are not supported")
-            channels = RGB_CHANNEL_COUNT if colour_type == 2 else RGBA_CHANNEL_COUNT
             decoded: np.ndarray | None = None
             frame_count = 0
             for frame in container.decode(stream):
                 frame_count += 1
                 if frame_count > 1:
                     raise ValueError("animated PNG images are not supported")
-                decoded = frame.to_ndarray(format="rgb24" if channels == RGB_CHANNEL_COUNT else "rgba")
+                target_format = (
+                    ("rgb24" if channels == RGB_CHANNEL_COUNT else "rgba")
+                    if bit_depth == 8
+                    else ("rgb48be" if channels == RGB_CHANNEL_COUNT else "rgba64be")
+                )
+                decoded = frame.to_ndarray(format=target_format)
             if decoded is None or decoded.shape != (height, width, channels):
                 raise ValueError("unreadable PNG image")
             pixel_buffer = memoryview(decoded).cast("B").toreadonly()
             del decoded, frame
-        return pixel_buffer, (height, width, channels)
+        return pixel_buffer, (height, width, channels), bit_depth
     except (UnSupportedFileType, ValueError):
         raise
     except (OSError, av.error.FFmpegError, IndexError) as error:
@@ -162,9 +175,10 @@ def _load_png_buffer_from_path(
 
 
 def load_png_from_path(image_path: str | bytes | PathLike[str]) -> np.ndarray:
-    """Load and check one single-frame 8-bit RGB or RGBA PNG from a file."""
-    pixels, shape = _load_png_buffer_from_path(image_path)
-    return np.frombuffer(pixels, dtype=np.uint8).reshape(shape).copy()
+    """Load and check one single-frame 8-bit or 16-bit RGB/RGBA PNG."""
+    pixels, shape, bit_depth = _load_png_buffer_from_path(image_path)
+    dtype = np.uint8 if bit_depth == 8 else np.uint16
+    return np.frombuffer(pixels, dtype=dtype).reshape(shape).copy()
 
 
 def rgb_array_to_carrier(image_array: np.ndarray) -> np.ndarray:
@@ -178,21 +192,29 @@ def rgb_array_to_carrier(image_array: np.ndarray) -> np.ndarray:
     ).reshape(-1)
 
 
-def encode_png_media_context(image_shape: tuple[int, int, int], carrier_unit_count: int | None = None) -> bytes:
-    """Make the PNG context that binds width, height, and channel count."""
+def encode_png_media_context(
+    image_shape: tuple[int, int, int],
+    carrier_unit_count: int | None = None,
+    bit_depth: int = 8,
+) -> bytes:
+    """Make the PNG context for dimensions, channels, and sample depth."""
     try:
         height, width, channels = tuple(image_shape)
     except (TypeError, ValueError) as error:
         raise ValueError("image_shape must be (height, width, 3 or 4)") from error
     if channels not in (RGB_CHANNEL_COUNT, RGBA_CHANNEL_COUNT) or height < 1 or width < 1 or height > 0xFFFFFFFF or width > 0xFFFFFFFF:
         raise ValueError("image_shape must be bounded (height, width, 3 or 4)")
+    if bit_depth not in (8, 16):
+        raise ValueError("PNG sample depth must be 8 or 16 bits")
     if carrier_unit_count is not None and carrier_unit_count != height * width * RGB_CHANNEL_COUNT:
         raise ValueError("carrier count does not match PNG dimensions")
-    return struct.pack(PNG_MEDIA_CONTEXT_FORMAT, width, height, channels)
+    if bit_depth == 8:
+        return struct.pack(PNG_MEDIA_CONTEXT_FORMAT, width, height, channels)
+    return struct.pack(">IIBB", width, height, channels, bit_depth)
 
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-_PNG_PIXEL_LIMIT = 178_956_970
+_PNG_MAX_DECODED_BYTES = 715_827_880
 _PNG_IMAGE_CHUNKS = frozenset((b"IHDR", b"IDAT", b"IEND"))
 # Known chunks copied unchanged. They stay true after embedding because only
 # low bits change. PLTE is only a suggested palette in truecolour PNGs.
@@ -467,9 +489,11 @@ class PngCarrier(CarrierSource):
         """Load one PNG into a single backing buffer, then choose the chunk size."""
         chunk_units = _validate_positive_integer(chunk_units, "chunk_units")
         self._path = path
-        pixels, self._shape = _load_png_buffer_from_path(path)
+        pixels, self._shape, self._bit_depth = _load_png_buffer_from_path(path)
         self._channel_count = self._shape[2]
-        self._pixels = np.frombuffer(pixels, dtype=np.uint8).reshape(self._shape)
+        self._pixels = np.frombuffer(
+            pixels, dtype=np.uint8 if self._bit_depth == 8 else np.uint16
+        ).reshape(self._shape)
         self._pixels_by_channel = self._pixels.reshape((-1, self._channel_count))
         self._alpha = (
             self._pixels_by_channel[:, RGB_CHANNEL_COUNT]
@@ -480,7 +504,7 @@ class PngCarrier(CarrierSource):
         self._chunk_units = chunk_units
         self._pixels_per_chunk = max(1, chunk_units // RGB_CHANNEL_COUNT)
         self._media_context = encode_png_media_context(
-            self._shape, self._total_units
+            self._shape, self._total_units, self._bit_depth
         )
 
     @property
@@ -500,8 +524,11 @@ class PngCarrier(CarrierSource):
 
     @property
     def fixed_byte_count(self) -> int:
-        """Return the number of alpha bytes paired with chunks, or zero for RGB."""
-        return self._shape[0] * self._shape[1] if self._alpha is not None else 0
+        """Return all image bytes that are not RGB low-byte carrier units."""
+        pixel_count = self._shape[0] * self._shape[1]
+        if self._bit_depth == 8:
+            return pixel_count if self._alpha is not None else 0
+        return pixel_count * (3 + (2 if self._alpha is not None else 0))
 
     @property
     def media_code(self) -> int:
@@ -518,15 +545,19 @@ class PngCarrier(CarrierSource):
         start_unit, count = _validate_unit_range(start_unit, count, self.total_units)
         if count == 0:
             return np.empty(0, dtype=np.uint8)
-        if self._channel_count == RGB_CHANNEL_COUNT:
-            return self._pixels.reshape(-1)[start_unit:start_unit + count].copy()
-
         pixel_start = start_unit // RGB_CHANNEL_COUNT
         pixel_end = -(-(start_unit + count) // RGB_CHANNEL_COUNT)
         rgb_pixels = self._pixels_by_channel[
             pixel_start:pixel_end, :RGB_CHANNEL_COUNT
         ]
-        rgb_units = np.array(rgb_pixels, dtype=np.uint8, order="C", copy=True).reshape(-1)
+        if self._bit_depth == 8 and self._channel_count == RGB_CHANNEL_COUNT:
+            return rgb_pixels.reshape(-1)[
+                start_unit - pixel_start * RGB_CHANNEL_COUNT:
+                start_unit - pixel_start * RGB_CHANNEL_COUNT + count
+            ].copy()
+        rgb_units = (rgb_pixels & 0xFF).astype(
+            np.uint8, copy=self._bit_depth == 8
+        ).reshape(-1)
         unit_offset = start_unit - pixel_start * RGB_CHANNEL_COUNT
         return rgb_units[unit_offset:unit_offset + count]
 
@@ -537,18 +568,31 @@ class PngCarrier(CarrierSource):
             yield self.read_units(start_unit, count)
 
     def iter_chunks_with_fixed_bytes(self) -> Iterator[tuple[np.ndarray, bytes]]:
-        """Yield pixel-aligned RGB chunks and the matching alpha bytes."""
+        """Yield RGB units and fixed bytes in their protocol-defined order."""
         pixel_count = self._shape[0] * self._shape[1]
-        alpha_values = None if self._alpha is None else self._alpha.reshape(-1)
         for pixel_start in range(0, pixel_count, self._pixels_per_chunk):
             pixels = min(self._pixels_per_chunk, pixel_count - pixel_start)
             units = self.read_units(
                 pixel_start * RGB_CHANNEL_COUNT, pixels * RGB_CHANNEL_COUNT
             )
-            fixed_bytes = b"" if alpha_values is None else alpha_values[
-                pixel_start:pixel_start + pixels
-            ].tobytes()
-            yield units, fixed_bytes
+            if self._bit_depth == 8:
+                fixed_bytes = b"" if self._alpha is None else self._alpha[
+                    pixel_start:pixel_start + pixels
+                ].tobytes()
+                yield units, fixed_bytes
+                continue
+            rgb_values = self._pixels_by_channel[
+                pixel_start:pixel_start + pixels, :RGB_CHANNEL_COUNT
+            ]
+            high_bytes = (rgb_values >> 8).astype(np.uint8).tobytes()
+            yield units, high_bytes
+        if self._bit_depth == 16 and self._alpha is not None:
+            alpha_values = self._alpha.reshape(-1)
+            for pixel_start in range(0, pixel_count, self._pixels_per_chunk):
+                alpha_chunk = alpha_values[
+                    pixel_start:pixel_start + self._pixels_per_chunk
+                ]
+                yield np.empty(0, dtype=np.uint8), alpha_chunk.astype("<u2", copy=False).tobytes()
 
     def rewrite_to_path(
         self,
@@ -556,39 +600,59 @@ class PngCarrier(CarrierSource):
         transform: Callable[[int, np.ndarray], np.ndarray],
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
     ) -> None:
-        """Write transformed RGB units into one PyAV frame, preserving alpha."""
+        """Write transformed RGB units into one PyAV frame, preserving fixed values."""
         height, width, _ = self._shape
-        pixel_format = "rgb24" if self._channel_count == RGB_CHANNEL_COUNT else "rgba"
+        if self._bit_depth == 8:
+            pixel_format = "rgb24" if self._channel_count == RGB_CHANNEL_COUNT else "rgba"
+        else:
+            pixel_format = "rgb48be" if self._channel_count == RGB_CHANNEL_COUNT else "rgba64be"
         frame = av.VideoFrame(width, height, format=pixel_format)
         plane = memoryview(frame.planes[0]).cast("B")
         row_stride = frame.planes[0].line_size
+        bytes_per_sample = self._bit_depth // 8
         unit_offset = 0
         pixel_offset = 0
         for original, fixed_bytes in self.iter_chunks_with_fixed_bytes():
             if fixed_bytes_callback is not None:
                 fixed_bytes_callback(unit_offset, original, fixed_bytes)
+            if original.size == 0:
+                continue
             replaced = _validate_transformed_units(
                 transform(unit_offset, original), original.size
             )
             pixel_count = original.size // RGB_CHANNEL_COUNT
-            if self._channel_count == RGBA_CHANNEL_COUNT:
-                output_pixels = np.empty((pixel_count, RGBA_CHANNEL_COUNT), dtype=np.uint8)
-                output_pixels[:, :RGB_CHANNEL_COUNT] = replaced.reshape(
-                    (pixel_count, RGB_CHANNEL_COUNT)
-                )
-                output_pixels[:, RGB_CHANNEL_COUNT] = np.frombuffer(fixed_bytes, dtype=np.uint8)
+            source_pixels = self._pixels_by_channel[
+                pixel_offset:pixel_offset + pixel_count
+            ]
+            if self._bit_depth == 8:
+                if self._channel_count == RGBA_CHANNEL_COUNT:
+                    output_pixels = np.empty((pixel_count, RGBA_CHANNEL_COUNT), dtype=np.uint8)
+                    output_pixels[:, :RGB_CHANNEL_COUNT] = replaced.reshape(
+                        (pixel_count, RGB_CHANNEL_COUNT)
+                    )
+                    output_pixels[:, RGB_CHANNEL_COUNT] = np.frombuffer(
+                        fixed_bytes, dtype=np.uint8
+                    )
+                else:
+                    output_pixels = replaced.reshape((pixel_count, RGB_CHANNEL_COUNT))
                 output_bytes = memoryview(output_pixels).cast("B")
             else:
-                output_bytes = memoryview(replaced).cast("B")
-            channel_count = self._channel_count
+                output_pixels = source_pixels.copy()
+                output_pixels[:, :RGB_CHANNEL_COUNT] = (
+                    output_pixels[:, :RGB_CHANNEL_COUNT] & np.uint16(0xFF00)
+                ) | replaced.reshape((pixel_count, RGB_CHANNEL_COUNT)).astype(np.uint16)
+                output_bytes = memoryview(output_pixels.astype(">u2", copy=False)).cast("B")
+            channel_bytes = self._channel_count * bytes_per_sample
             chunk_pixel_offset = 0
             while chunk_pixel_offset < pixel_count:
                 row, column = divmod(pixel_offset + chunk_pixel_offset, width)
                 row_pixels = min(pixel_count - chunk_pixel_offset, width - column)
-                byte_count = row_pixels * channel_count
-                destination = row * row_stride + column * channel_count
-                source = chunk_pixel_offset * channel_count
-                plane[destination:destination + byte_count] = output_bytes[source:source + byte_count]
+                byte_count = row_pixels * channel_bytes
+                destination = row * row_stride + column * channel_bytes
+                source = chunk_pixel_offset * channel_bytes
+                plane[destination:destination + byte_count] = output_bytes[
+                    source:source + byte_count
+                ]
                 chunk_pixel_offset += row_pixels
             unit_offset += original.size
             pixel_offset += pixel_count

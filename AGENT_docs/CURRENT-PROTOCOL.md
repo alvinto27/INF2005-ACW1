@@ -4,7 +4,7 @@
 
 ## Overview
 
-The protocol embeds a signed, encrypted payload in 8-bit RGB or RGBA PNG carrier units, in the least-significant byte of each uncompressed PCM WAV sample, or in the optional video-plus-audio carrier with media code 3. An RSA-OAEP bootstrap carries packet geometry and AES-256-GCM session material to the intended receiver. RSA-PSS authenticates the ciphertext and carrier interpretation. Verification needs the sender public key and receiver private key. The packet has no public marker or header; version 1 and version 2 files are not readable by the active protocol.
+The protocol embeds a signed, encrypted payload in 8-bit or 16-bit RGB or RGBA PNG carrier units, in the least-significant byte of each uncompressed PCM WAV sample, or in the optional video-plus-audio carrier with media code 3. An RSA-OAEP bootstrap carries packet geometry and AES-256-GCM session material to the intended receiver. RSA-PSS authenticates the ciphertext and carrier interpretation. Verification needs the sender public key and receiver private key. The packet has no public marker or header; version 1 and version 2 files are not readable by the active protocol.
 
 Every media-data byte preserved by embedding is covered by the version 3 full media hash. The payload record contains that hash and the user content. The signature authenticates the record ciphertext, media interpretation, and embedding layout. It does not authenticate overwritten cover LSBs or identify a real-world person.
 
@@ -13,7 +13,7 @@ Every media-data byte preserved by embedding is covered by the version 3 full me
 Version 3 hashes two streams:
 
 1. `unit_digest` is SHA-256 over carrier units in order after clearing the lowest bit in the reserved bootstrap span and the lowest `lsb_count` bits in the packet footprint, including alignment padding.
-2. `fixed_digest` is SHA-256 over all media-data bytes that embedding does not change. This includes PNG alpha bytes and every non-carrier byte of each declared multi-byte PCM sample. Empty input uses the normal SHA-256 empty digest.
+2. `fixed_digest` is SHA-256 over all media-data bytes that embedding does not change. For 8-bit RGBA PNG it includes alpha bytes in pixel order. For 16-bit PNG it includes the high byte of every RGB value in unit order, then, for RGBA, every 16-bit alpha value as little-endian bytes in pixel order. WAV fixed bytes are every non-carrier byte of each declared multi-byte PCM sample. Empty input uses the normal SHA-256 empty digest.
 
 The final hash is:
 
@@ -33,9 +33,9 @@ media_hash = SHA256(
 
 All integer fields here use unsigned 64-bit big-endian encoding. The stream digests are 32 bytes each. Chunk boundaries do not affect either digest.
 
-PNG input must be a single-frame, 8-bit RGB or RGBA image. RGB and RGBA have three carrier units per pixel; alpha is fixed data and remains byte-for-byte unchanged. WAV carrier units are the low byte of each declared PCM sample. Other sample bytes are fixed data. PNG ancillary chunks and WAV chunks outside declared PCM samples are not hashed. The encoder output keeps them: it copies PNG ancillary chunks that stay true after embedding and every WAV byte outside the declared samples. It updates an existing PNG `tIME` to the encode time. It drops `sBIT`, `hIST`, an RGBA `tRNS`, and unknown chunks that are not safe to copy. It refuses to encode an RGB PNG with a `tRNS` colour key. Because they are not hashed, a change to them does not change the verdict. This is a carrier-output rule, not a wire-format change; see [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#metadata-in-the-output).
+PNG input must be a single-frame, 8-bit or 16-bit RGB or RGBA image. Each pixel has three carrier units: the low byte of R, G, and B in row-major order. For 16-bit samples, each unit is the low-order byte of the numeric sample value, not the byte at the lower memory address. The fixed bytes for 16-bit images follow the order above. The 8-bit RGBA fixed-byte rule remains unchanged. WAV carrier units are the low byte of each declared PCM sample. Other sample bytes are fixed data. PNG ancillary chunks and WAV chunks outside declared PCM samples are not hashed. The encoder output keeps them: it copies PNG ancillary chunks that stay true after embedding and every WAV byte outside the declared samples. It updates an existing PNG `tIME` to the encode time. It drops `sBIT`, `hIST`, an RGBA `tRNS`, and unknown chunks that are not safe to copy. It refuses to encode an RGB PNG with a `tRNS` colour key. Because they are not hashed, a change to them does not change the verdict. This is a carrier-output rule, not a wire-format change; see [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#metadata-in-the-output).
 
-PNG media context is `struct.pack(">IIB", width, height, channel_count)`, with channel count 3 or 4. WAV context is `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
+An 8-bit PNG media context remains the 9-byte `struct.pack(">IIB", width, height, channel_count)`. A 16-bit PNG uses the 10-byte `struct.pack(">IIBB", width, height, channel_count, 16)`. Existing 8-bit files keep their old context and remain compatible. WAV context is `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 
 ### Video-plus-audio media code 3
 
@@ -64,9 +64,16 @@ The encoder and verifier mask the same carrier regions before hashing. The hash 
 
 ## Carrier units
 
-A PNG carrier unit is one 8-bit R, G, or B value; an RGBA pixel still has only three carrier units. A WAV carrier unit is one PCM sample's low byte, not one file byte. For multi-byte samples the other bytes are fixed data and are hashed. Capacity therefore scales by `1 / sample_width` compared with counting all sample bytes.
+A PNG carrier unit is the low byte of one R, G, or B sample value; RGB and RGBA pixels have three units at both supported PNG depths. For 16-bit samples, this is the low byte of the numeric value, regardless of byte order in memory. A WAV carrier unit is one PCM sample's low byte, not one file byte. For multi-byte samples the other bytes are fixed data and are hashed. Capacity therefore scales by `1 / sample_width` compared with counting all sample bytes.
 
-Accept only single-frame, 8-bit PNG images in RGB or RGBA mode. Reject palette, grayscale, 16-bit, animated, and other PNG modes. A non-PNG file keeps `UnSupportedFileType`. Format errors remain specific: unsupported mode reports `PNG must be RGB or RGBA; palette and grayscale images are not supported`; non-8-bit samples report `PNG must use 8-bit RGB or RGBA samples`; animation reports `animated PNG images are not supported`; and images above the fixed PyAV pixel limit of 178,956,970 report the pixel count and limit.
+Accept only single-frame, 8-bit or 16-bit PNG images with RGB or RGBA colour type. Reject palette, grayscale, grayscale-alpha, 1/2/4-bit, animated, and other PNG modes. A non-PNG file keeps `UnSupportedFileType`. Unsupported colour type reports `PNG must be RGB or RGBA; palette and grayscale images are not supported`; an invalid sample depth reports `PNG must use 8-bit or 16-bit RGB or RGBA samples`; animation reports `animated PNG images are not supported`. RGB PNG with a `tRNS` colour key is refused at encode for both depths with the existing conversion message. The decoded-byte limit is 715,827,880 bytes. The exact pre-decode refusal is `PNG decoded size exceeds configured limit: {bytes} bytes > {limit} bytes`. The byte count is width × height × channels × bytes per sample. FFmpeg `max_pixels` is also set from this limit as a second decoder guard. This gives these maximum pixel counts:
+
+| PNG format | Maximum pixels |
+| --- | ---: |
+| 8-bit RGB | 238,609,293 |
+| 8-bit RGBA | 178,956,970 |
+| 16-bit RGB | 119,304,646 |
+| 16-bit RGBA | 89,478,485 |
 
 ## Wire format and signing
 

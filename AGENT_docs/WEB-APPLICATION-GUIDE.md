@@ -16,7 +16,7 @@ The adapter calls `stego.encode_png_from_payload_path` or `stego.encode_wav_from
 
 `POST /decode` requires four multipart fields:
 
-- `stego`: one 8-bit RGB/RGBA PNG or uncompressed PCM WAV;
+- `stego`: one 8-bit or 16-bit RGB/RGBA PNG or uncompressed PCM WAV;
 - `sender_public_key`: the trusted sender RSA-2048 public PEM;
 - `receiver_private_key`: the intended receiver's encrypted RSA-2048 private PEM; and
 - `receiver_key_password`: the password for that private key.
@@ -71,7 +71,7 @@ The whole-request limit is `MAX_CONTENT_LENGTH = 256 MiB`; `create_app(test_conf
 
 | Requirement | Status | Evidence or remaining work |
 | --- | --- | --- |
-| FR1 image input | Implemented | Strict 8-bit RGB/RGBA PNG validation, preview, encode, decode, and comparison. |
+| FR1 image input | Implemented | Strict 8-bit or 16-bit RGB/RGBA PNG validation, preview, encode, decode, and comparison. |
 | FR2 audio input | Implemented | PCM/WAV validation, playback, encode, decode, and comparison. |
 | FR3 payload generation | Implemented | Encrypted record contains media ID, timestamp, nonce, full media hash, raw payload, and typed metadata. |
 | FR4 digital signature | Implemented | RSA-PSS/SHA-256 covers protocol version, media context, layout, and ciphertext. |
