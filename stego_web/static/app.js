@@ -111,14 +111,15 @@ document.querySelectorAll('.back').forEach(button => button.addEventListener('cl
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} bytes`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
 function handleCoverFile(file) {
   if (!file) {
     coverInput.setCustomValidity('');
-    coverName.textContent = 'Drop an image or audio file here';
-    coverMeta.textContent = 'Maximum request size is controlled by the local server.';
+    coverName.textContent = 'Drop an image, audio, or video file here';
+    coverMeta.textContent = 'Maximum upload size is limited by free disk space and the carrier backend.';
     coverDrop.classList.remove('has-file', 'has-error');
     return;
   }
@@ -127,9 +128,15 @@ function handleCoverFile(file) {
   coverDrop.classList.remove('has-error');
   coverName.textContent = file.name;
   coverMeta.textContent = `${formatBytes(file.size)} - ${file.type || 'type detected by server'}`;
-  const audioSource = /\.(wav|mp3|aac|m4a|flac|ogg|oga|opus)$/i.test(file.name);
-  const previewMime = file.type || (audioSource ? 'audio/wav' : 'image/png');
-  renderMedia(document.querySelector('#cover-preview'), URL.createObjectURL(file), previewMime);
+  const extension = file.name.split('.').pop().toLowerCase();
+  const fallbackMimes = {
+    mp4: 'video/mp4', mov: 'video/quicktime', mkv: 'video/x-matroska',
+    webm: 'video/webm', avi: 'video/x-msvideo',
+    wav: 'audio/wav', mp3: 'audio/mpeg', aac: 'audio/aac', m4a: 'audio/mp4',
+    flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
+  };
+  const previewMime = file.type || fallbackMimes[extension] || 'image/png';
+  renderMedia(document.querySelector('#cover-preview'), URL.createObjectURL(file), previewMime, true);
   motion.pulse(coverDrop);
 }
 
@@ -265,7 +272,13 @@ encodeForm.addEventListener('submit', async event => {
   button.disabled = true;
   button.classList.add('is-loading');
   resultBox.className = 'result operation-status is-loading';
-  resultBox.textContent = 'Hashing, encrypting, signing, and embedding payload...';
+  const coverFile = coverInput.files[0];
+  const isVideo = Boolean(coverFile && (
+    coverFile.type.startsWith('video/') || /\.(mp4|mov|mkv|webm|avi)$/i.test(coverFile.name)
+  ));
+  resultBox.textContent = isVideo
+    ? 'Processing video; this can take a while...'
+    : 'Hashing, encrypting, signing, and embedding payload...';
   try {
     const response = await fetch('/encode', {method: 'POST', body: new FormData(encodeForm)});
     const data = await response.json();
@@ -276,13 +289,17 @@ encodeForm.addEventListener('submit', async event => {
     const formatLabels = {
       jpeg: 'JPEG', webp: 'WebP', avif: 'AVIF', bmp: 'BMP', tiff: 'TIFF', gif: 'GIF',
       png: 'PNG', wav: 'WAV', mp3: 'MP3', aac: 'AAC', m4a: 'M4A', flac: 'FLAC',
+      mp4: 'MP4', matroska: 'Matroska', webm: 'WebM', mov: 'MOV', avi: 'AVI',
       alac: 'ALAC', 'ogg-vorbis': 'Ogg Vorbis', 'ogg-opus': 'Ogg Opus',
     };
-    const sourceNote = data.source_converted
+    const outputNote = data.media_type === 'video'
+      ? ` The output is a lossless Matroska (.mkv) video that browsers do not play inline. It is ${formatBytes(data.file_size)}; FFV1 output can be large.`
+      : '';
+    const sourceNote = data.source_converted && data.media_type !== 'video'
       ? ` Your ${formatLabels[data.source_format] || data.source_format.toUpperCase()} source was converted to a lossless ${data.media_type === 'image' ? 'PNG' : 'WAV'} before embedding.`
       : '';
     const sealedClaim = ` Sealed payload claim: ${data.payload.name} (${data.payload.mime}).`;
-    document.querySelector('#success-summary').textContent = `Protocol v${data.protocol_version}: packet starts at unit ${data.start_location}, uses ${data.lsb_bits} LSB, and preserves ${preserved}% of carrier bits.${sealedClaim}${sourceNote}`;
+    document.querySelector('#success-summary').textContent = `Protocol v${data.protocol_version}: packet starts at unit ${data.start_location}, uses ${data.lsb_bits} LSB, and preserves ${preserved}% of carrier bits.${sealedClaim}${sourceNote}${outputNote}`;
     document.querySelector('#download-links').replaceChildren(
       downloadLink(stegoUrl, data.filename, 'Download stego media'),
       downloadLink(textUrl(data.sender_public_key_pem), 'sender-public-key.pem', 'Download sender public key'),
@@ -309,7 +326,22 @@ document.querySelector('#start-over').addEventListener('click', async () => {
   await showStep(0);
 });
 
-function renderMedia(container, url, mime) {
+function renderMedia(container, url, mime, checkVideoSupport = false) {
+  if (mime.startsWith('video/')) {
+    const probe = document.createElement('video');
+    if (mime === 'video/x-matroska' || (checkVideoSupport && !probe.canPlayType(mime))) {
+      container.textContent = 'No preview for this format.';
+      return;
+    }
+    probe.src = url;
+    probe.controls = true;
+    probe.setAttribute('aria-label', 'Video preview');
+    probe.addEventListener('error', () => {
+      container.textContent = 'No preview for this format.';
+    }, {once: true});
+    container.replaceChildren(probe);
+    return;
+  }
   const isAudio = mime.startsWith('audio/');
   const element = document.createElement(isAudio ? 'audio' : 'img');
   element.src = url;

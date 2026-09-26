@@ -42,7 +42,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Public image/audio source conversion context managers and encode wrappers; canonical PNG/WAV snapshots | [stego/sources.py](../stego/sources.py) |
 | Public video carrier reader/writer, canonical timing, bounded reads, and video APIs | [stego/video.py](../stego/video.py) |
 | Two-pass encode, receiver-gated verification over a carrier backend, and file wrappers | [stego/core.py](../stego/core.py) |
-| Flask application factory, disk-backed carrier and payload uploads, streaming encode/verify routes, validated downloads, and `/payload/<id>` recovered-payload downloads; runtime files use `instance/stego-outputs` and `instance/recovered-payloads` | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
+| Flask application factory, work-directory multipart spooling, disk-backed image/audio/video encode and verify routes, validated PNG/WAV/MKV downloads, and `/payload/<id>` recovered-payload downloads; runtime files use `instance/work`, `instance/stego-outputs`, and `instance/recovered-payloads` | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
 | Flask-to-protocol-v3 streaming file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
 | Active Flask-to-protocol-v3 service | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |

@@ -29,7 +29,11 @@ from .services.current_protocol import (
 web = Blueprint("web", __name__)
 protocol_service = CurrentProtocolService()
 _STEGO_ID = re.compile(r"[A-Za-z0-9_-]{22}\Z")
-_DOWNLOAD_TYPES = {"png": "image/png", "wav": "audio/wav"}
+_DOWNLOAD_TYPES = {
+    "png": "image/png",
+    "wav": "audio/wav",
+    "mkv": "video/x-matroska",
+}
 
 
 @web.get("/")
@@ -43,12 +47,19 @@ def encode() -> Response | tuple[Response, int]:
     """Encrypt, sign, and embed a payload using protocol version 3."""
     output_path: Path | None = None
     try:
-        with tempfile.TemporaryDirectory(prefix="inf2005-encode-") as temporary:
+        work_dir = Path(current_app.config["STEGO_WORK_DIR"])
+        work_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="inf2005-encode-", dir=work_dir
+        ) as temporary:
             temporary_path = Path(temporary)
             payload_path, payload_mime, payload_name = _payload_input(temporary_path)
             cover_path = temporary_path / "cover.upload"
             _save_carrier_upload("cover", cover_path)
-            _, extension, _ = protocol_service.detect_carrier(cover_path)
+            detected_source = protocol_service.detect_carrier(
+                cover_path, request.files["cover"].filename
+            )
+            _, extension, _ = detected_source
             stego_id = secrets.token_urlsafe(16)
             output_dir = Path(current_app.config["STEGO_OUTPUT_DIR"])
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +78,7 @@ def encode() -> Response | tuple[Response, int]:
                 _required_form_value("team_id"),
                 _required_form_value("sender"),
                 request.form.get("metadata", "").strip(),
+                detected_source=detected_source,
             )
         payload_fields = protocol_service.payload_record(result.payload)
         payload_fields["mime"] = result.payload_mime
@@ -79,6 +91,7 @@ def encode() -> Response | tuple[Response, int]:
             source_format=result.source_format,
             filename=f"stego.{extension}",
             mime_type=_DOWNLOAD_TYPES[extension],
+            file_size=output_path.stat().st_size,
             stego_url=url_for("web.download", stego_id=stego_id, ext=extension),
             lsb_bits=result.layout.lsb_count,
             start_location=result.layout.start_unit,
@@ -117,7 +130,7 @@ def download(stego_id: str, ext: str) -> Response | tuple[Response, int]:
     return send_file(
         path,
         mimetype=_DOWNLOAD_TYPES[ext],
-        as_attachment=False,
+        as_attachment=ext == "mkv",
         download_name=f"stego.{ext}",
     )
 
@@ -147,7 +160,11 @@ def decode() -> Response | tuple[Response, int]:
     """Recover geometry, verify integrity, and save an authentic payload."""
     payload_output_path: Path | None = None
     try:
-        with tempfile.TemporaryDirectory(prefix="inf2005-stego-") as temporary:
+        work_dir = Path(current_app.config["STEGO_WORK_DIR"])
+        work_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="inf2005-stego-", dir=work_dir
+        ) as temporary:
             stego_path = Path(temporary) / "received.upload"
             _save_carrier_upload("stego", stego_path)
             original_name = request.files["stego"].filename

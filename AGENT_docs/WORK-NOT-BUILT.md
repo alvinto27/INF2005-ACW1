@@ -4,9 +4,9 @@ This record lists work that still needs a team decision, demonstration, or imple
 
 ## Built now
 
-- The Flask application uses protocol version 3. It accepts common still-image and audio sources for encode and writes canonical PNG or WAV. Strict PNG and PCM WAV inputs bypass conversion. The web app refuses real video tracks. Verification remains PNG/WAV-only.
+- The Flask application uses protocol version 3. It accepts common still-image, audio, and video sources for encode and writes canonical PNG, WAV, or FFV1/PCM Matroska. Strict PNG and PCM WAV inputs bypass conversion. Verification accepts PNG, WAV, and Matroska video carriers.
 - The source converter uses PyAV. It supports PNG, JPEG, WebP, AVIF, BMP, TIFF, and GIF images, with documented depth, frame, size, metadata, EXIF, ICC, and CMYK rules. It supports audio sources with exactly one mono or stereo stream. Lossless integer sample widths are kept. Lossy or floating-point audio becomes 16-bit PCM. The converter keeps all decoded samples, including codec delay or padding.
-- The library and notebook support the optional video carrier. The Flask application does not accept video covers.
+- The library, notebook, and Flask application support the optional video carrier.
 - The protocol encrypts and signs typed payload records. The web app returns authenticated payloads only after verification and MIME checks. Current response rules and previews are in the [Web Application Guide](WEB-APPLICATION-GUIDE.md).
 - Pillow is not used by the application. It is used only by tests and the demonstration notebook.
 
@@ -14,7 +14,6 @@ This record lists work that still needs a team decision, demonstration, or imple
 
 ### Web source limits
 
-- The web application has no video carrier support. Real video covers are refused. Audio streams inside sources with a real video track are also refused by the web app, though the library audio converter can select audio and ignore video streams.
 - JPEG XL and HEIC/HEIF source conversion are not supported.
 - There is no colour-managed CMYK-to-RGB conversion. CMYK sources are refused because a CMYK ICC profile is not valid on an RGB PNG, and PyAV does not provide the approved colour-managed conversion path.
 - The web source-format label is informational. The protocol does not authenticate the original compressed source file, its source metadata, or its encoder settings. It authenticates the canonical carrier data and signed record. See the [authenticity boundary](CURRENT-PROTOCOL.md#hash-rule-and-carrier-interpretation).

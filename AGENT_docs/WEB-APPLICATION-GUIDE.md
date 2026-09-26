@@ -8,32 +8,32 @@
 
 ## Encode request
 
-`POST /encode` accepts an image source (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF) or an audio source (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), a message or payload file, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them.
+`POST /encode` accepts a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or a video container with one real video stream and zero or one audio stream. It also accepts a message or payload file, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them.
 
-Flask saves the cover and payload to request-scoped temporary files. PNG and RIFF/WAVE use the fast signature path. For other sources, the service inspects PyAV streams and uses `detect_source_family()` to select the image or audio converter. The source is decoded once. Converted PNG/WAV snapshots live beside the uploaded cover in the request temporary directory, not in the output directory; the request removes them after success or failure. Strict PNG and PCM WAV carriers bypass conversion and keep their current ancillary data. Key PEMs remain byte inputs.
+Flask saves each request's uploads and working files under `STEGO_WORK_DIR`, defaulting to `instance/work`. This host uses `/tmp` as a RAM-backed filesystem, so multipart uploads and video snapshots must stay on the instance filesystem. The request deletes its temporary directory after success or failure. PyAV multipart file streams are also created in the work directory. PNG and RIFF/WAVE use the fast signature path. For other sources, the service inspects PyAV streams and uses `detect_source_family()` to select an adapter. Strict PNG and PCM WAV carriers bypass conversion and keep their current ancillary data. Key PEMs remain byte inputs.
 
-The adapter calls `open_image_source()` or `open_audio_source()`, then passes the yielded `carrier_source` to `stego.encode_png_from_payload_path` or `stego.encode_wav_from_payload_path`. The library writes `stego.png` or `stego.wav` to `instance/stego-outputs`. The response contains `source_converted` and `source_format` as well as a `stego_url`, file details, sender public key, record summary, capacity, geometry, and preserved-bit measurements; it does not contain stego bytes or private keys. `GET /download/<id>.<ext>` checks the token and extension before serving the file. `/decode` remains PNG/WAV-only because only those canonical carriers are verifier inputs.
+The adapter calls `open_image_source()` or `open_audio_source()`, then passes the yielded `carrier_source` to the PNG or WAV file API. Those APIs accept `carrier_source`; the video file API does not, so it constructs one `VideoCarrier` for validation, counting, and its bounded read passes. Video encode writes a lossless FFV1 + PCM Matroska output named `stego.mkv`; its source is always reported as converted. The library has a 4 GiB carrier-unit cap, 256 MiB canonical frame-byte cap, 2 GiB output cap, and 3 GiB free-space reserve (plus payload size for payload-file encoding). The response contains `source_converted`, container-based `source_format`, output `file_size`, and a `stego_url`, file details, sender public key, record summary, capacity, geometry, and preserved-bit measurements; it does not contain stego bytes or private keys. `GET /download/<id>.<ext>` checks the token and extension before serving the file. MKV is served as an attachment because browsers do not play the FFV1 Matroska output inline.
 
 ## Decode request
 
 `POST /decode` requires four multipart fields:
 
-- `stego`: one 8-bit or 16-bit RGB/RGBA PNG or uncompressed PCM WAV;
+- `stego`: one 8-bit or 16-bit RGB/RGBA PNG, uncompressed PCM WAV, or an EBML Matroska video carrier (`.mkv`);
 - `sender_public_key`: the trusted sender RSA-2048 public PEM;
 - `receiver_private_key`: the intended receiver's encrypted RSA-2048 private PEM; and
 - `receiver_key_password`: the password for that private key.
 
-The request does not include media type, LSB count, start unit, record length, a shared location secret, or the original cover. The bootstrap supplies geometry and AES session material. Flask stores the upload in a temporary file and calls `verify_png_to_payload_path` or `verify_wav_to_payload_path`.
+The request does not include media type, LSB count, start unit, record length, a shared location secret, or the original cover. The bootstrap supplies geometry and AES session material. Flask stores the upload in the work directory and calls `verify_png_to_payload_path`, `verify_wav_to_payload_path`, or `verify_video_to_payload_path` based on the carrier family.
 
 The route uses these HTTP status codes:
 
 | Condition | HTTP status | Body |
 | --- | --- | --- |
 | A required upload or form field is missing or empty, or the upload cannot be saved | 400 | `ok`, `error`, and verdict `Cannot Verify`; no report fields |
-| All fields are present, but the service cannot use them: the carrier is not PNG or WAV, the PNG or WAV is not a supported format, the sender public key cannot be read, or the receiver private key cannot be opened with the password | 200 | Full report with verdict `Cannot Verify` |
+| All fields are present, but the service cannot use them: the carrier is unsupported or unreadable, the sender public key cannot be read, or the receiver private key cannot be opened with the password | 200 | Full report with verdict `Cannot Verify` |
 | The receiver private key cannot open the bootstrap | 422 | Full report with verdict `Payload Missing` |
 | Verification completes with any other verdict | 200 | Full report; callers must read the verdict |
-| The upload is larger than the request limit | 413 | JSON error |
+| The upload exceeds a configured `MAX_CONTENT_LENGTH` or the free-space guard | 413 | JSON error |
 
 A readable version 2 bootstrap returns `Cannot Verify` with detail `unsupported bootstrap version`; the decoder does not retry with an older format.
 
@@ -45,8 +45,9 @@ The `/encode` JSON response keeps its existing fields and adds:
 
 | Field | Meaning |
 | --- | --- |
-| `source_converted` | `true` when the uploaded source was converted to canonical PNG/WAV; strict PNG and PCM WAV return `false`. |
-| `source_format` | Detected source label, such as `jpeg`, `mp3`, `m4a`, `ogg-opus`, `png`, or `wav`. |
+| `source_converted` | `true` when a source was converted to canonical PNG/WAV or rewritten as FFV1/PCM Matroska; strict PNG and PCM WAV return `false`. |
+| `source_format` | Detected source label, such as `jpeg`, `mp3`, `m4a`, `ogg-opus`, `png`, `wav`, `mp4`, `matroska`, `webm`, or `mov`. |
+| `file_size` | Encoded output size in bytes. |
 | `payload.mime` | The final MIME claim sealed in the authenticated metadata. |
 | `payload.name` | The final filename claim sealed in the authenticated metadata. |
 
@@ -88,12 +89,21 @@ The `POST /encode` status rules are:
 | Condition | HTTP status | Body |
 | --- | --- | --- |
 | Missing fields, unsupported or unreadable source, source conversion refusal, invalid keys, or layout/capacity failure | 400 | JSON `error`; known source failures keep the library message |
-| Upload exceeds the request limit | 413 | JSON error |
+| Upload exceeds a configured request limit or the free-space guard | 413 | JSON error |
 | Unexpected server failure | 500 | Generic JSON error |
 
-Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the decoded-byte cap, RIFF-size cap, more than two audio channels, and two or more audio streams. The source converter turns RGB PNG `tRNS` colour-key transparency into RGBA alpha. The strict PNG adapter still refuses that input when it is used directly. A real video track returns `video covers are not supported in the web app`. Unsupported or unreadable files return HTTP 400 with the accepted image/audio kinds in the message. `POST /decode` remains limited to PNG and PCM WAV. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
+Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the image decoded-byte cap, RIFF-size cap, unsupported video pixel formats, more than two audio channels, and extra video/audio/subtitle/data streams. Video backend messages are returned for carrier-unit, frame-byte, free-space, and output-size limit failures. The source converter turns RGB PNG `tRNS` colour-key transparency into RGBA alpha. The strict PNG adapter still refuses that input when it is used directly. Unsupported or unreadable files return HTTP 400. `/decode` accepts PNG, PCM WAV, and Matroska video. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
 
-The whole-request limit is `MAX_CONTENT_LENGTH = 256 MiB`; `create_app(test_config)` can override it. Upload files are deleted when the request ends. Encoded carriers and recovered payloads remain in their output directories until users delete them. Private `.stego-staging-*` directories are removed on normal exits. Power loss or `SIGKILL` can leave unauthenticated plaintext staging; stop the server and remove these directories manually after a crash. See [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#cleanup-rule).
+The default `MAX_CONTENT_LENGTH` is `None`; deployments and tests can configure a fixed request cap. Before Flask reads an encode/decode body, it compares `Content-Length` with free space in `STEGO_WORK_DIR` minus a 1 GiB margin. Exceeding that space returns 413 with `upload is larger than the free disk space allows`. Werkzeug's multipart file streams, both route request directories (`inf2005-encode-*` and `inf2005-stego-*`), and converted source snapshots use `STEGO_WORK_DIR`. The default is `instance/work`, on the same filesystem as outputs; do not use `/tmp`, which is a tmpfs RAM disk on this host. There are no additional web upload-size caps. Backend video limits are:
+
+| Limit | Value | Refusal |
+| --- | ---: | --- |
+| Carrier units | 4 GiB units | Library capacity/limit message, HTTP 400 |
+| Canonical decoded frame | 256 MiB | `video frame exceeds configured frame-byte limit`, HTTP 400 |
+| Encoded Matroska output | 2 GiB | `video output exceeds configured byte limit`, HTTP 400 |
+| Free disk before encode | 3 GiB reserve, plus payload size for payload-file encoding | `insufficient free disk space for video output`, HTTP 400 |
+
+The optional fixed request cap and the free-space guard return 413. `create_app(test_config)` can override the work directory and request cap. `TemporaryDirectory` removes request files and source snapshots on normal success or failure; there is no stale-directory sweeper. Encoded carriers and recovered payloads remain in their output directories until users delete them. Private `.stego-staging-*` directories are removed on normal exits. Power loss or `SIGKILL` can leave request or unauthenticated plaintext staging; stop the server and remove these directories manually after a crash. See [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#cleanup-rule).
 
 `/keys/generate` is a local setup helper for sender or receiver keys. Deployment beyond trusted localhost still needs key storage and access controls, key rotation, transport protection, and auditing.
 
@@ -103,6 +113,7 @@ The whole-request limit is `MAX_CONTENT_LENGTH = 256 MiB`; `create_app(test_conf
 | --- | --- | --- |
 | FR1 image input | Implemented | Common image sources convert to canonical PNG for encode; strict 8-bit or 16-bit RGB/RGBA PNG is used for verify. |
 | FR2 audio input | Implemented | Common audio sources convert to canonical PCM/WAV for encode; strict PCM/WAV is used for verify. |
+| Optional video carrier | Implemented | Video covers encode to FFV1/PCM Matroska, and the web verifier accepts those outputs. |
 | FR3 payload generation | Implemented | Encrypted record contains media ID, timestamp, nonce, full media hash, raw payload, and typed metadata. |
 | FR4 digital signature | Implemented | RSA-PSS/SHA-256 covers protocol version, media context, layout, and ciphertext. |
 | FR5 image LSB embedding | Implemented | PNG adapter and GUI support 1–8 LSBs. |

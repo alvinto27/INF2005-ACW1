@@ -20,9 +20,9 @@
     <div class="hero-copy">
       <p class="eyebrow">INF2005 / LOCAL SECURITY TOOL</p>
       <h1>Hide the proof.<br><span>Keep the trust.</span></h1>
-      <p class="lede">Encrypt, sign, embed, and verify payloads in lossless PNG and WAV outputs with the current receiver-gated protocol.</p>
+      <p class="lede">Encrypt, sign, embed, and verify payloads in lossless PNG, WAV, or MKV outputs with the current receiver-gated protocol.</p>
       <div class="trust-strip" aria-label="Supported capabilities">
-        <span>PNG output</span><span>WAV output</span><span>AES-256-GCM</span><span>RSA-OAEP + RSA-PSS</span><span>1-8 LSB</span>
+        <span>PNG output</span><span>WAV output</span><span>MKV output</span><span>AES-256-GCM</span><span>RSA-OAEP + RSA-PSS</span><span>1-8 LSB</span>
       </div>
     </div>
   </header>
@@ -41,8 +41,8 @@
       </ol>
       <form id="encode-form" enctype="multipart/form-data" novalidate>
         <section class="wizard-card is-active" data-step="0" aria-labelledby="step-1-title">
-          <span class="step-kicker">01 / INPUT VALIDATION</span><h3 id="step-1-title">Choose the cover and hidden payload</h3><p class="hint">Use an image (PNG, JPEG, WebP, AVIF, BMP, TIFF, GIF) or audio (WAV, MP3, AAC/M4A, FLAC, ALAC, Ogg Vorbis/Opus) file. The output is a lossless PNG or WAV. Add either a UTF-8 message or one payload file.</p>
-          <label id="cover-drop" class="drop-zone" for="cover-input" tabindex="0"><span class="drop-icon" aria-hidden="true">+</span><strong id="cover-name">Drop an image (PNG, JPEG, WebP, AVIF, BMP, TIFF, GIF) or audio (WAV, MP3, AAC/M4A, FLAC, ALAC, Ogg Vorbis/Opus) file here</strong><small>or click to browse; the server validates the source and writes a lossless PNG or WAV</small><span id="cover-meta" class="file-meta">Maximum request size is controlled by the local server.</span><input id="cover-input" name="cover" type="file" accept="image/*,audio/*,.png,.jpg,.jpeg,.webp,.avif,.bmp,.tif,.tiff,.gif,.wav,.mp3,.aac,.m4a,.flac,.ogg,.oga,.opus" required></label>
+          <span class="step-kicker">01 / INPUT VALIDATION</span><h3 id="step-1-title">Choose the cover and hidden payload</h3><p class="hint">Use a supported image, audio, or video file. The output is a lossless PNG, WAV, or MKV. Add either a UTF-8 message or one payload file.</p>
+          <label id="cover-drop" class="drop-zone" for="cover-input" tabindex="0"><span class="drop-icon" aria-hidden="true">+</span><strong id="cover-name">Drop an image, audio, or video file here</strong><small>or click to browse; the server validates the source and writes a lossless PNG, WAV, or MKV</small><span id="cover-meta" class="file-meta">Maximum upload size is limited by free disk space and the carrier backend.</span><input id="cover-input" name="cover" type="file" accept="image/*,audio/*,video/*,.png,.jpg,.jpeg,.webp,.avif,.bmp,.tif,.tiff,.gif,.wav,.mp3,.aac,.m4a,.flac,.ogg,.oga,.opus,.mp4,.mov,.mkv,.webm,.avi" required></label>
           <div class="field-grid"><label>Team ID<input name="team_id" value="P1-4" required></label><label>Sender<input name="sender" placeholder="Your name" required></label></div>
           <label>Secret message<textarea id="secret-message" name="secret_message" rows="3" placeholder="Enter a message, or leave blank and upload a payload file below"></textarea></label>
           <label>Payload file<input id="payload-file" name="payload_file" type="file"></label>
@@ -91,7 +91,7 @@
     <details id="verify-panel" class="decode-panel"><summary><span class="summary-icon" aria-hidden="true">V</span><span><small>RECEIVED A STEGO FILE?</small>Decode and verify media</span><span class="summary-arrow" aria-hidden="true">+</span></summary>
       <div class="decode-intro"><p class="hint">Use the trusted sender public key and intended receiver private key. The encrypted bootstrap recovers the start unit, LSB count, record length, and AES session material.</p><div class="mini-flow" aria-label="Verification sequence"><span>Open bootstrap</span><i></i><span>Verify signature</span><i></i><span>Decrypt and check integrity</span></div></div>
       <form id="decode-form" enctype="multipart/form-data">
-        <label>Received stego file<input id="decode-file" name="stego" type="file" accept=".png,.wav,image/png,audio/wav" required></label>
+        <label>Received stego file<input id="decode-file" name="stego" type="file" accept=".png,.wav,.mkv,image/png,audio/wav,video/x-matroska" required></label>
         <div class="field-grid">
           <label>Sender public key (.pem)<input name="sender_public_key" type="file" accept=".pem,text/plain" required></label>
           <label>Receiver encrypted private key (.pem)<input name="receiver_private_key" type="file" accept=".pem,text/plain" required></label>

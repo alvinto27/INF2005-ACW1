@@ -22,6 +22,7 @@ from stego import (
     BOOTSTRAP_LSB_COUNT,
     PROTOCOL_VERSION,
     PayloadRecord,
+    VideoCarrier,
     bit_sequence_to_bytes,
     bootstrap_span,
     bytes_to_bit_sequence,
@@ -118,19 +119,62 @@ def sample_mp3() -> bytes:
         return path.read_bytes()
 
 
-def sample_mp4_with_video() -> bytes:
-    """Return a tiny MP4 with one real MPEG-4 video stream."""
+def sample_mp4_with_video(audio_streams: int = 0) -> bytes:
+    """Return a tiny MP4 with one video stream and the requested audio tracks."""
     with tempfile.TemporaryDirectory() as directory_name:
         path = Path(directory_name) / "movie.mp4"
         with av.open(str(path), mode="w", format="mp4") as output:
-            stream = output.add_stream("mpeg4", rate=1)
-            stream.width = 16
-            stream.height = 16
+            video = output.add_stream("mpeg4", rate=12)
+            video.width = 64
+            video.height = 64
+            video.pix_fmt = "yuv420p"
+            audio = [
+                output.add_stream("aac", rate=48_000) for _ in range(audio_streams)
+            ]
+            for stream in audio:
+                stream.layout = "mono"
+            for index in range(24):
+                pixels = np.full((64, 64, 3), index * 7, dtype=np.uint8)
+                frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+                frame.pts = index
+                frame.time_base = Fraction(1, 12)
+                for packet in video.encode(frame):
+                    output.mux(packet)
+                if index % 3 == 0:
+                    for stream in audio:
+                        samples = np.full((1, 12_000), 300, dtype=np.int16)
+                        audio_frame = av.AudioFrame.from_ndarray(
+                            samples, format="s16", layout="mono"
+                        )
+                        audio_frame.sample_rate = 48_000
+                        audio_frame.pts = index * 4_000
+                        audio_frame.time_base = Fraction(1, 48_000)
+                        for packet in stream.encode(audio_frame):
+                            output.mux(packet)
+            for stream in [video, *audio]:
+                for packet in stream.encode(None):
+                    output.mux(packet)
+        return path.read_bytes()
+
+
+def sample_webm_with_video() -> bytes:
+    """Return a tiny WebM video fixture using the installed VP8 encoder."""
+    with tempfile.TemporaryDirectory() as directory_name:
+        path = Path(directory_name) / "movie.webm"
+        with av.open(str(path), mode="w", format="webm") as output:
+            stream = output.add_stream("libvpx", rate=12)
+            stream.width = 64
+            stream.height = 64
             stream.pix_fmt = "yuv420p"
-            frame = av.VideoFrame.from_ndarray(
-                np.zeros((16, 16, 3), dtype=np.uint8), format="rgb24"
-            )
-            for packet in (*stream.encode(frame), *stream.encode(None)):
+            stream.options = {"deadline": "realtime", "cpu-used": "8"}
+            for index in range(24):
+                pixels = np.full((64, 64, 3), index * 7, dtype=np.uint8)
+                frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+                frame.pts = index
+                frame.time_base = Fraction(1, 12)
+                for packet in stream.encode(frame):
+                    output.mux(packet)
+            for packet in stream.encode(None):
                 output.mux(packet)
         return path.read_bytes()
 
@@ -211,15 +255,19 @@ class WebApplicationTests(unittest.TestCase):
         """Create an isolated app and independent sender/receiver key pairs."""
         self.output_temp = tempfile.TemporaryDirectory(prefix="inf2005-test-output-")
         self.payload_temp = tempfile.TemporaryDirectory(prefix="inf2005-test-payload-")
+        self.work_temp = tempfile.TemporaryDirectory(prefix="inf2005-test-work-")
         self.addCleanup(self.output_temp.cleanup)
         self.addCleanup(self.payload_temp.cleanup)
+        self.addCleanup(self.work_temp.cleanup)
         self.output_dir = Path(self.output_temp.name)
         self.payload_dir = Path(self.payload_temp.name)
+        self.work_dir = Path(self.work_temp.name)
         self.client = create_app(
             {
                 "TESTING": True,
                 "STEGO_OUTPUT_DIR": self.output_dir,
                 "PAYLOAD_OUTPUT_DIR": self.payload_dir,
+                "STEGO_WORK_DIR": self.work_dir,
             }
         ).test_client()
         self.sender_private, self.sender_public = generate_rsa_keypair()
@@ -347,11 +395,10 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIn(b'id="payload-mime" name="payload_mime" readonly aria-readonly="true"', response.data)
         self.assertIn(b'id="payload-name" name="payload_name" readonly aria-readonly="true"', response.data)
         self.assertIn(b"Generated automatically from the payload", response.data)
-        self.assertIn(b"PNG, JPEG, WebP, AVIF, BMP, TIFF, GIF", response.data)
-        self.assertIn(b"WAV, MP3, AAC/M4A, FLAC, ALAC, Ogg Vorbis/Opus", response.data)
-        self.assertIn(b"lossless PNG or WAV", response.data)
-        self.assertIn(b"accept=\"image/*,audio/*,.png,.jpg,.jpeg,.webp,.avif,.bmp,.tif,.tiff,.gif,.wav,.mp3,.aac,.m4a,.flac,.ogg,.oga,.opus\" required", response.data)
-        self.assertIn(b"accept=\".png,.wav,image/png,audio/wav\" required", response.data)
+        self.assertIn(b"Use a supported image, audio, or video file", response.data)
+        self.assertIn(b"lossless PNG, WAV, or MKV", response.data)
+        self.assertIn(b"accept=\"image/*,audio/*,video/*,.png,.jpg,.jpeg,.webp,.avif,.bmp,.tif,.tiff,.gif,.wav,.mp3,.aac,.m4a,.flac,.ogg,.oga,.opus,.mp4,.mov,.mkv,.webm,.avi\" required", response.data)
+        self.assertIn(b"accept=\".png,.wav,.mkv,image/png,audio/wav,video/x-matroska\" required", response.data)
         self.assertIn(b"PNG output", response.data)
         self.assertIn(b"WAV output", response.data)
         self.assertIn(b"protocol v3", response.data)
@@ -513,12 +560,88 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "Authentic")
         self.assertEqual(self.get_payload(report["payload"]).get_data(), b"mp3 payload")
 
-    def test_video_cover_is_refused_by_the_web_app(self) -> None:
-        """Real video sources are refused before the audio converter runs."""
-        response = self.encode(sample_mp4_with_video(), "movie.mp4")
+    def test_video_cover_with_audio_encodes_and_verifies(self) -> None:
+        """Video with audio uses a Matroska output and recovers the exact payload."""
+        payload = b"payload for video carrier"
+        with patch("stego.video._MIN_FREE_BYTES", 0):
+            response = self.encode(
+                sample_mp4_with_video(audio_streams=1),
+                "movie.mp4",
+                payload=(payload, "exact.bin"),
+            )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        encoded = response.get_json()
+        self.assertEqual(encoded["media_type"], "video")
+        self.assertTrue(encoded["source_converted"])
+        self.assertEqual(encoded["source_format"], "mp4")
+        self.assertEqual(encoded["filename"], "stego.mkv")
+        self.assertEqual(encoded["mime_type"], "video/x-matroska")
+        self.assertGreater(encoded["file_size"], 0)
+        self.assertEqual(encoded["payload"]["name"], "exact.bin")
+        download = self.client.get(encoded["stego_url"])
+        self.assertEqual(download.mimetype, "video/x-matroska")
+        self.assertTrue(download.headers["Content-Disposition"].startswith("attachment;"))
+        download.close()
+        report_response = self.decode(encoded, "received.mkv")
+        self.assertEqual(report_response.status_code, 200)
+        report = report_response.get_json()
+        self.assertEqual(report["media_type"], "video")
+        self.assertEqual(report["verdict"], "Authentic", report["message"])
+        self.assertEqual(self.get_payload(report["payload"]).get_data(), payload)
+
+    def test_webm_cover_source_format_uses_uploaded_container_name(self) -> None:
+        """The matroska,webm demuxer reports the user's WebM container label."""
+        with patch("stego.video._MIN_FREE_BYTES", 0):
+            response = self.encode(sample_webm_with_video(), "movie.webm")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(response.get_json()["source_format"], "webm")
+
+    def test_video_cover_without_audio_encodes_and_verifies(self) -> None:
+        """Video without audio still produces an authentic web carrier."""
+        with patch("stego.video._MIN_FREE_BYTES", 0):
+            response = self.encode(sample_mp4_with_video(), "movie.mp4")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        report = self.decode(response.get_json(), "received.mkv").get_json()
+        self.assertEqual(report["verdict"], "Authentic", report["message"])
+        self.assertEqual(self.get_payload(report["payload"]).get_data(), b"authenticated message")
+
+    def test_web_video_pixel_change_is_tampered(self) -> None:
+        """Changing one decoded video carrier LSB fails full-media verification."""
+        with patch("stego.video._MIN_FREE_BYTES", 0):
+            encoded_response = self.encode(sample_mp4_with_video(), "movie.mp4")
+        self.assertEqual(encoded_response.status_code, 200, encoded_response.get_data(as_text=True))
+        encoded = encoded_response.get_json()
+        with tempfile.TemporaryDirectory(dir=self.work_dir) as directory_name:
+            original_path = Path(directory_name) / "original.mkv"
+            altered_path = Path(directory_name) / "altered.mkv"
+            original_path.write_bytes(self.download_stego(encoded))
+            carrier = VideoCarrier(original_path)
+            try:
+                def alter_last_unit(offset: int, units: np.ndarray) -> np.ndarray:
+                    changed = units.copy()
+                    final_unit = carrier.total_units - 1
+                    if offset <= final_unit < offset + changed.size:
+                        changed[final_unit - offset] ^= 1
+                    return changed
+
+                carrier.rewrite_to_path(altered_path, alter_last_unit)
+            finally:
+                carrier.close()
+            report = self.decode_bytes(altered_path.read_bytes(), "changed.mkv").get_json()
+        self.assertEqual(report["verdict"], "Tampered")
+
+    def test_video_two_audio_streams_give_library_refusal(self) -> None:
+        """The video backend refusal reaches the web client as HTTP 400."""
+        with patch("stego.video._MIN_FREE_BYTES", 0):
+            response = self.encode(sample_mp4_with_video(audio_streams=2), "movie.mp4")
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.get_json()["error"], "video covers are not supported in the web app")
+        self.assertEqual(response.get_json()["error"], "unsupported additional stream")
         self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_video_verify_input_accepts_mkv(self) -> None:
+        """The verification upload control accepts the backend's MKV output."""
+        response = self.client.get("/")
+        self.assertIn(b'accept=".png,.wav,.mkv,image/png,audio/wav,video/x-matroska"', response.data)
 
     def test_cmyk_and_animated_image_sources_are_http_400(self) -> None:
         """Supported-family images with forbidden content use validation status."""
@@ -1240,17 +1363,57 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIn("user payload exceeds capacity", response.get_json()["error"])
         self.assertEqual(list(self.output_dir.iterdir()), [])
 
-    def test_upload_limit_returns_json(self) -> None:
-        """The default is 256 MiB and test apps can override the limit."""
+    def test_disk_guard_rejects_upload_before_body_parsing(self) -> None:
+        """The free-space check refuses requests above the guarded capacity."""
+        with patch("stego_web.shutil.disk_usage") as disk_usage:
+            disk_usage.return_value.free = 1024**3 + 10
+            response = self.client.post(
+                "/decode",
+                data={"stego": (io.BytesIO(b"x" * 1024), "cover.mkv")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(response.status_code, 413)
         self.assertEqual(
-            self.client.application.config["MAX_CONTENT_LENGTH"], 256 * 1024 * 1024
+            response.get_json()["error"],
+            "upload is larger than the free disk space allows",
         )
+        disk_usage.assert_called_once_with(self.work_dir)
+
+    def test_upload_spooling_and_request_files_use_work_directory(self) -> None:
+        """Multipart spools and request temporary directories use STEGO_WORK_DIR."""
+        original_stream = tempfile.TemporaryFile
+        observed_stream_dirs: list[Path] = []
+
+        def stream_in_work_dir(*args: object, **kwargs: object) -> object:
+            observed_stream_dirs.append(Path(str(kwargs["dir"])))
+            return original_stream(*args, **kwargs)
+
+        with patch(
+            "stego_web.tempfile.TemporaryFile", side_effect=stream_in_work_dir
+        ), patch(
+            "stego_web.routes.tempfile.TemporaryDirectory",
+            wraps=tempfile.TemporaryDirectory,
+        ) as temporary_directory:
+            response = self.encode(sample_png(), "cover.png")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertTrue(observed_stream_dirs)
+        self.assertEqual(observed_stream_dirs, [self.work_dir] * len(observed_stream_dirs))
+        self.assertTrue(
+            any(call.kwargs.get("dir") == self.work_dir
+                for call in temporary_directory.call_args_list)
+        )
+        self.assertEqual(list(self.work_dir.iterdir()), [])
+
+    def test_upload_limit_returns_json(self) -> None:
+        """No request cap is configured by default; deployments can set one."""
+        self.assertIsNone(self.client.application.config["MAX_CONTENT_LENGTH"])
         client = create_app(
             {
                 "TESTING": True,
                 "MAX_CONTENT_LENGTH": 100,
                 "STEGO_OUTPUT_DIR": self.output_dir,
                 "PAYLOAD_OUTPUT_DIR": self.payload_dir,
+                "STEGO_WORK_DIR": self.work_dir,
             }
         ).test_client()
         response = client.post(

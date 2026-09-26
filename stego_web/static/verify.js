@@ -141,13 +141,20 @@
     const body = new FormData(form);
     const filename = form.elements.stego.files[0]?.name;
     result.hidden = true;
-    progress.textContent = 'Opening the receiver bootstrap, recovering geometry, verifying the signature, and checking the full media hash...';
+    const stegoFile = form.elements.stego.files[0];
+    const isVideo = Boolean(stegoFile && /\.mkv$/i.test(stegoFile.name));
+    progress.textContent = isVideo
+      ? 'Processing video; this can take a while...'
+      : 'Opening the receiver bootstrap, recovering geometry, verifying the signature, and checking the full media hash...';
     progress.className = 'result operation-status is-loading';
     submit.classList.add('is-loading');
     form.setAttribute('aria-busy', 'true');
     for (const control of form.elements) control.disabled = true;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      isVideo ? 30 * 60 * 1000 : 120000,
+    );
     try {
       const response = await fetch('/decode', {method: 'POST', body, signal: controller.signal});
       if (!response.headers.get('content-type')?.includes('application/json')) {

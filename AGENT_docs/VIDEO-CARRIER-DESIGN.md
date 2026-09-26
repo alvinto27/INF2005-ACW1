@@ -1,6 +1,6 @@
 # Video Carrier Design
 
-**Status: Implemented (library + notebook) — CP-A/CP-B/CP-C, V8, V10, and V11 CP-D2 complete; protocol v3 remains unchanged**
+**Status: Implemented (library, notebook, and Flask web app) — CP-A/CP-B/CP-C, V8, V10, and V11 CP-D2 complete; protocol v3 remains unchanged**
 
 The approved video-plus-audio carrier uses media code 3 with `VID-`, protocol v3 with no wire-format or version change, and Matroska output. Video carriers with the experimental pre-`ff4ab39` 30-byte context are development files and are not supported by the current 32-byte format. V11 supports canonical integer video depths from 8 through 16 bits, with or without alpha; 8-bit no-alpha output remains FFV1 `bgr0`, and other video formats use matching canonical FFV1 output. Audio remains PCM s16le. Carrier processing is streamed, and the core has one additive read-back check (see PASS 3). Video is optional in the assignment. See [Current Protocol](CURRENT-PROTOCOL.md) and [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) for hash, carrier, and payload rules.
 
@@ -169,7 +169,7 @@ CP-D2 validation with `cyber_venv/bin/python`: **211 tests ran; 204 passed and 7
 
 Refuse no video stream, zero/invalid or changing dimensions, float or greater-than-16-bit formats, formats that cannot convert to the selected canonical representation, source depth or alpha changes during decode, missing/invalid timestamps, unsupported audio channel count or layout, audio sample-rate/layout changes, discontinuous audio, malformed/short streams, insufficient capacity, limit trips, read-back mismatch, or an unsupported extra stream. Missing audio is allowed. Missing container duration alone is not a refusal; count decoded frames and samples under active limits.
 
-PyAV is required at runtime for PNG, WAV, and video media I/O. A title change and lossless packet-copy remux remain `Authentic`; lossy transcoding and decoded carrier changes do not. A test for duration-only changes skips because PyAV 15.1 does not expose a supported Matroska duration writer. The video demonstration notebook is implemented. Optional web integration is not implemented; video remains a library and notebook feature, not a web feature.
+PyAV is required at runtime for PNG, WAV, and video media I/O. A title change and lossless packet-copy remux remain `Authentic`; lossy transcoding and decoded carrier changes do not. A test for duration-only changes skips because PyAV 15.1 does not expose a supported Matroska duration writer. The video demonstration notebook is implemented. The Flask web app also uses the public video file APIs for encode and verify; it writes Matroska outputs as downloads because browsers do not play the FFV1 output inline.
 
 ## Stage 1 results
 
@@ -213,7 +213,7 @@ The implementation checks stream count before decode and rechecks canonical fram
 
 ## Implementation status
 
-Stage 1 design experiments, CP-A/CP-B/CP-C library work, and the V7 notebook demonstration are complete. V8 fixed the PASS 3 origin and audio-layout identity checks. V10 removes dimension, duration, frame-count, and selected-span caps; it adds incremental carrier-unit and canonical frame-byte limits and raises the output cap. V11 CP-D2 adds higher-depth and alpha video, the 32-byte media context, fixed-byte accounting, canonical format output, and exact encode/verify coverage without changing the protocol version or wire layout. Optional web integration remains future work; video is optional in the assignment. The bundled FFV1 encoder accepted the requested level 3 option: the 5-second output encoded and decoded exactly with `level=3`, 16 slices, and AUTO encoder threads. Each enforced cap has cleanup coverage. PyAV 15.1 cannot write Matroska display-matrix rotation metadata through its supported API, so that test is explicitly skipped; title metadata is tested and remains outside the hash.
+Stage 1 design experiments, CP-A/CP-B/CP-C library work, the V7 notebook demonstration, and Flask web integration are complete. V8 fixed the PASS 3 origin and audio-layout identity checks. V10 removes dimension, duration, frame-count, and selected-span caps; it adds incremental carrier-unit and canonical frame-byte limits and raises the output cap. V11 CP-D2 adds higher-depth and alpha video, the 32-byte media context, fixed-byte accounting, canonical format output, and exact encode/verify coverage without changing the protocol version or wire layout. Video remains optional in the assignment. The bundled FFV1 encoder accepted the requested level 3 option: the 5-second output encoded and decoded exactly with `level=3`, 16 slices, and AUTO encoder threads. Each enforced cap has cleanup coverage. PyAV 15.1 cannot write Matroska display-matrix rotation metadata through its supported API, so that test is explicitly skipped; title metadata is tested and remains outside the hash.
 
 **Notebook:** The optional demo builds and removes a temporary 5-second H.264/AAC clip and shows carrier facts, encode/verify, tampering, metadata, lossy re-encode, stream refusal, limits, and verdicts.
 

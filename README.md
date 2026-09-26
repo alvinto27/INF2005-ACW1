@@ -3,9 +3,9 @@
 This project is a localhost Flask application for encrypting, signing, embedding,
 decoding, and verifying payloads with protocol version 3 from the `stego`
 package. The primary carriers are 8-bit or 16-bit RGB/RGBA PNG and uncompressed
-PCM WAV. The library also supports an optional video carrier. The web app accepts
-common image and audio sources and converts
-them to lossless PNG or WAV before embedding.
+PCM WAV. The library and Flask web app also support a video carrier. The web app
+accepts common image and audio sources and rewrites video covers to lossless
+FFV1/PCM Matroska (`.mkv`) before embedding.
 
 The protocol encrypts the complete payload record with AES-256-GCM, authenticates
 the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
@@ -50,7 +50,7 @@ python -m pip install -r requirements-notebook.txt
 
 Encoding requires:
 
-1. an image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF) or audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus) source; the output is a lossless PNG or WAV, and real video covers are refused;
+1. a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or video source with one video stream and zero or one audio stream; the output is lossless PNG, WAV, or FFV1/PCM Matroska (`.mkv`);
 2. either a UTF-8 message or one arbitrary payload file; its MIME and filename claims are generated automatically from the selected input and are read-only in the browser; the server ignores submitted claim overrides;
 3. an encrypted sender RSA private key and its password;
 4. the intended receiver's RSA public key;
@@ -85,8 +85,13 @@ Normal exits remove them. A power loss or `SIGKILL` can leave unauthenticated
 plaintext in these private directories. After a crash, stop the server and
 manually delete `.stego-staging-*` directories under the instance folder.
 
-The local server accepts requests up to 256 MiB. It stores encoded PNG and WAV
-files in `instance/stego-outputs` and returns a download URL instead of sending
+The local server has no fixed request-size cap by default. It checks free space
+before reading each encode or verify upload, and stores multipart streams and
+request temporary files under `instance/work`, not `/tmp` (a RAM-backed tmpfs on
+this host). A configured `MAX_CONTENT_LENGTH` still applies. Video backend limits
+are 4 GiB carrier units, 256 MiB per canonical decoded frame, a 2 GiB output,
+and 3 GiB free disk before encode (plus payload size for file payloads). It stores
+encoded PNG, WAV, and MKV files in `instance/stego-outputs` and returns a download URL instead of sending
 the media as base64. These files also stay without an expiry. Delete them
 manually when they are no longer needed.
 
@@ -108,11 +113,11 @@ file-backed carriers provide bounded range reads, chunk iteration, and
 sequential rewrites. `WavCarrier` reads whole PCM frames, so carrier working
 memory does not grow with the WAV size.
 
-The optional video library API includes `VideoCarrier`, `encode_video`,
-`verify_video`, `encode_video_from_payload_path`, and
-`verify_video_to_payload_path`. Video is available in the library and
-notebook, not in the Flask web application. It writes lossless FFV1 video and
-PCM audio to `.mkv`; this output can be much larger than the compressed input.
+The video API includes `VideoCarrier`, `encode_video`, `verify_video`,
+`encode_video_from_payload_path`, and `verify_video_to_payload_path`. The Flask
+web app also accepts supported video covers and verifies `.mkv` outputs. Video
+encode writes lossless FFV1 video and PCM audio to Matroska; this output can be
+much larger than the compressed input and browsers do not play it inline.
 See the [video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md#output-and-limits)
 for carrier-unit, canonical frame-byte, output-size, and disk-space limits. PyAV is a
 required install dependency in `requirements.txt`; PNG, WAV, and video I/O use PyAV.

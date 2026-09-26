@@ -17,11 +17,13 @@ from stego import (
     PayloadRecord,
     VerificationResult,
     encode_png_from_payload_path,
+    encode_video_from_payload_path,
     encode_wav_from_payload_path,
     generate_rsa_keypair,
     max_user_payload_length,
     preserved_bit_count,
     verify_png_to_payload_path,
+    verify_video_to_payload_path,
     verify_wav_to_payload_path,
 )
 from stego.crypto import validate_rsa_private_key, validate_rsa_public_key
@@ -138,9 +140,10 @@ class CurrentProtocolService:
         team_id: str,
         sender: str,
         extra_metadata: str,
+        detected_source: tuple[str, str, str] | None = None,
     ) -> WebEncodingResult:
         """Validate a file-backed cover and write its stego output to disk."""
-        media_type, _, source_format = self.detect_carrier(carrier_path)
+        media_type, _, source_format = detected_source or self.detect_carrier(carrier_path)
         metadata = self._build_metadata(
             team_id,
             sender,
@@ -172,7 +175,7 @@ class CurrentProtocolService:
                         metadata,
                         carrier_source=source,
                     )
-            else:
+            elif media_type == "audio":
                 with open_audio_source(carrier_path, carrier_path.parent) as source:
                     source_converted = Path(source.path).resolve() != carrier_path.resolve()
                     layout, payload = encode_wav_from_payload_path(
@@ -186,6 +189,18 @@ class CurrentProtocolService:
                         metadata,
                         carrier_source=source,
                     )
+            else:
+                source_converted = True
+                layout, payload = encode_video_from_payload_path(
+                    carrier_path,
+                    output_path,
+                    sender_private_key,
+                    receiver_public_key,
+                    start_unit,
+                    lsb_count,
+                    payload_path,
+                    metadata,
+                )
             record_overhead = serialized_record_length(
                 len(payload.media_id.encode("utf-8")), 0, len(metadata)
             )
@@ -243,11 +258,11 @@ class CurrentProtocolService:
         except (OSError, TypeError, ValueError) as error:
             return self._failed_report(file_size, str(error)), None
 
-        verifier = (
-            verify_png_to_payload_path
-            if media_type == "image"
-            else verify_wav_to_payload_path
-        )
+        verifier = {
+            "image": verify_png_to_payload_path,
+            "audio": verify_wav_to_payload_path,
+            "video": verify_video_to_payload_path,
+        }[media_type]
         result = verifier(
             carrier_path,
             sender_public_key,
@@ -405,12 +420,20 @@ class CurrentProtocolService:
         )
 
     @staticmethod
-    def detect_carrier(carrier_path: Path) -> tuple[str, str, str]:
+    def detect_carrier(
+        carrier_path: Path, original_name: str | None = None
+    ) -> tuple[str, str, str]:
         """Return carrier family, output extension, and uploaded source format."""
         media_type, source_format = detect_source_family(carrier_path)
-        if media_type == "video":
-            raise ValueError("video covers are not supported in the web app")
-        return media_type, "png" if media_type == "image" else "wav", source_format
+        suffix = Path(original_name or "").suffix.lower().lstrip(".")
+        if source_format == "mov" and suffix in {
+            "mp4", "mov", "m4a", "3gp", "3g2", "mj2"
+        }:
+            source_format = suffix
+        elif source_format == "matroska" and suffix in {"mkv", "webm"}:
+            source_format = "webm" if suffix == "webm" else "matroska"
+        extension = {"image": "png", "audio": "wav", "video": "mkv"}[media_type]
+        return media_type, extension, source_format
 
     def _build_metadata(
         self,
