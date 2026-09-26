@@ -356,6 +356,8 @@ class CurrentProtocolService:
     def detect_carrier(carrier_path: Path) -> tuple[str, str, str]:
         """Return carrier family, output extension, and uploaded source format."""
         media_type, source_format = detect_source_family(carrier_path)
+        if media_type == "video":
+            raise ValueError("video covers are not supported in the web app")
         return media_type, "png" if media_type == "image" else "wav", source_format
 
     def _build_metadata(

@@ -83,7 +83,7 @@ def detect_source_family(path: str | bytes | PathLike[str]) -> tuple[str, str]:
                 if not (stream.disposition & av.stream.Disposition.attached_pic)
             ]
             if audio_streams and real_video_streams:
-                raise ValueError("video covers are not supported in the web app")
+                return "video", container.format.name.split(",")[0].lower()
             if audio_streams:
                 codec_name = audio_streams[0].codec_context.name.lower()
                 if codec_name.startswith("mp3"):
@@ -108,12 +108,10 @@ def detect_source_family(path: str | bytes | PathLike[str]) -> tuple[str, str]:
             if image_signature_format and video_streams:
                 return "image", image_signature_format
             if real_video_streams:
-                raise ValueError("video covers are not supported in the web app")
+                return "video", container.format.name.split(",")[0].lower()
     except (OSError, TypeError, av.error.FFmpegError) as error:
         raise ValueError(_ACCEPTED_SOURCE_MESSAGE) from error
     except ValueError as error:
-        if str(error) == "video covers are not supported in the web app":
-            raise
         raise ValueError(_ACCEPTED_SOURCE_MESSAGE) from error
     if signature[:4] == b"RIFF" and signature[8:12] == b"WAVE":
         return "audio", "wav"

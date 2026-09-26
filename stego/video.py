@@ -375,11 +375,6 @@ class VideoCarrier(CarrierSource):
         """Return the decoded video-frame count."""
         return self._frame_count
 
-    @property
-    def audio_frames_per_channel(self) -> int:
-        """Return the decoded audio sample count per channel."""
-        return self._audio_frames_per_channel
-
     def _open(self) -> object:
         """Open an input container with PyAV."""
         return av.open(fspath(self._path), mode="r")

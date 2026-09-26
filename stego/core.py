@@ -433,7 +433,6 @@ class CarrierEncoding:
         self._media_hash = media_hash
         self._ciphertext = ciphertext
         self._signature = signature
-        self._envelope = envelope
         self._session = session
         self._owns_session = owns_session
         self._closed = False
@@ -451,11 +450,6 @@ class CarrierEncoding:
         )
         self._rehash = _new_masked_hasher(media_code, layout, fixed_byte_count)
         self._next_unit = 0
-
-    @property
-    def _packet(self) -> bytes:
-        """Return packet bytes for legacy internal tests that inspect this field."""
-        return self._ciphertext.read_range(0, self._ciphertext.size) + self._signature
 
     def __enter__(self) -> CarrierEncoding:
         """Return this resource for use in a context manager."""
@@ -1113,6 +1107,19 @@ def _paths_resolve_same(first_path: str | bytes | PathLike[str], second_path: st
     return os.path.normcase(os.path.realpath(os.fsdecode(fspath(first_path)))) == os.path.normcase(os.path.realpath(os.fsdecode(fspath(second_path))))
 
 
+def _validate_file_carrier_source(
+    source: PngCarrier | WavCarrier | None,
+    expected_type: type[PngCarrier] | type[WavCarrier],
+    input_path: str | bytes | PathLike[str],
+) -> None:
+    """Check an optional carrier and confirm that it belongs to the input path."""
+    if source is not None:
+        if not isinstance(source, expected_type):
+            raise TypeError(f"carrier_source must be a {expected_type.__name__}")
+        if not _paths_resolve_same(source.path, input_path):
+            raise ValueError("carrier_source must be loaded from input_path")
+
+
 def encode_png(
     input_path: str | bytes | PathLike[str],
     output_path: str | bytes | PathLike[str],
@@ -1128,11 +1135,7 @@ def encode_png(
     """Encode a signed packet into a strict RGB/RGBA PNG and save it."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
-    if carrier_source is not None:
-        if not isinstance(carrier_source, PngCarrier):
-            raise TypeError("carrier_source must be a PngCarrier")
-        if not _paths_resolve_same(carrier_source.path, input_path):
-            raise ValueError("carrier_source must be loaded from input_path")
+    _validate_file_carrier_source(carrier_source, PngCarrier, input_path)
     source = carrier_source if carrier_source is not None else PngCarrier(input_path)
     encoding = prepare_carrier_encoding(
         source, source.media_code, source.media_context, signing_private_key,
@@ -1182,11 +1185,7 @@ def encode_wav(
     """Encode a signed packet into an uncompressed PCM WAV file."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
-    if carrier_source is not None:
-        if not isinstance(carrier_source, WavCarrier):
-            raise TypeError("carrier_source must be a WavCarrier")
-        if not _paths_resolve_same(carrier_source.path, input_path):
-            raise ValueError("carrier_source must be loaded from input_path")
+    _validate_file_carrier_source(carrier_source, WavCarrier, input_path)
     source = carrier_source if carrier_source is not None else WavCarrier(input_path)
     encoding = prepare_carrier_encoding(
         source, source.media_code, source.media_context, signing_private_key,
@@ -1255,11 +1254,7 @@ def encode_png_from_payload_path(
     """Stream a payload file into a PNG, optionally reusing its validated source."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
-    if carrier_source is not None:
-        if not isinstance(carrier_source, PngCarrier):
-            raise TypeError("carrier_source must be a PngCarrier")
-        if not _paths_resolve_same(carrier_source.path, input_path):
-            raise ValueError("carrier_source must be loaded from input_path")
+    _validate_file_carrier_source(carrier_source, PngCarrier, input_path)
     source = carrier_source if carrier_source is not None else PngCarrier(input_path)
     return _encode_file_from_payload_path(
         source, output_path, signing_private_key, receiver_public_key,
@@ -1282,11 +1277,7 @@ def encode_wav_from_payload_path(
     """Stream a payload file into an uncompressed PCM WAV carrier."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
-    if carrier_source is not None:
-        if not isinstance(carrier_source, WavCarrier):
-            raise TypeError("carrier_source must be a WavCarrier")
-        if not _paths_resolve_same(carrier_source.path, input_path):
-            raise ValueError("carrier_source must be loaded from input_path")
+    _validate_file_carrier_source(carrier_source, WavCarrier, input_path)
     source = carrier_source if carrier_source is not None else WavCarrier(input_path)
     return _encode_file_from_payload_path(
         source, output_path, signing_private_key, receiver_public_key,

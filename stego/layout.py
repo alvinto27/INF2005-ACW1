@@ -16,7 +16,7 @@ from .bits import (
     validate_payload_bytes,
     validate_payload_length,
 )
-from .carrier import DEFAULT_CHUNK_BYTES, overlap_range
+from .carrier import overlap_range
 from .constants import (
     MEDIA_HASH_CONTEXT_PREFIX_FORMAT,
     MEDIA_HASH_DOMAIN,
@@ -271,15 +271,6 @@ class MaskedMediaHasher:
             + self._fixed_hash.digest()
         )
         return hashlib.sha256(preimage).digest()
-
-
-def calculate_masked_media_hash(carrier_units: np.ndarray, media_code: int, lsb_count: int, start_unit: int, footprint: int, bootstrap_span: int) -> bytes:
-    """Hash an in-memory carrier with the protocol's bootstrap and packet bits masked."""
-    carrier_units = _validate_carrier_units(carrier_units)
-    hasher = MaskedMediaHasher(media_code, lsb_count, carrier_units.size, start_unit, footprint, bootstrap_span)
-    for offset in range(0, carrier_units.size, DEFAULT_CHUNK_BYTES):
-        hasher.update(carrier_units[offset:offset + DEFAULT_CHUNK_BYTES])
-    return hasher.digest()
 
 
 def encode_signing_input_prefix(

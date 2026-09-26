@@ -37,8 +37,6 @@ from .carrier import (
 from .constants import (
     AUDIO_MEDIA_CODE,
     IMAGE_MEDIA_CODE,
-    PNG_ALPHA_CARRIER_MODE,
-    PNG_CARRIER_MODE,
     PNG_MEDIA_CONTEXT_FORMAT,
     RGB_CHANNEL_COUNT,
     RGBA_CHANNEL_COUNT,
@@ -48,19 +46,6 @@ from .constants import (
 
 class UnSupportedFileType(Exception):
     """An error raised for a file type this package does not support."""
-
-
-def _validate_png_array(image_array: np.ndarray) -> np.ndarray:
-    """Check that image_array is a non-empty RGB or RGBA uint8 array."""
-    if not isinstance(image_array, np.ndarray):
-        raise TypeError("image_array must be a numpy array")
-    if image_array.dtype != np.uint8:
-        raise TypeError("image_array must have dtype uint8")
-    if image_array.ndim != 3 or image_array.shape[2] not in (RGB_CHANNEL_COUNT, RGBA_CHANNEL_COUNT):
-        raise ValueError("PNG must be RGB or RGBA; palette and grayscale images are not supported")
-    if image_array.shape[0] < 1 or image_array.shape[1] < 1:
-        raise ValueError("image dimensions must be greater than zero")
-    return image_array
 
 
 def _validate_rgb_png_header(
@@ -172,24 +157,6 @@ def _load_png_buffer_from_path(
         if signature != _PNG_SIGNATURE:
             raise UnSupportedFileType("unsupported file type: unknown") from error
         raise ValueError("unreadable PNG image") from error
-
-
-def load_png_from_path(image_path: str | bytes | PathLike[str]) -> np.ndarray:
-    """Load and check one single-frame 8-bit or 16-bit RGB/RGBA PNG."""
-    pixels, shape, bit_depth = _load_png_buffer_from_path(image_path)
-    dtype = np.uint8 if bit_depth == 8 else np.uint16
-    return np.frombuffer(pixels, dtype=dtype).reshape(shape).copy()
-
-
-def rgb_array_to_carrier(image_array: np.ndarray) -> np.ndarray:
-    """Flatten RGB channels from an RGB or RGBA image into carrier units."""
-    image_array = _validate_png_array(image_array)
-    return np.array(
-        image_array[:, :, :RGB_CHANNEL_COUNT],
-        dtype=np.uint8,
-        order="C",
-        copy=True,
-    ).reshape(-1)
 
 
 def encode_png_media_context(
@@ -464,16 +431,6 @@ def _save_png_frame_to_path(
                 os.unlink(encoded_path)
             except OSError:
                 pass
-
-
-def _save_png_array_to_path(image_array: np.ndarray, output_path: str | bytes | PathLike[str], chunk_source_path: str | bytes | PathLike[str] | None = None) -> None:
-    """Save a checked RGB or RGBA array with the PyAV PNG encoder."""
-    image_array = _validate_png_array(image_array)
-    mode = PNG_CARRIER_MODE if image_array.shape[2] == RGB_CHANNEL_COUNT else PNG_ALPHA_CARRIER_MODE
-    frame = av.VideoFrame.from_ndarray(
-        image_array, format="rgb24" if mode == PNG_CARRIER_MODE else "rgba"
-    )
-    _save_png_frame_to_path(frame, output_path, chunk_source_path)
 
 
 class PngCarrier(CarrierSource):

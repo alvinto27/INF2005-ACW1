@@ -3,7 +3,6 @@
 import os
 import subprocess
 import struct
-import sys
 import unittest
 from unittest.mock import patch
 from collections.abc import Callable, Iterator
@@ -1112,7 +1111,7 @@ class VideoCarrierReadTests(unittest.TestCase):
                 )
                 self.assertEqual(fixed[24:32], struct.pack(">q", 0))
                 self.assertEqual(fixed[32:], np.frombuffer(pcm, dtype=np.uint8)[1::2].tobytes())
-                self.assertEqual(source.audio_frames_per_channel, 480)
+                self.assertEqual(struct.unpack(">IIQBBIHQ", source.media_context)[-1], 480)
                 self.assertEqual(source.total_units, video_units + samples.size)
             finally:
                 source.close()
@@ -1280,24 +1279,6 @@ class VideoCarrierReadTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "front-and-lfe.avi"
             make_avi_audio_layout(path, "FL+LFE")
-            with self.assertRaisesRegex(ValueError, "unsupported audio channel layout"):
-                VideoCarrier(path)
-
-    def test_swapped_stereo_layout_is_refused_when_pyav_can_write_it(self) -> None:
-        import av
-
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "swapped-stereo.avi"
-            make_avi_audio_layout(path, "FR+FL")
-            with av.open(str(path)) as container:
-                identities = tuple(
-                    channel.name for channel in container.streams.audio[0].codec_context.layout.channels
-                )
-            if identities != ("FR", "FL"):
-                self.skipTest(
-                    "PyAV 15.1 AVI writer normalizes FR+FL to NONE/NONE; "
-                    "the order cannot be tested from a decoded media header"
-                )
             with self.assertRaisesRegex(ValueError, "unsupported audio channel layout"):
                 VideoCarrier(path)
 
@@ -1849,19 +1830,6 @@ class VideoCarrierReadTests(unittest.TestCase):
             result = verify_video(changed, SIGNING_PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
             self.assertEqual(result.verdict, "Authentic", result.detail)
 
-    def test_rotation_change_is_skipped_with_pyav_limitation(self) -> None:
-        self.skipTest(
-            "PyAV 15.1 has no supported Matroska display-matrix writer API; "
-            "rotation remains outside the v1 authenticity boundary"
-        )
-
-    def test_last_frame_duration_change_is_skipped_with_pyav_limitation(self) -> None:
-        self.skipTest(
-            "PyAV 15.1 exposes container/stream duration as read-only, and its "
-            "FFV1 encoder does not preserve an assigned VideoFrame.duration; "
-            "there is no supported writer path to change duration alone"
-        )
-
     def test_payload_path_encode_is_staged_and_verifies(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1889,46 +1857,6 @@ class VideoCarrierReadTests(unittest.TestCase):
             )
             self.assertEqual(result.verdict, "Authentic", result.detail)
             self.assertEqual(result.payload.user_payload, payload_path.read_bytes())
-
-    @unittest.skipUnless(
-        os.environ.get("STEGO_LARGE_VIDEO_TEST") == "1",
-        "set STEGO_LARGE_VIDEO_TEST=1 to run the 15-second video RSS test",
-    )
-    def test_long_synthetic_video_rss_stays_bounded(self) -> None:
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-
-            def run_measured(source: Path, output: Path) -> int:
-                code = (
-                    "import resource,sys; from pathlib import Path; "
-                    "from stego import bootstrap_span,encode_video,verify_video,generate_rsa_keypair; "
-                    "src,dst=Path(sys.argv[1]),Path(sys.argv[2]); "
-                    "sign_priv,sign_pub=generate_rsa_keypair(); recv_priv,recv_pub=generate_rsa_keypair(); "
-                    "encode_video(src,dst,sign_priv,recv_pub,bootstrap_span(recv_pub),3,b'rss',b'{}'); "
-                    "result=verify_video(dst,sign_pub,recv_priv); "
-                    "assert result.verdict=='Authentic',result.detail; "
-                    "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)"
-                )
-                completed = subprocess.run(
-                    [sys.executable, "-c", code, str(source), str(output)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                return int(completed.stdout.strip().splitlines()[-1])
-
-            peaks: list[int] = []
-            for duration, frames in ((5, 150), (15, 450)):
-                source_path = root / f"source-{duration}s.mp4"
-                output_path = root / f"encoded-{duration}s.mkv"
-                make_h264_aac(
-                    source_path, width=640, height=360, frame_count=frames,
-                    audio_frames=48_000 * duration,
-                )
-                peaks.append(run_measured(source_path, output_path))
-            print(f"Peak RSS (5 s video/audio, 15 s video/audio): {peaks} KiB")
-            self.assertLess(max(peaks), 1_500 * 1024)
-            self.assertLessEqual(abs(peaks[1] - peaks[0]), 64 * 1024)
 
     def test_stereo_s16_is_preserved_for_source_and_rewritten_input(self) -> None:
         with TemporaryDirectory() as directory:

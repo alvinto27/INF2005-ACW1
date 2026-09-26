@@ -156,26 +156,6 @@ def _verify_digest(
     return True
 
 
-def sign_bytes(signing_input: bytes, private_key: rsa.RSAPrivateKey) -> bytes:
-    """Sign bytes with RSA-PSS and return the fixed-size signature bytes."""
-    signing_input = _require_bytes(signing_input, "signing_input")
-    hasher = hashes.Hash(hashes.SHA256())
-    hasher.update(signing_input)
-    return _sign_digest(hasher.finalize(), private_key)
-
-
-def verify_signature(signing_input: bytes, signature: bytes, public_key: rsa.RSAPublicKey) -> bool:
-    """Check an RSA-PSS signature and return whether it is valid."""
-    signing_input = _require_bytes(signing_input, "signing_input")
-    signature = _require_bytes(signature, "signature")
-    public_key = validate_rsa_public_key(public_key)
-    if len(signature) != RSA_SIGNATURE_SIZE:
-        return False
-    hasher = hashes.Hash(hashes.SHA256())
-    hasher.update(signing_input)
-    return _verify_digest(hasher.finalize(), signature, public_key)
-
-
 def save_rsa_private_key_pem(private_key: rsa.RSAPrivateKey, path: str | bytes | PathLike[str], password: bytes | None = None) -> None:
     """Save an RSA private key as an optionally encrypted PEM file."""
     private_key = validate_rsa_private_key(private_key)

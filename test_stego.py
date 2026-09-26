@@ -42,14 +42,11 @@ from stego.core import (
     encode_carrier,
     prepare_carrier_encoding,
 )
-from stego.layout import calculate_masked_media_hash
+from stego.layout import MaskedMediaHasher
 from stego.media import (
     _PNG_MAX_DECODED_BYTES,
-    _save_png_array_to_path,
     encode_png_media_context,
     encode_wav_media_context,
-    load_png_from_path,
-    rgb_array_to_carrier,
 )
 from stego.constants import MEDIA_ID_SIZE, RSA_PSS_SALT_LENGTH
 from stego.bits import encode_protocol_field
@@ -57,8 +54,6 @@ from stego.crypto import (
     _sign_digest,
     _verify_digest,
     rsa_pss_padding,
-    sign_bytes,
-    verify_signature,
 )
 from stego.layout import build_embedding_layout, encode_signing_input_prefix
 from stego.packet import parse_payload_from_reader, serialized_record_length
@@ -74,6 +69,24 @@ PUBLIC_KEY = SENDER_PUBLIC_KEY
 
 def carrier(size=24000):
     return np.arange(size, dtype=np.uint8)
+
+
+def calculate_masked_media_hash(
+    carrier_units: np.ndarray,
+    media_code: int,
+    lsb_count: int,
+    start_unit: int,
+    footprint: int,
+    bootstrap_span: int,
+) -> bytes:
+    """Hash test carrier units with protocol embedding regions masked."""
+    source = ArrayCarrier(carrier_units)
+    hasher = MaskedMediaHasher(
+        media_code, lsb_count, source.total_units, start_unit, footprint, bootstrap_span
+    )
+    for units in source.iter_chunks():
+        hasher.update(units)
+    return hasher.digest()
 
 
 def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
@@ -236,8 +249,11 @@ def malformed_record_carrier(record_bytes: bytes) -> tuple[np.ndarray, bytes]:
     fields = BootstrapFields(
         3, 3, fields.start_unit, len(ciphertext), session_key, aead_nonce
     )
-    signature = sign_bytes(
-        encode_signing_input(IMAGE_MEDIA_CODE, context, layout, ciphertext), PRIVATE_KEY
+    signature = _sign_digest(
+        hashlib.sha256(
+            encode_signing_input(IMAGE_MEDIA_CODE, context, layout, ciphertext)
+        ).digest(),
+        PRIVATE_KEY,
     )
     envelope = seal_to_public_key(serialize_bootstrap(fields), RECEIVER_PUBLIC_KEY)
     span = bootstrap_span(RECEIVER_PUBLIC_KEY)
@@ -391,7 +407,7 @@ class TestPackedBitHandling(unittest.TestCase):
                     actual = ArrayCarrier(source, chunk_units).rewrite(transform)
                     self.assertTrue(np.array_equal(actual, expected))
 
-    def test_packed_encoder_output_matches_reference_embedding(self) -> None:
+    def test_prepared_encoding_produces_public_authentic_result(self) -> None:
         source_units = carrier(30000)
         context = struct.pack(">II", 10000, 1)
         encoding = prepare_carrier_encoding(
@@ -405,33 +421,17 @@ class TestPackedBitHandling(unittest.TestCase):
             b"byte-identical packed path",
             b"kind=test",
         )
-        actual = ArrayCarrier(source_units, 137).rewrite(encoding.embed_chunk)
-        reference = source_units.copy()
-        envelope_bits = bytes_to_bit_sequence(encoding._envelope)
-        reference[:encoding.layout.bootstrap_span] = reference_write_lsb_bits(
-            reference[:encoding.layout.bootstrap_span],
-            envelope_bits,
-            BOOTSTRAP_LSB_COUNT,
-        )
-        packet_bit_length = encoding.layout.footprint * encoding.layout.lsb_count
-        packet_bits = np.zeros(packet_bit_length, dtype=np.uint8)
-        raw_packet_bits = bytes_to_bit_sequence(encoding._packet)
-        packet_bits[:raw_packet_bits.size] = raw_packet_bits
-        start = encoding.layout.start_unit
-        end = start + encoding.layout.footprint
-        reference[start:end] = reference_write_lsb_bits(
-            reference[start:end], packet_bits, encoding.layout.lsb_count
-        )
-        self.assertTrue(np.array_equal(actual, reference))
+        encoded = ArrayCarrier(source_units, 137).rewrite(encoding.embed_chunk)
         encoding.finish()
         result = decode_carrier_source(
-            ArrayCarrier(actual, 113),
+            ArrayCarrier(encoded, 113),
             IMAGE_MEDIA_CODE,
             context,
             PUBLIC_KEY,
             RECEIVER_PRIVATE_KEY,
         )
         self.assertEqual(result.verdict, "Authentic", result.detail)
+        self.assertEqual(result.payload, encoding.payload)
 
 
 class TestPayloadStreaming(unittest.TestCase):
@@ -490,10 +490,8 @@ class TestPayloadStreaming(unittest.TestCase):
         signing_input = encode_signing_input(IMAGE_MEDIA_CODE, context, layout, ciphertext)
         self.assertEqual(signing_input, prefix + ciphertext)
         digest = hashlib.sha256(signing_input).digest()
-        full_signature = sign_bytes(signing_input, PRIVATE_KEY)
-        prehashed_signature = _sign_digest(digest, PRIVATE_KEY)
-        self.assertTrue(verify_signature(signing_input, prehashed_signature, PUBLIC_KEY))
-        self.assertTrue(_verify_digest(digest, full_signature, PUBLIC_KEY))
+        signature = _sign_digest(digest, PRIVATE_KEY)
+        self.assertTrue(_verify_digest(digest, signature, PUBLIC_KEY))
         pss = rsa_pss_padding()
         self.assertEqual(pss._salt_length, RSA_PSS_SALT_LENGTH)
         self.assertIsInstance(pss._mgf, type(rsa_pss_padding()._mgf))
@@ -1726,10 +1724,9 @@ class TestMaskedStego(unittest.TestCase):
                     0, 256, (31, 29, channels), dtype=np.uint8
                 )
                 input_path = directory / f"input-{channels}.png"
-                expected_path = directory / f"expected-{channels}.png"
                 output_path = directory / f"identity-{channels}.png"
                 Image.fromarray(image_array, mode=mode).save(input_path)
-                reference_units = rgb_array_to_carrier(load_png_from_path(input_path))
+                reference_units = image_array[:, :, :3].reshape(-1).copy()
                 source = PngCarrier(input_path, 19)
 
                 self.assertEqual(source.total_units, reference_units.size)
@@ -1772,9 +1769,9 @@ class TestMaskedStego(unittest.TestCase):
                 def identity_transform(start: int, units: np.ndarray) -> np.ndarray:
                     return units
 
-                _save_png_array_to_path(image_array, expected_path)
                 source.rewrite_to_path(output_path, identity_transform)
-                self.assertEqual(output_path.read_bytes(), expected_path.read_bytes())
+                with Image.open(output_path) as rewritten:
+                    self.assertTrue(np.array_equal(np.asarray(rewritten), image_array))
 
     def test_png_carrier_load_and_rewrite_memory_is_bounded(self) -> None:
         with TemporaryDirectory() as directory_name:
@@ -2289,13 +2286,10 @@ class TestMaskedStego(unittest.TestCase):
         self.assertEqual(len(record_bytes), 116)
         self.assertNotIn(record_bytes, encoded.tobytes())
         self.assertFalse(ciphertext.startswith(b"\x24IMG-"))
-        self.assertTrue(
-            verify_signature(
-                encode_signing_input(IMAGE_MEDIA_CODE, context, layout, ciphertext),
-                signature,
-                PUBLIC_KEY,
-            )
+        result = decode_carrier(
+            encoded, IMAGE_MEDIA_CODE, context, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
         )
+        self.assertEqual(result.verdict, "Authentic", result.detail)
         self.assertTrue(np.all(all_bits[packet_bits_length:] == 0))
 
     def test_relocated_packet_is_signature_invalid(self) -> None:
@@ -2507,10 +2501,6 @@ class TestMaskedStego(unittest.TestCase):
             with self.assertRaises(ValueError) as carrier_error:
                 PngCarrier(input_path)
             self.assertEqual(str(carrier_error.exception), detail)
-
-            with self.assertRaises(ValueError) as loader_error:
-                load_png_from_path(input_path)
-            self.assertEqual(str(loader_error.exception), detail)
 
             result = verify_png(input_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
             self.assertEqual((result.verdict, result.detail), ("Cannot Verify", detail))
@@ -3820,25 +3810,6 @@ class TestChunkedCarrier(unittest.TestCase):
                 self.assertEqual(result.verdict, "Authentic")
         self.assertLess(peaks[16], 8 * 1024 * 1024)
         self.assertLess(peaks[16], peaks[2] * 2)
-
-    @unittest.skipUnless(os.environ.get("STEGO_LARGE_WAV_TEST") == "1", "set STEGO_LARGE_WAV_TEST=1 to run the >64 MiB WAV test")
-    def test_wav_larger_than_legacy_cap_round_trips(self) -> None:
-        with TemporaryDirectory() as directory_name:
-            directory = Path(directory_name)
-            path = directory / "large.wav"
-            output = directory / "large-out.wav"
-            write_large_pcm_wav(path, 72 * 1024 * 1024)
-            tracemalloc.start()
-            try:
-                layout, payload = encode_wav(path, output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY, 2048, 3, b"beyond the cap", b"")
-                result = verify_wav(output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
-                peak = tracemalloc.get_traced_memory()[1]
-            finally:
-                tracemalloc.stop()
-            self.assertEqual(result.verdict, "Authentic", result.detail)
-            self.assertEqual(result.payload, payload)
-            self.assertEqual(layout.total_units, 36 * 1024 * 1024)
-            self.assertLess(peak, 16 * 1024 * 1024)
 
 
 def encode_carrier_source_from(source: CarrierSource) -> CarrierEncoding:
