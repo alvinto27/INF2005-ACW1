@@ -48,7 +48,7 @@ def encode() -> Response | tuple[Response, int]:
             payload_path, payload_mime, payload_name = _payload_input(temporary_path)
             cover_path = temporary_path / "cover.upload"
             _save_carrier_upload("cover", cover_path)
-            _, extension = protocol_service.detect_carrier(cover_path)
+            _, extension, _ = protocol_service.detect_carrier(cover_path)
             stego_id = secrets.token_urlsafe(16)
             output_dir = Path(current_app.config["STEGO_OUTPUT_DIR"])
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -72,6 +72,8 @@ def encode() -> Response | tuple[Response, int]:
             ok=True,
             protocol_version=PROTOCOL_VERSION,
             media_type=result.media_type,
+            source_converted=result.source_converted,
+            source_format=result.source_format,
             filename=f"stego.{extension}",
             mime_type=_DOWNLOAD_TYPES[extension],
             stego_url=url_for("web.download", stego_id=stego_id, ext=extension),

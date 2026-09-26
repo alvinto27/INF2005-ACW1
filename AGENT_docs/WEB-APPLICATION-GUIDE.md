@@ -8,9 +8,11 @@
 
 ## Encode request
 
-`POST /encode` accepts a PNG or PCM WAV cover, a message or payload file, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. The start unit must be at or after the reserved bootstrap span. Flask saves the cover and payload to request-scoped temporary files. Key PEMs remain byte inputs. The service detects the carrier from its first 12 bytes, loads the key roles, and builds delimiter-checked typed metadata.
+`POST /encode` accepts an image source (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF) or an audio source (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), a message or payload file, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. It writes a lossless PNG for images and WAV for audio. A real video track is refused with `video covers are not supported in the web app`; web video support is not part of this stage. A video track marked as attached cover art is ignored when the source also has audio.
 
-The adapter calls `stego.encode_png_from_payload_path` or `stego.encode_wav_from_payload_path`. The library writes the result to `instance/stego-outputs`. The response contains a `stego_url`, file details, sender public key, record summary, capacity, geometry, and preserved-bit measurements; it does not contain stego bytes or private keys. `GET /download/<id>.<ext>` checks the token and extension before serving the file.
+Flask saves the cover and payload to request-scoped temporary files. PNG and RIFF/WAVE use the fast signature path. For other sources, the service inspects PyAV streams and uses `detect_source_family()` to select the image or audio converter. The source is decoded once. Converted PNG/WAV snapshots live beside the uploaded cover in the request temporary directory, not in the output directory; the request removes them after success or failure. Strict PNG and PCM WAV carriers bypass conversion and keep their current ancillary data. Key PEMs remain byte inputs.
+
+The adapter calls `open_image_source()` or `open_audio_source()`, then passes the yielded `carrier_source` to `stego.encode_png_from_payload_path` or `stego.encode_wav_from_payload_path`. The library writes `stego.png` or `stego.wav` to `instance/stego-outputs`. The response contains `source_converted` and `source_format` as well as a `stego_url`, file details, sender public key, record summary, capacity, geometry, and preserved-bit measurements; it does not contain stego bytes or private keys. `GET /download/<id>.<ext>` checks the token and extension before serving the file. `/decode` remains PNG/WAV-only because only those canonical carriers are verifier inputs.
 
 ## Decode request
 
@@ -39,7 +41,16 @@ Verification reads the bootstrap, validates recovered fields and bounds, reads t
 
 ## Result and payload handling
 
-Reports include verdict and detail, carrier type and size, protocol version, recovered start unit and LSB count, signature and integrity state, sender-key fingerprint, preserved-bit count and ratio, and authenticated record fields.
+The `/encode` JSON response keeps its existing fields and adds:
+
+| Field | Meaning |
+| --- | --- |
+| `source_converted` | `true` when the uploaded source was converted to canonical PNG/WAV; strict PNG and PCM WAV return `false`. |
+| `source_format` | Detected source label, such as `jpeg`, `mp3`, `m4a`, `ogg-opus`, `png`, or `wav`. |
+
+The browser shows a short conversion note, for example: “Your JPEG source was converted to a lossless PNG before embedding.”
+
+`/decode` reports include verdict and detail, carrier type and size, protocol version, recovered start unit and LSB count, signature and integrity state, sender-key fingerprint, preserved-bit count and ratio, and authenticated record fields.
 
 A `null` field means that verification did not reach that step or did not recover that value. `null` differs from `false`. When a later step fails, the fields that verification recovered before the failure stay set:
 
@@ -61,7 +72,15 @@ The service recognizes PNG, JPEG, WAV, MP3, and PDF magic. It allows inline prev
 
 ## Errors and storage
 
-For `POST /encode`, carrier and form validation errors return JSON with HTTP 400. This includes an RGB PNG with a `tRNS` colour key: "RGB PNG with a tRNS colour key is not supported; convert the image to RGBA". For `POST /decode`, the status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
+The `POST /encode` status rules are:
+
+| Condition | HTTP status | Body |
+| --- | --- | --- |
+| Missing fields, unsupported or unreadable source, source conversion refusal, invalid keys, or layout/capacity failure | 400 | JSON `error`; known source failures keep the library message |
+| Upload exceeds the request limit | 413 | JSON error |
+| Unexpected server failure | 500 | Generic JSON error |
+
+Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the decoded-byte cap, RIFF-size cap, more than two audio channels, and two or more audio streams. An RGB PNG with a `tRNS` colour key returns `RGB PNG with a tRNS colour key is not supported; convert the image to RGBA`. A real video track returns `video covers are not supported in the web app`. Unsupported or unreadable files return HTTP 400 with the accepted image/audio kinds in the message. `POST /decode` remains limited to PNG and PCM WAV. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
 
 The whole-request limit is `MAX_CONTENT_LENGTH = 256 MiB`; `create_app(test_config)` can override it. Upload files are deleted when the request ends. Encoded carriers and recovered payloads remain in their output directories until users delete them. Private `.stego-staging-*` directories are removed on normal exits. Power loss or `SIGKILL` can leave unauthenticated plaintext staging; stop the server and remove these directories manually after a crash. See [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#cleanup-rule).
 

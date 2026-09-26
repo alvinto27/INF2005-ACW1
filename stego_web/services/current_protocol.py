@@ -19,14 +19,13 @@ from stego import (
     encode_png_from_payload_path,
     encode_wav_from_payload_path,
     generate_rsa_keypair,
-    PngCarrier,
-    read_pcm_wav_info,
     max_user_payload_length,
     preserved_bit_count,
     verify_png_to_payload_path,
     verify_wav_to_payload_path,
 )
 from stego.crypto import validate_rsa_private_key, validate_rsa_public_key
+from stego.sources import detect_source_family, open_audio_source, open_image_source
 from stego.packet import serialized_record_length
 
 
@@ -49,6 +48,8 @@ class WebEncodingResult:
     payload_capacity: int
     preserved_bits: int
     preserved_ratio: float
+    source_converted: bool
+    source_format: str
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,7 @@ class CurrentProtocolService:
         extra_metadata: str,
     ) -> WebEncodingResult:
         """Validate a file-backed cover and write its stego output to disk."""
-        media_type, _ = self.detect_carrier(carrier_path)
+        media_type, _, source_format = self.detect_carrier(carrier_path)
         metadata = self._build_metadata(
             team_id,
             sender,
@@ -100,11 +101,6 @@ class CurrentProtocolService:
             payload_name,
             extra_metadata,
         )
-        png_source: PngCarrier | None = None
-        if media_type == "image":
-            png_source = PngCarrier(carrier_path)
-        else:
-            read_pcm_wav_info(carrier_path)
         sender_private_key = self._load_private_key(
             sender_private_key_pem, sender_key_password, "sender private key"
         )
@@ -112,29 +108,34 @@ class CurrentProtocolService:
             receiver_public_key_pem, "receiver public key"
         )
         try:
-            if png_source is not None:
-                layout, payload = encode_png_from_payload_path(
-                    carrier_path,
-                    output_path,
-                    sender_private_key,
-                    receiver_public_key,
-                    start_unit,
-                    lsb_count,
-                    payload_path,
-                    metadata,
-                    carrier_source=png_source,
-                )
+            if media_type == "image":
+                with open_image_source(carrier_path, carrier_path.parent) as source:
+                    source_converted = Path(source.path).resolve() != carrier_path.resolve()
+                    layout, payload = encode_png_from_payload_path(
+                        source.path,
+                        output_path,
+                        sender_private_key,
+                        receiver_public_key,
+                        start_unit,
+                        lsb_count,
+                        payload_path,
+                        metadata,
+                        carrier_source=source,
+                    )
             else:
-                layout, payload = encode_wav_from_payload_path(
-                    carrier_path,
-                    output_path,
-                    sender_private_key,
-                    receiver_public_key,
-                    start_unit,
-                    lsb_count,
-                    payload_path,
-                    metadata,
-                )
+                with open_audio_source(carrier_path, carrier_path.parent) as source:
+                    source_converted = Path(source.path).resolve() != carrier_path.resolve()
+                    layout, payload = encode_wav_from_payload_path(
+                        source.path,
+                        output_path,
+                        sender_private_key,
+                        receiver_public_key,
+                        start_unit,
+                        lsb_count,
+                        payload_path,
+                        metadata,
+                        carrier_source=source,
+                    )
             record_overhead = serialized_record_length(
                 len(payload.media_id.encode("utf-8")), 0, len(metadata)
             )
@@ -160,6 +161,8 @@ class CurrentProtocolService:
                 capacity,
                 kept_bits,
                 kept_bits / total_bits if total_bits else 0.0,
+                source_converted,
+                source_format,
             )
         except Exception:
             output_path.unlink(missing_ok=True)
@@ -176,7 +179,7 @@ class CurrentProtocolService:
         """Verify a carrier and write only an authenticated payload to a file."""
         file_size = carrier_path.stat().st_size
         try:
-            media_type, _ = self.detect_carrier(carrier_path)
+            media_type, _, _ = self.detect_carrier(carrier_path)
             sender_public_key = self._load_public_key(
                 sender_public_key_pem, "sender public key"
             )
@@ -350,15 +353,10 @@ class CurrentProtocolService:
         )
 
     @staticmethod
-    def detect_carrier(carrier_path: Path) -> tuple[str, str]:
-        """Detect the carrier family by reading only its first 12 bytes."""
-        with carrier_path.open("rb") as carrier_file:
-            signature = carrier_file.read(12)
-        if signature.startswith(b"\x89PNG\r\n\x1a\n"):
-            return "image", "png"
-        if len(signature) >= 12 and signature[:4] == b"RIFF" and signature[8:12] == b"WAVE":
-            return "audio", "wav"
-        raise ValueError("unsupported carrier; upload an RGB or RGBA PNG or uncompressed PCM WAV")
+    def detect_carrier(carrier_path: Path) -> tuple[str, str, str]:
+        """Return carrier family, output extension, and uploaded source format."""
+        media_type, source_format = detect_source_family(carrier_path)
+        return media_type, "png" if media_type == "image" else "wav", source_format
 
     def _build_metadata(
         self,

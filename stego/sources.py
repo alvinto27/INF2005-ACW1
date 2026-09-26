@@ -42,6 +42,82 @@ _PNG_SIG = b"\x89PNG\r\n\x1a\n"
 _PNG_CORE_CHUNKS = frozenset((b"IHDR", b"IDAT", b"IEND"))
 _PNG_COLOR_CHUNKS = frozenset((b"iCCP", b"cICP", b"sRGB", b"gAMA", b"cHRM", b"mDCV", b"cLLI"))
 _PNG_DROP_CHUNKS = frozenset((b"pHYs", b"eXIf", b"tEXt", b"zTXt", b"iTXt", b"sBIT"))
+_ACCEPTED_SOURCE_MESSAGE = (
+    "unsupported or unreadable source; upload an image (PNG, JPEG, WebP, AVIF, "
+    "BMP, TIFF, GIF) or audio (WAV, MP3, AAC/M4A, FLAC, ALAC, Ogg Vorbis/Opus) file"
+)
+
+
+def detect_source_family(path: str | bytes | PathLike[str]) -> tuple[str, str]:
+    """Return the source family and detected format for a supported source."""
+    source_path = Path(os.fsdecode(fspath(path)))
+    with source_path.open("rb") as source:
+        signature = source.read(16)
+    if signature.startswith(_PNG_SIG):
+        return "image", "png"
+    if len(signature) == 16 and signature[:4] == b"RIFF" and signature[8:12] == b"WAVE":
+        return "audio", "wav"
+    if signature.startswith(b"\xff\xd8"):
+        image_signature_format = "jpeg"
+    elif signature.startswith((b"GIF87a", b"GIF89a")):
+        image_signature_format = "gif"
+    elif signature.startswith((b"II*\x00", b"MM\x00*")):
+        image_signature_format = "tiff"
+    elif signature.startswith(b"BM"):
+        image_signature_format = "bmp"
+    elif signature.startswith(b"\x76\x2f\x31\x01"):
+        image_signature_format = "exr"
+    elif signature[:4] == b"RIFF" and signature[8:12] == b"WEBP":
+        image_signature_format = "webp"
+    elif signature[4:8] == b"ftyp" and signature[8:12] in (b"avif", b"avis"):
+        image_signature_format = "avif"
+    else:
+        image_signature_format = ""
+
+    try:
+        with av.open(str(source_path), mode="r") as container:
+            video_streams = [stream for stream in container.streams if stream.type == "video"]
+            audio_streams = [stream for stream in container.streams if stream.type == "audio"]
+            real_video_streams = [
+                stream for stream in video_streams
+                if not (stream.disposition & av.stream.Disposition.attached_pic)
+            ]
+            if audio_streams and real_video_streams:
+                raise ValueError("video covers are not supported in the web app")
+            if audio_streams:
+                codec_name = audio_streams[0].codec_context.name.lower()
+                if codec_name.startswith("mp3"):
+                    source_format = "mp3"
+                elif codec_name == "flac":
+                    source_format = "flac"
+                elif codec_name == "alac":
+                    source_format = "alac"
+                elif codec_name == "vorbis":
+                    source_format = "ogg-vorbis"
+                elif codec_name == "opus":
+                    source_format = "ogg-opus"
+                elif codec_name == "aac":
+                    source_format = "m4a" if signature[4:8] == b"ftyp" else "aac"
+                else:
+                    source_format = codec_name
+                if signature.startswith(b"fLaC"):
+                    source_format = "flac"
+                elif signature.startswith(b"OggS"):
+                    source_format = "ogg-vorbis" if codec_name == "vorbis" else "ogg-opus"
+                return "audio", source_format
+            if image_signature_format and video_streams:
+                return "image", image_signature_format
+            if real_video_streams:
+                raise ValueError("video covers are not supported in the web app")
+    except (OSError, TypeError, av.error.FFmpegError) as error:
+        raise ValueError(_ACCEPTED_SOURCE_MESSAGE) from error
+    except ValueError as error:
+        if str(error) == "video covers are not supported in the web app":
+            raise
+        raise ValueError(_ACCEPTED_SOURCE_MESSAGE) from error
+    if signature[:4] == b"RIFF" and signature[8:12] == b"WAVE":
+        return "audio", "wav"
+    raise ValueError(_ACCEPTED_SOURCE_MESSAGE)
 
 
 def _reject_cmyk(is_cmyk: bool) -> None:
@@ -769,7 +845,10 @@ def open_image_source(
 
     with tempfile.TemporaryDirectory(prefix=".stego-source-", dir=staging_parent) as directory:
         snapshot = Path(directory) / "source.png"
-        _convert_image(source_path, snapshot)
+        try:
+            _convert_image(source_path, snapshot)
+        except av.error.FFmpegError as error:
+            raise ValueError(_ACCEPTED_SOURCE_MESSAGE) from error
         carrier = PngCarrier(snapshot)
         carrier._source_original_path = Path(os.path.realpath(source_path))
         yield carrier
@@ -951,7 +1030,10 @@ def open_audio_source(
             raise
     with tempfile.TemporaryDirectory(prefix=".stego-source-", dir=staging_parent) as directory:
         snapshot = Path(directory) / "source.wav"
-        _convert_audio(source_path, snapshot)
+        try:
+            _convert_audio(source_path, snapshot)
+        except av.error.FFmpegError as error:
+            raise ValueError(_ACCEPTED_SOURCE_MESSAGE) from error
         carrier = WavCarrier(snapshot)
         carrier._source_original_path = Path(os.path.realpath(source_path))
         yield carrier

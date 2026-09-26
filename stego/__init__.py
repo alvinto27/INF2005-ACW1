@@ -89,6 +89,7 @@ from .media import (
     read_pcm_wav_info,
 )
 from .sources import (
+    detect_source_family,
     encode_audio,
     encode_audio_from_payload_path,
     encode_image,
@@ -147,6 +148,7 @@ __all__ = [
     "encode_png",
     "encode_image",
     "encode_image_from_payload_path",
+    "detect_source_family",
     "encode_audio",
     "encode_audio_from_payload_path",
     "open_image_source",

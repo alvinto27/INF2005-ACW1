@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import wave
 import zlib
+from fractions import Fraction
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,6 +33,12 @@ from stego import (
     write_lsb_bits,
 )
 from stego.media import _PNG_MAX_DECODED_BYTES
+from stego.sources import (
+    _convert_audio,
+    _convert_image,
+    _decoded_audio_frames,
+    _decoded_image_frames,
+)
 from stego_web import create_app
 from stego_web.services.current_protocol import CurrentProtocolService
 
@@ -77,6 +84,70 @@ def sample_rgba_png() -> tuple[bytes, np.ndarray]:
     output = io.BytesIO()
     Image.fromarray(pixels, mode="RGBA").save(output, format="PNG")
     return output.getvalue(), alpha
+
+
+def sample_jpeg() -> bytes:
+    """Return a small RGB JPEG with enough pixels for a protocol-v3 packet."""
+    pixels = np.zeros((96, 96, 3), dtype=np.uint8)
+    pixels[:, :, 0] = np.arange(96, dtype=np.uint8)[None, :]
+    pixels[:, :, 1] = np.arange(96, dtype=np.uint8)[:, None]
+    output = io.BytesIO()
+    Image.fromarray(pixels).save(output, format="JPEG", quality=88)
+    return output.getvalue()
+
+
+def sample_mp3() -> bytes:
+    """Return a short mono MP3 with enough decoded samples for protocol v3."""
+    with tempfile.TemporaryDirectory() as directory_name:
+        path = Path(directory_name) / "cover.mp3"
+        with av.open(str(path), mode="w", format="mp3") as output:
+            stream = output.add_stream("libmp3lame", rate=48_000)
+            stream.layout = "mono"
+            stream.codec_context.format = av.AudioFormat("s16p")
+            values = np.full((1, 12_000), 1400, dtype=np.int16)
+            frame = av.AudioFrame.from_ndarray(values, format="s16p", layout="mono")
+            frame.sample_rate = 48_000
+            frame.pts = 0
+            frame.time_base = Fraction(1, 48_000)
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                output.mux(packet)
+        return path.read_bytes()
+
+
+def sample_mp4_with_video() -> bytes:
+    """Return a tiny MP4 with one real MPEG-4 video stream."""
+    with tempfile.TemporaryDirectory() as directory_name:
+        path = Path(directory_name) / "movie.mp4"
+        with av.open(str(path), mode="w", format="mp4") as output:
+            stream = output.add_stream("mpeg4", rate=1)
+            stream.width = 16
+            stream.height = 16
+            stream.pix_fmt = "yuv420p"
+            frame = av.VideoFrame.from_ndarray(
+                np.zeros((16, 16, 3), dtype=np.uint8), format="rgb24"
+            )
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                output.mux(packet)
+        return path.read_bytes()
+
+
+def sample_cmyk_jpeg() -> bytes:
+    """Return a small CMYK JPEG source for the web refusal test."""
+    output = io.BytesIO()
+    Image.new("CMYK", (96, 96), (20, 30, 40, 50)).save(output, format="JPEG")
+    return output.getvalue()
+
+
+def sample_animated_gif() -> bytes:
+    """Return a two-frame GIF source for the web refusal test."""
+    output = io.BytesIO()
+    first = Image.new("P", (96, 96), 0)
+    palette = [255, 0, 0, 0, 255, 0] + [0, 0, 0] * 254
+    first.putpalette(palette)
+    second = Image.new("P", (96, 96), 1)
+    second.putpalette(palette)
+    first.save(output, format="GIF", save_all=True, append_images=[second], duration=40)
+    return output.getvalue()
 
 
 def sample_palette_png() -> bytes:
@@ -266,11 +337,20 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIn(b"receiver_public_key", response.data)
         self.assertIn(b"receiver_private_key", response.data)
         self.assertIn(b"payload_file", response.data)
-        self.assertIn(b"RGB or RGBA PNG, or uncompressed PCM WAV", response.data)
+        self.assertIn(b"PNG, JPEG, WebP, AVIF, BMP, TIFF, GIF", response.data)
+        self.assertIn(b"WAV, MP3, AAC/M4A, FLAC, ALAC, Ogg Vorbis/Opus", response.data)
+        self.assertIn(b"lossless PNG or WAV", response.data)
+        self.assertIn(b"accept=\"image/*,audio/*,.png,.jpg,.jpeg,.webp,.avif,.bmp,.tif,.tiff,.gif,.wav,.mp3,.aac,.m4a,.flac,.ogg,.oga,.opus\" required", response.data)
+        self.assertIn(b"accept=\".png,.wav,image/png,audio/wav\" required", response.data)
+        self.assertIn(b"PNG output", response.data)
+        self.assertIn(b"WAV output", response.data)
         self.assertIn(b"protocol v3", response.data)
         self.assertNotIn(b"start_secret", response.data)
         self.assertNotIn(b"original_cover", response.data)
         self.assertIn(b"gsap@3.15", response.data)
+        app_js = self.client.get("/static/app.js")
+        self.assertIn(b"source was converted to a lossless", app_js.data)
+        app_js.close()
 
     def test_16bit_png_cover_works_through_web_routes(self) -> None:
         """The web routes encode and verify a native 16-bit PNG cover."""
@@ -298,6 +378,8 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(encoded["protocol_version"], PROTOCOL_VERSION)
         self.assertEqual(encoded["protocol_version"], 3)
         self.assertEqual(encoded["bootstrap_span"], 2048)
+        self.assertFalse(encoded["source_converted"])
+        self.assertEqual(encoded["source_format"], "png")
         decoded = self.decode(encoded, "stego.png")
         self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
         report = decoded.get_json()
@@ -361,6 +443,90 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(self.get_payload(report["payload"]).get_data(), payload)
         self.assertFalse(any(path.name.startswith(".stego-staging-") for path in self.payload_dir.iterdir()))
 
+    def test_jpeg_cover_converts_once_and_verifies_through_web(self) -> None:
+        """A JPEG upload becomes PNG once and retains its authenticated message."""
+        with patch("stego.sources._decoded_image_frames", wraps=_decoded_image_frames) as decode:
+            with patch("stego.sources._convert_image", wraps=_convert_image) as convert:
+                encoded_response = self.encode(sample_jpeg(), "cover.jpeg", message="jpeg payload")
+        self.assertEqual(decode.call_count, 1)
+        self.assertEqual(encoded_response.status_code, 200, encoded_response.get_data(as_text=True))
+        converted_input, snapshot = convert.call_args.args
+        request_directory = Path(converted_input).parent
+        source_directory = Path(snapshot).parent
+        self.assertEqual(source_directory.parent, request_directory)
+        self.assertTrue(source_directory.name.startswith(".stego-source-"))
+        self.assertFalse(request_directory.exists())
+        self.assertFalse(source_directory.exists())
+        encoded = encoded_response.get_json()
+        self.assertTrue(encoded["source_converted"])
+        self.assertEqual(encoded["source_format"], "jpeg")
+        self.assertEqual(encoded["filename"], "stego.png")
+        self.assertEqual(Path(encoded["stego_url"]).suffix, ".png")
+        self.assertEqual(list(self.output_dir.glob(".stego-source-*")), [])
+        decoded = self.decode(encoded, "stego.png")
+        self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertEqual(self.get_payload(report["payload"]).get_data(), b"jpeg payload")
+
+    def test_mp3_cover_converts_to_wav_and_verifies_through_web(self) -> None:
+        """An MP3 upload becomes WAV and retains its authenticated message."""
+        with patch("stego.sources._decoded_audio_frames", wraps=_decoded_audio_frames) as decode:
+            with patch("stego.sources._convert_audio", wraps=_convert_audio) as convert:
+                encoded_response = self.encode(sample_mp3(), "cover.mp3", message="mp3 payload")
+        self.assertEqual(decode.call_count, 1)
+        converted_input, snapshot = convert.call_args.args
+        request_directory = Path(converted_input).parent
+        source_directory = Path(snapshot).parent
+        self.assertEqual(source_directory.parent, request_directory)
+        self.assertFalse(request_directory.exists())
+        self.assertFalse(source_directory.exists())
+        self.assertEqual(encoded_response.status_code, 200, encoded_response.get_data(as_text=True))
+        encoded = encoded_response.get_json()
+        self.assertTrue(encoded["source_converted"])
+        self.assertEqual(encoded["source_format"], "mp3")
+        self.assertEqual(encoded["filename"], "stego.wav")
+        self.assertEqual(Path(encoded["stego_url"]).suffix, ".wav")
+        self.assertEqual(list(self.output_dir.glob(".stego-source-*")), [])
+        decoded = self.decode(encoded, "stego.wav")
+        self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
+        report = decoded.get_json()
+        self.assertEqual(report["verdict"], "Authentic")
+        self.assertEqual(self.get_payload(report["payload"]).get_data(), b"mp3 payload")
+
+    def test_video_cover_is_refused_by_the_web_app(self) -> None:
+        """Real video sources are refused before the audio converter runs."""
+        response = self.encode(sample_mp4_with_video(), "movie.mp4")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"], "video covers are not supported in the web app")
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_cmyk_and_animated_image_sources_are_http_400(self) -> None:
+        """Supported-family images with forbidden content use validation status."""
+        cmyk = self.encode(sample_cmyk_jpeg(), "cmyk.jpg")
+        self.assertEqual(cmyk.status_code, 400)
+        self.assertEqual(cmyk.get_json()["error"], "CMYK images are not supported")
+        animated = self.encode(sample_animated_gif(), "animated.gif")
+        self.assertEqual(animated.status_code, 400)
+        self.assertEqual(
+            animated.get_json()["error"], "animated GIF images are not supported"
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_converted_source_snapshot_is_removed_after_encode_failure(self) -> None:
+        """A converted snapshot under the request directory is removed on refusal."""
+        with patch("stego.sources._convert_image", wraps=_convert_image) as convert:
+            response = self.encode(
+                sample_jpeg(), "cover.jpg",
+                payload=(b"x" * (128 * 1024), "large.bin"),
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("user payload exceeds capacity", response.get_json()["error"])
+        converted_input, snapshot = convert.call_args.args
+        self.assertFalse(Path(converted_input).parent.exists())
+        self.assertFalse(Path(snapshot).parent.exists())
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
     def test_rgba_png_web_round_trip_keeps_alpha_bytes(self) -> None:
         """The web flow encodes and verifies RGBA without changing alpha."""
         cover, expected_alpha = sample_rgba_png()
@@ -382,12 +548,16 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "Authentic")
         self.assertEqual(report["frame_version"], PROTOCOL_VERSION)
 
-    def test_palette_png_errors_reach_encode_and_verify(self) -> None:
-        """Palette PNG failures keep the library's exact format detail."""
+    def test_palette_png_converts_for_encode_but_stays_invalid_for_verify(self) -> None:
+        """Palette PNG sources convert on encode; verification stays strict."""
         detail = "PNG must be RGB or RGBA; palette and grayscale images are not supported"
         encoded = self.encode(sample_palette_png(), "palette.png")
-        self.assertEqual(encoded.status_code, 400)
-        self.assertEqual(encoded.get_json()["error"], detail)
+        self.assertEqual(encoded.status_code, 200, encoded.get_data(as_text=True))
+        self.assertTrue(encoded.get_json()["source_converted"])
+        self.assertEqual(encoded.get_json()["source_format"], "png")
+        encoded_decode = self.decode(encoded.get_json(), "stego.png")
+        self.assertEqual(encoded_decode.status_code, 200)
+        self.assertEqual(encoded_decode.get_json()["verdict"], "Authentic")
 
         decoded = self.decode_bytes(sample_palette_png(), "palette.png")
         self.assertEqual(decoded.status_code, 200)
@@ -396,20 +566,19 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["message"], detail)
         self.assertIsNone(report["frame_version"])
 
-    def test_rgb_png_with_trns_colour_key_is_refused_at_encode(self) -> None:
-        """An RGB colour-key PNG is refused with HTTP 400 and no output file."""
+    def test_rgb_png_with_trns_colour_key_converts_to_rgba_for_encode(self) -> None:
+        """A colour-key PNG is converted so the transparency becomes alpha."""
         output = io.BytesIO()
         Image.new("RGB", (96, 96), (46, 112, 99)).save(output, format="PNG", transparency=(0, 0, 0))
         response = self.encode(output.getvalue(), "keyed.png")
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(
-            response.get_json()["error"],
-            "RGB PNG with a tRNS colour key is not supported; convert the image to RGBA",
-        )
-        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertTrue(response.get_json()["source_converted"])
+        decoded = self.decode(response.get_json(), "stego.png")
+        self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
+        self.assertEqual(decoded.get_json()["verdict"], "Authentic")
 
-    def test_invalid_carrier_error_precedes_invalid_sender_key(self) -> None:
-        """Validate a PNG carrier before reporting an invalid sender key."""
+    def test_invalid_sender_key_is_rejected_after_family_detection(self) -> None:
+        """The service identifies a supported source before key validation."""
         response = self.client.post(
             "/encode",
             data={
@@ -432,7 +601,7 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(
             response.get_json()["error"],
-            "PNG must be RGB or RGBA; palette and grayscale images are not supported",
+            "sender private key could not be loaded with that password",
         )
 
     def test_oversized_png_errors_reach_encode_and_verify(self) -> None:
@@ -495,6 +664,8 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(
             encoded_response.status_code, 200, encoded_response.get_data(as_text=True)
         )
+        self.assertFalse(encoded_response.get_json()["source_converted"])
+        self.assertEqual(encoded_response.get_json()["source_format"], "wav")
         decoded = self.decode(encoded_response.get_json(), "stego.wav")
         self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
         report = decoded.get_json()
@@ -906,7 +1077,7 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(
             response.get_json()["error"],
-            "unsupported carrier; upload an RGB or RGBA PNG or uncompressed PCM WAV",
+            "unsupported or unreadable source; upload an image (PNG, JPEG, WebP, AVIF, BMP, TIFF, GIF) or audio (WAV, MP3, AAC/M4A, FLAC, ALAC, Ogg Vorbis/Opus) file",
         )
 
     def test_missing_and_empty_carrier_upload_errors_remain(self) -> None:

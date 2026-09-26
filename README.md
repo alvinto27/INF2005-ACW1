@@ -1,9 +1,10 @@
 # INF2005-ACW1
 
 This project is a localhost Flask application for encrypting, signing, embedding,
-decoding, and verifying payloads in 8-bit or 16-bit RGB or RGBA PNG images and uncompressed
-PCM WAV audio. The retained web layout uses protocol version 3 from the `stego`
-package.
+decoding, and verifying payloads with protocol version 3 from the `stego`
+package. The protocol carriers are 8-bit or 16-bit RGB/RGBA PNG and uncompressed
+PCM WAV. The web app also accepts common image and audio sources and converts
+them to lossless PNG or WAV before embedding.
 
 The protocol encrypts the complete payload record with AES-256-GCM, authenticates
 the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
@@ -46,21 +47,22 @@ python -m pip install -r requirements-notebook.txt
 
 Encoding requires:
 
-1. an 8-bit or 16-bit RGB or RGBA PNG, or uncompressed PCM WAV cover;
+1. an image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF) or audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus) source; the output is a lossless PNG or WAV, and real video covers are refused;
 2. either a UTF-8 message or one arbitrary payload file;
 3. an encrypted sender RSA private key and its password;
 4. the intended receiver's RSA public key;
 5. a packet start unit at or after the 2,048-unit RSA-2048 bootstrap span; and
 6. an LSB count from 1 through 8.
 
-The server validates the inputs, saves uploaded payload files to a private
-request-scoped temporary file (or writes a short message there), constructs typed
-authenticated metadata, builds the full media hash, encrypts and signs the payload
+The server validates the inputs, converts non-strict sources once to a canonical
+PNG or WAV snapshot in the request temporary directory, and saves uploaded payload
+files to a private request-scoped temporary file (or writes a short message there).
+It constructs typed authenticated metadata, builds the full media hash, encrypts and signs the payload
 record, embeds the receiver bootstrap and packet, and returns the stego media plus
 the sender public key. Payload bytes are processed in bounded chunks.
 
-Verification requires only the received stego file, the trusted sender public
-key, and the intended receiver private key/password. The receiver bootstrap
+Verification accepts only the received PNG or WAV stego file, the trusted
+sender public key, and the intended receiver private key/password. The receiver bootstrap
 recovers the start unit, LSB count, record length, and AES session material.
 The original cover and the previous shared start-location secret are not inputs.
 
@@ -86,7 +88,7 @@ manually when they are no longer needed.
 
 The public Python API includes `encode_png`, `verify_png`, `encode_wav`,
 `verify_wav`, `PngCarrier`, `WavCarrier`, and the optional source converters
-`open_image_source`, `open_audio_source`, `encode_image`, and `encode_audio`.
+`open_image_source`, `open_audio_source`, `detect_source_family`, `encode_image`, and `encode_audio`.
 File-payload source helpers are also available. Source converters accept still
 JPEG, PNG, WebP, GIF, TIFF, BMP, and AVIF images, and audio with exactly one
 mono or stereo audio stream. They create temporary canonical PNG/WAV carriers;

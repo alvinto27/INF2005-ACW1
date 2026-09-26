@@ -115,21 +115,20 @@ function formatBytes(bytes) {
 function handleCoverFile(file) {
   if (!file) {
     coverInput.setCustomValidity('');
-    coverName.textContent = 'Drop an RGB or RGBA PNG, or PCM WAV here';
+    coverName.textContent = 'Drop an image or audio file here';
     coverMeta.textContent = 'Maximum request size is controlled by the local server.';
     coverDrop.classList.remove('has-file', 'has-error');
     return;
   }
-  const supported = /\.(png|wav)$/i.test(file.name);
-  coverInput.setCustomValidity(supported ? '' : 'Choose an RGB or RGBA PNG, or PCM WAV file.');
-  coverDrop.classList.toggle('has-file', supported);
-  coverDrop.classList.toggle('has-error', !supported);
+  coverInput.setCustomValidity('');
+  coverDrop.classList.add('has-file');
+  coverDrop.classList.remove('has-error');
   coverName.textContent = file.name;
-  coverMeta.textContent = supported ? `${formatBytes(file.size)} - ${file.type || 'type detected by server'}` : 'Choose a file ending in .png or .wav.';
-  if (supported) {
-    renderMedia(document.querySelector('#cover-preview'), URL.createObjectURL(file), file.type || (file.name.toLowerCase().endsWith('.wav') ? 'audio/wav' : 'image/png'));
-    motion.pulse(coverDrop);
-  }
+  coverMeta.textContent = `${formatBytes(file.size)} - ${file.type || 'type detected by server'}`;
+  const audioSource = /\.(wav|mp3|aac|m4a|flac|ogg|oga|opus)$/i.test(file.name);
+  const previewMime = file.type || (audioSource ? 'audio/wav' : 'image/png');
+  renderMedia(document.querySelector('#cover-preview'), URL.createObjectURL(file), previewMime);
+  motion.pulse(coverDrop);
 }
 
 coverInput.addEventListener('change', event => handleCoverFile(event.target.files[0]));
@@ -232,7 +231,15 @@ encodeForm.addEventListener('submit', async event => {
     const stegoUrl = data.stego_url;
     renderMedia(document.querySelector('#stego-preview'), stegoUrl, data.mime_type);
     const preserved = (data.preserved_ratio * 100).toFixed(4);
-    document.querySelector('#success-summary').textContent = `Protocol v${data.protocol_version}: packet starts at unit ${data.start_location}, uses ${data.lsb_bits} LSB, and preserves ${preserved}% of carrier bits.`;
+    const formatLabels = {
+      jpeg: 'JPEG', webp: 'WebP', avif: 'AVIF', bmp: 'BMP', tiff: 'TIFF', gif: 'GIF',
+      png: 'PNG', wav: 'WAV', mp3: 'MP3', aac: 'AAC', m4a: 'M4A', flac: 'FLAC',
+      alac: 'ALAC', 'ogg-vorbis': 'Ogg Vorbis', 'ogg-opus': 'Ogg Opus',
+    };
+    const sourceNote = data.source_converted
+      ? ` Your ${formatLabels[data.source_format] || data.source_format.toUpperCase()} source was converted to a lossless ${data.media_type === 'image' ? 'PNG' : 'WAV'} before embedding.`
+      : '';
+    document.querySelector('#success-summary').textContent = `Protocol v${data.protocol_version}: packet starts at unit ${data.start_location}, uses ${data.lsb_bits} LSB, and preserves ${preserved}% of carrier bits.${sourceNote}`;
     document.querySelector('#download-links').replaceChildren(
       downloadLink(stegoUrl, data.filename, 'Download stego media'),
       downloadLink(textUrl(data.sender_public_key_pem), 'sender-public-key.pem', 'Download sender public key'),

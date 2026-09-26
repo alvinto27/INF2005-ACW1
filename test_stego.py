@@ -62,7 +62,7 @@ from stego.crypto import (
 )
 from stego.layout import build_embedding_layout, encode_signing_input_prefix
 from stego.packet import parse_payload_from_reader, serialized_record_length
-from stego.sources import _decoded_audio_frames, _decoded_image_frames
+from stego.sources import _decoded_audio_frames, _decoded_image_frames, detect_source_family
 
 
 SIGNING_PRIVATE_KEY, SENDER_PUBLIC_KEY = generate_rsa_keypair()
@@ -1447,6 +1447,7 @@ class TestSourceConverters(unittest.TestCase):
 
             cover_path = directory / "cover.mp3"
             self._write_mp3_with_cover(cover_path, values)
+            self.assertEqual(detect_source_family(cover_path), ("audio", "mp3"))
             with open_audio_source(cover_path, directory) as source:
                 self.assertEqual(source.info.sample_width, 2)
                 self.assertEqual(source.info.channels, 1)
@@ -1463,7 +1464,10 @@ class TestSourceConverters(unittest.TestCase):
                 self.assertEqual(
                     [stream.type for stream in cover_first.streams], ["video", "audio"]
                 )
-                self.assertTrue(cover_first.streams.video[0].disposition.attached_pic)
+                self.assertLess(
+                    cover_first.streams.video[0].index,
+                    cover_first.streams.audio[0].index,
+                )
             with open_audio_source(cover_first_path, directory) as source:
                 self.assertEqual(source.info.channels, 1)
 
@@ -1564,7 +1568,7 @@ class TestSourceConverters(unittest.TestCase):
                 output.mux(packet)
 
     def _write_cover_first_matroska(self, path: Path, values: np.ndarray) -> None:
-        """Write a cover-art video stream before its mono audio stream."""
+        """Write a video stream before its mono audio stream."""
         with av.open(str(path), mode="w", format="matroska") as output:
             picture = output.add_stream("mjpeg", rate=1)
             picture.width = 8
