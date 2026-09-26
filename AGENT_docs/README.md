@@ -10,7 +10,7 @@ For repository structure and implementation entry points, see the [Agent Navigat
 
 - [README](../README.md) — setup and protocol use.
 - [stego package](../stego/__init__.py) — public API.
-- [test_stego.py](../test_stego.py) — protocol and PNG/WAV carrier tests.
+- [test_stego.py](../test_stego.py) — protocol, PNG/WAV carrier, and source-conversion tests.
 - [test_video.py](../test_video.py) — video protocol and carrier tests; PyAV is required.
 - [Flask application](../run.py) — localhost entry point.
 - [test_webapp.py](../test_webapp.py) — Flask integration tests.
@@ -25,6 +25,7 @@ For repository structure and implementation entry points, see the [Agent Navigat
 
 ## Historical records and project status
 
+- [PyAV Migration Record](PYAV-MIGRATION-RECORD.md) — migration stages, user decisions, and measured implementation evidence. Current rules remain in the current guides.
 - [Protocol Version 1 History](PROTOCOL-V1-HISTORY.md) — earlier design decisions, rejected alternatives, measurements, and lessons.
 - [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md) — historical version 2 design and accepted trade-offs. Its current wire-format claims are superseded by Current Protocol; its analysis remains historical.
 - [Protocol Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md) — outcomes and measurements from the historical version 2 work.

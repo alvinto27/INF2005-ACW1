@@ -2,8 +2,9 @@
 
 This project is a localhost Flask application for encrypting, signing, embedding,
 decoding, and verifying payloads with protocol version 3 from the `stego`
-package. The protocol carriers are 8-bit or 16-bit RGB/RGBA PNG and uncompressed
-PCM WAV. The web app also accepts common image and audio sources and converts
+package. The primary carriers are 8-bit or 16-bit RGB/RGBA PNG and uncompressed
+PCM WAV. The library also supports an optional video carrier. The web app accepts
+common image and audio sources and converts
 them to lossless PNG or WAV before embedding.
 
 The protocol encrypts the complete payload record with AES-256-GCM, authenticates
@@ -12,12 +13,14 @@ the intended receiver with RSA-OAEP. The version 3 full media hash covers PNG RG
 high-byte and alpha values; the masked low byte and other bytes of each declared
 PCM sample; and video frame units, fixed bytes, and audio, as [Current Protocol](AGENT_docs/CURRENT-PROTOCOL.md)
 defines, including 16-bit sample and fixed-byte order. PNG ancillary chunks and WAV chunks outside the
-declared samples are not covered. The encoded file keeps this metadata: PNG
-text, colour, EXIF, and other copyable ancillary chunks, and all WAV chunks
-outside the samples. A change to this metadata does not change the verdict.
-The encoder sets an existing PNG `tIME` to the encode time and drops `sBIT`
-and `hIST`. It refuses an RGB PNG with a `tRNS` colour key; convert that image
-to RGBA first. The carrier accepts only single-frame 8-bit or 16-bit RGB/RGBA
+declared samples are not covered. Strict PNG and PCM WAV rewrites keep their
+supported metadata as described in [Carrier and Payload Flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md#metadata-in-the-output).
+Converted sources keep only metadata that applies to their canonical pixels or
+samples. Metadata is not covered by the media hash, so a change to it does not
+change the verdict. The strict PNG encoder sets an existing PNG `tIME` to the
+encode time and drops `sBIT` and `hIST`. It refuses an RGB PNG with a `tRNS`
+colour key. The source converter (`encode_image` and the web app) accepts that input and converts transparency
+to RGBA. The protocol carrier accepts only single-frame 8-bit or 16-bit RGB/RGBA
 PNG images. Its decoded image size cannot exceed 715,827,880 bytes; see [Current
 Protocol](AGENT_docs/CURRENT-PROTOCOL.md) for sample and context rules.
 
@@ -145,6 +148,7 @@ removal record](AGENT_docs/MERGE-LEFTOVER-REMOVAL.md).
 - [Documentation index](AGENT_docs/README.md)
 - [Agent navigation map](AGENT_docs/AGENT_MAP.md)
 - [Current protocol](AGENT_docs/CURRENT-PROTOCOL.md)
+- [PyAV migration record](AGENT_docs/PYAV-MIGRATION-RECORD.md)
 - [Carrier and payload flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md)
 - [Video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md)
 - [Web application guide](AGENT_docs/WEB-APPLICATION-GUIDE.md)

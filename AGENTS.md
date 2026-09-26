@@ -30,14 +30,14 @@ bash scripts/install-hooks.sh
 - This is a standalone Python module repository with no package build configuration or CI workflow.
 - The `stego/` package requires Python 3.10+ and uses PyAV, `cryptography`, and NumPy. Pillow is only for tests and the demonstration notebook.
 - The active Flask routes use the `stego/` protocol through `stego_web/services/current_protocol.py`; the earlier `STG1` implementation and its web services have been removed.
-- `test_stego.py` and `test_webapp.py` are the active test entry points.
+- `test_stego.py`, `test_video.py`, and `test_webapp.py` are the active test modules.
 
 ## Conventions
 
 - Commit the notebook with all outputs cleared.
 - Keep the masked-media protocol media-neutral and use its fixed `stego/` PNG and WAV adapters for file I/O.
 - Preserve protocol version 3 and its documented verification verdicts. The active Flask routes accept only protocol version 3; do not present older masked-media or `STG1` files as interoperable.
-- Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in the existing two test modules unless the repository adopts a different layout.
+- Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in the existing three test modules unless the repository adopts a different layout.
 - Annotate every function and method parameter and return type, including private helpers; use `-> None` when nothing is returned.
 - Use plain built-in types and `|` unions, write `X | None` instead of `Optional`, and write `str | bytes | PathLike[str]` inline at each site rather than defining an alias. Annotate carrier arrays as `np.ndarray` without dtype or shape; let docstrings carry that detail, and do not import from `typing` unless there is no other way.
 - Store each durable record—such as an architecture note, plan, runbook, status record, release note, or ADR—in its own aptly named file under `AGENT_docs/`, and list it in `AGENT_docs/README.md`. The `docs/` directory holds the supplied assignment specification and is not a place to add records.

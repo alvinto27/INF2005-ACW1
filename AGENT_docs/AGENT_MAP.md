@@ -13,6 +13,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
 | Current version-3 wire format, media hash, typed metadata, discovery, and verdicts | [CURRENT-PROTOCOL.md](CURRENT-PROTOCOL.md#verification-verdicts) |
+| PyAV media migration stages and measured implementation evidence | [PYAV-MIGRATION-RECORD.md](PYAV-MIGRATION-RECORD.md) |
 | Version-1 design history | [PROTOCOL-V1-HISTORY.md](PROTOCOL-V1-HISTORY.md#decisions-and-what-was-rejected) |
 | Removal of imported legacy files, the old `STG1` stack, and duplicate assignment PDF | [MERGE-LEFTOVER-REMOVAL.md](MERGE-LEFTOVER-REMOVAL.md) |
 | Historical protocol version 2 design; stages 0 through 6b complete; 6c cancelled | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
@@ -45,7 +46,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Flask-to-protocol-v3 streaming file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
 | Active Flask-to-protocol-v3 service | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
-| FR1–FR12 demonstration notebook: running it produces PNG/WAV and optional video demos, verdict/fidelity evidence, and payload API examples | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
+| FR1–FR12 demonstration notebook: running it produces PNG/WAV, source-conversion, and optional video demos, verdict/fidelity evidence, and payload API examples | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol and chunked-carrier tests | [test_stego.py](../test_stego.py), [test_video.py](../test_video.py) |
 | Flask integration and current protocol tests | [test_webapp.py](../test_webapp.py) and [test_stego.py](../test_stego.py) |
 | Sample media: PNG cover; GIF payload; 60-second 1080p30 H.264/AAC MP4 (above the 4 GiB carrier-unit video cap, so usable as a payload, not a video cover); its 20-second cut (a valid video cover) | [Banana.png](../samples/Banana.png), [nia-tweeking.gif](../samples/nia-tweeking.gif), [test.mp4](../samples/test.mp4), [test-20s.mp4](../samples/test-20s.mp4) |

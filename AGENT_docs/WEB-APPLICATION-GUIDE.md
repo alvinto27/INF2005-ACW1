@@ -4,7 +4,7 @@
 
 ## Entry points
 
-`run.py` creates the Flask app from `stego_web`. Routes in `stego_web/routes.py` use `stego_web/services/current_protocol.py`; the adapter calls the public file-backed APIs from `stego`. PyAV is required for runtime PNG and WAV I/O; Pillow is not used by the application. The browser verification controller is `stego_web/static/verify.js`. The main encode wizard is `stego_web/static/app.js`.
+`run.py` creates the Flask app from `stego_web`. Routes in `stego_web/routes.py` use `stego_web/services/current_protocol.py`; the adapter calls the public file-backed APIs from `stego`. PyAV is required for runtime image, audio, and video I/O; Pillow is not used by the application. The browser verification controller is `stego_web/static/verify.js`. The main encode wizard is `stego_web/static/app.js`.
 
 ## Encode request
 
@@ -80,7 +80,7 @@ The `POST /encode` status rules are:
 | Upload exceeds the request limit | 413 | JSON error |
 | Unexpected server failure | 500 | Generic JSON error |
 
-Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the decoded-byte cap, RIFF-size cap, more than two audio channels, and two or more audio streams. An RGB PNG with a `tRNS` colour key returns `RGB PNG with a tRNS colour key is not supported; convert the image to RGBA`. A real video track returns `video covers are not supported in the web app`. Unsupported or unreadable files return HTTP 400 with the accepted image/audio kinds in the message. `POST /decode` remains limited to PNG and PCM WAV. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
+Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the decoded-byte cap, RIFF-size cap, more than two audio channels, and two or more audio streams. The source converter turns RGB PNG `tRNS` colour-key transparency into RGBA alpha. The strict PNG adapter still refuses that input when it is used directly. A real video track returns `video covers are not supported in the web app`. Unsupported or unreadable files return HTTP 400 with the accepted image/audio kinds in the message. `POST /decode` remains limited to PNG and PCM WAV. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
 
 The whole-request limit is `MAX_CONTENT_LENGTH = 256 MiB`; `create_app(test_config)` can override it. Upload files are deleted when the request ends. Encoded carriers and recovered payloads remain in their output directories until users delete them. Private `.stego-staging-*` directories are removed on normal exits. Power loss or `SIGKILL` can leave unauthenticated plaintext staging; stop the server and remove these directories manually after a crash. See [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#cleanup-rule).
 
@@ -90,8 +90,8 @@ The whole-request limit is `MAX_CONTENT_LENGTH = 256 MiB`; `create_app(test_conf
 
 | Requirement | Status | Evidence or remaining work |
 | --- | --- | --- |
-| FR1 image input | Implemented | Strict 8-bit or 16-bit RGB/RGBA PNG validation, preview, encode, decode, and comparison. |
-| FR2 audio input | Implemented | PCM/WAV validation, playback, encode, decode, and comparison. |
+| FR1 image input | Implemented | Common image sources convert to canonical PNG for encode; strict 8-bit or 16-bit RGB/RGBA PNG is used for verify. |
+| FR2 audio input | Implemented | Common audio sources convert to canonical PCM/WAV for encode; strict PCM/WAV is used for verify. |
 | FR3 payload generation | Implemented | Encrypted record contains media ID, timestamp, nonce, full media hash, raw payload, and typed metadata. |
 | FR4 digital signature | Implemented | RSA-PSS/SHA-256 covers protocol version, media context, layout, and ciphertext. |
 | FR5 image LSB embedding | Implemented | PNG adapter and GUI support 1–8 LSBs. |
@@ -106,4 +106,4 @@ The whole-request limit is `MAX_CONTENT_LENGTH = 256 MiB`; `create_app(test_conf
 
 ## Tests and limits
 
-Run `python -m unittest -v`. `test_webapp.py` covers the Flask request/response pipeline; `test_stego.py` covers protocol boundaries and negative verdicts. A wrong receiver key and an absent payload intentionally share one result. Authenticity depends on the sender public key supplied by the receiver. PNG ancillary chunks and WAV chunks outside declared samples are not covered; overwritten LSBs cannot be recovered or authenticated. Version 3 media-hash limits are listed in [Current Protocol](CURRENT-PROTOCOL.md#limits-and-compatibility).
+Run `python -m unittest -v`. `test_webapp.py` covers the Flask request/response pipeline; `test_stego.py` covers protocol, image/audio source conversion, and negative verdicts; `test_video.py` covers the video carrier. A wrong receiver key and an absent payload intentionally share one result. Authenticity depends on the sender public key supplied by the receiver. PNG ancillary chunks and WAV chunks outside declared samples are not covered; overwritten LSBs cannot be recovered or authenticated. Version 3 media-hash limits are listed in [Current Protocol](CURRENT-PROTOCOL.md#limits-and-compatibility).
