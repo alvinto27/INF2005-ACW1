@@ -49,7 +49,7 @@ Use this map before editing an unfamiliar part of the repository.
 | FR1–FR12 demonstration notebook: running it produces PNG/WAV, source-conversion, and optional video demos, verdict/fidelity evidence, and payload API examples | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol and chunked-carrier tests | [test_stego.py](../test_stego.py), [test_video.py](../test_video.py) |
 | Flask integration and current protocol tests | [test_webapp.py](../test_webapp.py) and [test_stego.py](../test_stego.py) |
-| Sample media: PNG cover; GIF payload; 60-second 1080p30 H.264/AAC MP4 (above the 4 GiB carrier-unit video cap, so usable as a payload, not a video cover); its 20-second cut (a valid video cover) | [Banana.png](../samples/Banana.png), [nia-tweeking.gif](../samples/nia-tweeking.gif), [test.mp4](../samples/test.mp4), [test-20s.mp4](../samples/test-20s.mp4) |
+| Sample media: the notebook's PNG cover. Git ignores every other file in `samples/`; put local demo media there | [Banana.png](../samples/Banana.png) |
 | Required runtime and test dependencies (Pillow is test/notebook-only) | [requirements.txt](../requirements.txt) |
 | Optional demonstration-notebook dependency | [requirements-notebook.txt](../requirements-notebook.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |
