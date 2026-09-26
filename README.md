@@ -85,7 +85,16 @@ manually when they are no longer needed.
 ## Protocol API
 
 The public Python API includes `encode_png`, `verify_png`, `encode_wav`,
-`verify_wav`, `PngCarrier`, `WavCarrier`, and the optional video API below.
+`verify_wav`, `PngCarrier`, `WavCarrier`, and the optional source converters
+`open_image_source`, `open_audio_source`, `encode_image`, and `encode_audio`.
+File-payload source helpers are also available. Source converters accept still
+JPEG, PNG, WebP, GIF, TIFF, BMP, and AVIF images, and audio with exactly one
+mono or stereo audio stream. They create temporary canonical PNG/WAV carriers;
+strict PNG and PCM WAV inputs bypass conversion. Converted snapshots are removed
+when the context or encode call ends. CMYK images are refused because a CMYK ICC
+profile is not valid on an RGB PNG, and colour-managed conversion needs a library
+outside PyAV. See [Source conversion](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md#source-conversion).
+
 Verification requires the sender public key and receiver private key. The
 file-backed carriers provide bounded range reads, chunk iteration, and
 sequential rewrites. `WavCarrier` reads whole PCM frames, so carrier working

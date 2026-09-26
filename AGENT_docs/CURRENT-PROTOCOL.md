@@ -37,6 +37,8 @@ PNG input must be a single-frame, 8-bit or 16-bit RGB or RGBA image. Each pixel 
 
 An 8-bit PNG media context remains the 9-byte `struct.pack(">IIB", width, height, channel_count)`. A 16-bit PNG uses the 10-byte `struct.pack(">IIBB", width, height, channel_count, 16)`. Existing 8-bit files keep their old context and remain compatible. WAV context is `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
 
+The core protocol still reads strict PNG and PCM WAV carriers only. The optional `stego.sources` encode helpers accept supported image and audio files, convert non-strict sources once into temporary canonical PNG/WAV carriers, then call the same protocol encoders. Strict carriers bypass conversion. This does not change verification, the wire format, or verdicts. See [Source conversion](CARRIER-AND-PAYLOAD-FLOW.md#source-conversion) for accepted formats, conversion limits, and cleanup.
+
 ### Video-plus-audio media code 3
 
 The optional video carrier uses media code **3** and media-ID prefix **`VID-`**. It keeps the version-3 wire format unchanged. Its 32-byte media context is `struct.pack(">IIQBBIHQ", width, height, frame_count, canonical_video_depth, video_channel_count, audio_sample_rate, audio_channels, audio_frames_per_channel)`. The video channel count is 3 without alpha and 4 with alpha. With no audio, all three audio fields are zero. The context signs the video depth and channel count, not channel identities. For a source pixel format, let `S` be the largest component bit depth, including alpha. Reject floating-point formats and `S > 16`. Select the smallest canonical depth `D >= S` from these tables:

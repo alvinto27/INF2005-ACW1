@@ -219,8 +219,8 @@ _PNG_IMAGE_CHUNKS = frozenset((b"IHDR", b"IDAT", b"IEND"))
 # Known chunks copied unchanged. They stay true after embedding because only
 # low bits change. PLTE is only a suggested palette in truecolour PNGs.
 _PNG_KNOWN_COPIED_CHUNKS = frozenset((
-    b"PLTE", b"tEXt", b"zTXt", b"iTXt", b"iCCP", b"sRGB", b"gAMA", b"cHRM",
-    b"pHYs", b"eXIf", b"bKGD", b"sPLT",
+    b"PLTE", b"tEXt", b"zTXt", b"iTXt", b"iCCP", b"cICP", b"sRGB", b"gAMA", b"cHRM",
+    b"mDCV", b"cLLI", b"pHYs", b"eXIf", b"bKGD", b"sPLT",
 ))
 # sBIT would mark the embedded low bits as not significant, and hIST counts the
 # old pixels, so both are dropped. tRNS is handled by colour type; tIME is
@@ -758,6 +758,11 @@ class WavCarrier(CarrierSource):
         self.info = read_pcm_wav_info(path)
         self._path = path
         self.frames_per_chunk = max(1, chunk_bytes // self.info.bytes_per_frame)
+
+    @property
+    def path(self) -> str | bytes | PathLike[str]:
+        """Return the path used to load this WAV carrier."""
+        return self._path
 
     @property
     def total_units(self) -> int:

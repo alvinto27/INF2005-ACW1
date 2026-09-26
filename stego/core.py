@@ -1113,11 +1113,27 @@ def _paths_resolve_same(first_path: str | bytes | PathLike[str], second_path: st
     return os.path.normcase(os.path.realpath(os.fsdecode(fspath(first_path)))) == os.path.normcase(os.path.realpath(os.fsdecode(fspath(second_path))))
 
 
-def encode_png(input_path: str | bytes | PathLike[str], output_path: str | bytes | PathLike[str], signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[EmbeddingLayout, PayloadRecord]:
-    """Encode a signed packet into an RGB or RGBA PNG file and save it."""
+def encode_png(
+    input_path: str | bytes | PathLike[str],
+    output_path: str | bytes | PathLike[str],
+    signing_private_key: rsa.RSAPrivateKey,
+    receiver_public_key: rsa.RSAPublicKey,
+    start_unit: int,
+    lsb_count: int,
+    user_payload: bytes,
+    metadata: bytes,
+    *,
+    carrier_source: PngCarrier | None = None,
+) -> tuple[EmbeddingLayout, PayloadRecord]:
+    """Encode a signed packet into a strict RGB/RGBA PNG and save it."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
-    source = PngCarrier(input_path)
+    if carrier_source is not None:
+        if not isinstance(carrier_source, PngCarrier):
+            raise TypeError("carrier_source must be a PngCarrier")
+        if not _paths_resolve_same(carrier_source.path, input_path):
+            raise ValueError("carrier_source must be loaded from input_path")
+    source = carrier_source if carrier_source is not None else PngCarrier(input_path)
     encoding = prepare_carrier_encoding(
         source, source.media_code, source.media_context, signing_private_key,
         receiver_public_key, start_unit, lsb_count, user_payload, metadata,
@@ -1151,11 +1167,27 @@ def _remove_incomplete_output(output_path: str | bytes | PathLike[str]) -> None:
         pass
 
 
-def encode_wav(input_path: str | bytes | PathLike[str], output_path: str | bytes | PathLike[str], signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[EmbeddingLayout, PayloadRecord]:
-    """Encode a signed packet into an uncompressed PCM WAV file and save it."""
+def encode_wav(
+    input_path: str | bytes | PathLike[str],
+    output_path: str | bytes | PathLike[str],
+    signing_private_key: rsa.RSAPrivateKey,
+    receiver_public_key: rsa.RSAPublicKey,
+    start_unit: int,
+    lsb_count: int,
+    user_payload: bytes,
+    metadata: bytes,
+    *,
+    carrier_source: WavCarrier | None = None,
+) -> tuple[EmbeddingLayout, PayloadRecord]:
+    """Encode a signed packet into an uncompressed PCM WAV file."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
-    source = WavCarrier(input_path)
+    if carrier_source is not None:
+        if not isinstance(carrier_source, WavCarrier):
+            raise TypeError("carrier_source must be a WavCarrier")
+        if not _paths_resolve_same(carrier_source.path, input_path):
+            raise ValueError("carrier_source must be loaded from input_path")
+    source = carrier_source if carrier_source is not None else WavCarrier(input_path)
     encoding = prepare_carrier_encoding(
         source, source.media_code, source.media_context, signing_private_key,
         receiver_public_key, start_unit, lsb_count, user_payload, metadata,
@@ -1235,13 +1267,30 @@ def encode_png_from_payload_path(
     )
 
 
-def encode_wav_from_payload_path(input_path: str | bytes | PathLike[str], output_path: str | bytes | PathLike[str], signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, payload_path: str | bytes | PathLike[str], metadata: bytes) -> tuple[EmbeddingLayout, PayloadFileRecord]:
+def encode_wav_from_payload_path(
+    input_path: str | bytes | PathLike[str],
+    output_path: str | bytes | PathLike[str],
+    signing_private_key: rsa.RSAPrivateKey,
+    receiver_public_key: rsa.RSAPublicKey,
+    start_unit: int,
+    lsb_count: int,
+    payload_path: str | bytes | PathLike[str],
+    metadata: bytes,
+    *,
+    carrier_source: WavCarrier | None = None,
+) -> tuple[EmbeddingLayout, PayloadFileRecord]:
     """Stream a payload file into an uncompressed PCM WAV carrier."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
+    if carrier_source is not None:
+        if not isinstance(carrier_source, WavCarrier):
+            raise TypeError("carrier_source must be a WavCarrier")
+        if not _paths_resolve_same(carrier_source.path, input_path):
+            raise ValueError("carrier_source must be loaded from input_path")
+    source = carrier_source if carrier_source is not None else WavCarrier(input_path)
     return _encode_file_from_payload_path(
-        WavCarrier(input_path), output_path, signing_private_key,
-        receiver_public_key, start_unit, lsb_count, payload_path, metadata,
+        source, output_path, signing_private_key, receiver_public_key,
+        start_unit, lsb_count, payload_path, metadata,
     )
 
 

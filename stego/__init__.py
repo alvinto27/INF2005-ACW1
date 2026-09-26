@@ -88,6 +88,14 @@ from .media import (
     WavPcmInfo,
     read_pcm_wav_info,
 )
+from .sources import (
+    encode_audio,
+    encode_audio_from_payload_path,
+    encode_image,
+    encode_image_from_payload_path,
+    open_audio_source,
+    open_image_source,
+)
 from .packet import (
     PayloadFileRecord,
     PayloadRecord,
@@ -137,6 +145,12 @@ __all__ = [
     "display_rsa_public_key_fingerprint",
     "encode_bootstrap_aad",
     "encode_png",
+    "encode_image",
+    "encode_image_from_payload_path",
+    "encode_audio",
+    "encode_audio_from_payload_path",
+    "open_image_source",
+    "open_audio_source",
     "encode_video",
     "encode_video_from_payload_path",
     "encode_png_from_payload_path",

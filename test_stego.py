@@ -9,6 +9,7 @@ import wave
 import zlib
 from collections.abc import Iterator
 from datetime import datetime, timezone
+from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -16,7 +17,7 @@ from unittest.mock import patch
 import av
 import numpy as np
 import stego
-from PIL import Image
+from PIL import Image, ImageCms, ImageOps
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -61,6 +62,7 @@ from stego.crypto import (
 )
 from stego.layout import build_embedding_layout, encode_signing_input_prefix
 from stego.packet import parse_payload_from_reader, serialized_record_length
+from stego.sources import _decoded_audio_frames, _decoded_image_frames
 
 
 SIGNING_PRIVATE_KEY, SENDER_PUBLIC_KEY = generate_rsa_keypair()
@@ -105,6 +107,46 @@ def read_png16(path: Path) -> np.ndarray:
         return frame.to_ndarray(
             format="rgb48be" if channels == 3 else "rgba64be"
         )
+
+
+def write_av_audio(
+    path: Path,
+    codec_name: str,
+    container_format: str,
+    sample_format: str,
+    sample_values: np.ndarray,
+    layout: str = "mono",
+) -> None:
+    """Write a small audio fixture using PyAV's codec and container writers."""
+    channel_count = len(av.AudioLayout(layout).channels)
+    dtype = np.float32 if sample_format.startswith("flt") else np.int32 if "32" in sample_format else np.int16
+    values = np.asarray(sample_values, dtype=dtype).reshape((channel_count, -1))
+    frame_values = (
+        values
+        if sample_format.endswith("p") or sample_format == "fltp"
+        else values.T.reshape((1, -1))
+    )
+    with av.open(str(path), mode="w", format=container_format) as output:
+        stream = output.add_stream(codec_name, rate=48_000)
+        stream.layout = layout
+        stream.codec_context.format = av.AudioFormat(sample_format)
+        frame = av.AudioFrame.from_ndarray(
+            frame_values, format=sample_format, layout=layout
+        )
+        frame.sample_rate = 48_000
+        frame.pts = 0
+        frame.time_base = Fraction(1, 48_000)
+        for packet in (*stream.encode(frame), *stream.encode(None)):
+            output.mux(packet)
+
+
+def read_signed_pcm24(data: bytes) -> np.ndarray:
+    """Unpack signed little-endian 24-bit samples for tests."""
+    values = []
+    for offset in range(0, len(data), 3):
+        sample = int.from_bytes(data[offset:offset + 3], "little")
+        values.append(sample - (1 << 24) if sample & (1 << 23) else sample)
+    return np.array(values, dtype=np.int32)
 
 
 def png_chunk_list(data: bytes) -> list[tuple[bytes, bytes]]:
@@ -926,6 +968,711 @@ class TestPng16Bit(unittest.TestCase):
                     ValueError, "PNG decoded size exceeds configured limit: 808 bytes > 800 bytes"
                 ):
                     PngCarrier(sixteen_over)
+
+
+class TestSourceConverters(unittest.TestCase):
+    """Check snapshot conversion, source rules, cleanup, and metadata handling."""
+
+    def test_image_source_kinds_and_alpha_channels(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            rgb = np.arange(9 * 7 * 3, dtype=np.uint8).reshape((7, 9, 3))
+            Image.fromarray(rgb).save(directory / "rgb.jpg", quality=90)
+            Image.fromarray(rgb[:, :, 0]).save(directory / "gray.png")
+            gray16_path = directory / "gray16.png"
+            gray16 = np.array([[0, 1, 255], [256, 12345, 65535]], dtype=np.uint16)
+            with av.open(str(gray16_path), mode="w", format="image2pipe") as output:
+                stream = output.add_stream("png")
+                stream.width = 3
+                stream.height = 2
+                stream.pix_fmt = "gray16be"
+                frame = av.VideoFrame.from_ndarray(gray16, format="gray16be")
+                for packet in (*stream.encode(frame), *stream.encode(None)):
+                    output.mux(packet)
+            Image.fromarray(rgb[:, :, 0]).convert("P").save(directory / "palette.png")
+            Image.fromarray(rgb[:, :, 0]).convert("P").save(
+                directory / "palette-alpha.png", transparency=0
+            )
+            Image.fromarray(rgb).save(
+                directory / "rgb-trns.png", transparency=(0, 1, 2)
+            )
+            Image.fromarray(np.dstack((rgb[:, :, 0], rgb[:, :, 1]))).save(
+                directory / "gray-alpha.png"
+            )
+            rgba = np.dstack((rgb, np.full((7, 9), 127, dtype=np.uint8)))
+            Image.fromarray(rgba).save(directory / "rgba.webp", lossless=True)
+            palette = Image.fromarray(rgb).convert("P")
+            palette.save(directory / "static.gif")
+            palette.save(directory / "transparent.gif", transparency=0)
+            Image.fromarray(rgb).save(directory / "rgb.tiff")
+            Image.fromarray(rgb).save(directory / "strict.png")
+            rgb16 = np.arange(4 * 3 * 3, dtype=np.uint16).reshape((3, 4, 3))
+            rgb16[0, 0] = (0x1234, 0x5678, 0x9ABC)
+            rgb16_path = directory / "rgb16-trns.png"
+            with av.open(str(rgb16_path), mode="w", format="image2pipe") as output:
+                stream = output.add_stream("png")
+                stream.width = 4
+                stream.height = 3
+                stream.pix_fmt = "rgb48be"
+                frame = av.VideoFrame.from_ndarray(rgb16, format="rgb48be")
+                for packet in (*stream.encode(frame), *stream.encode(None)):
+                    output.mux(packet)
+            chunks = png_chunk_list(rgb16_path.read_bytes())
+            decorated_rgb16 = bytearray(b"\x89PNG\r\n\x1a\n")
+            decorated_rgb16.extend(chunks[0][1])
+            decorated_rgb16.extend(
+                png_chunk(b"tRNS", struct.pack(">HHH", 0x1234, 0x5678, 0x9ABC))
+            )
+            decorated_rgb16.extend(b"".join(chunk for _, chunk in chunks[1:]))
+            rgb16_path.write_bytes(decorated_rgb16)
+
+            expected_channels = {
+                "rgb.jpg": 3,
+                "gray.png": 3,
+                "gray16.png": 3,
+                "rgb16-trns.png": 4,
+                "palette.png": 3,
+                "palette-alpha.png": 4,
+                "rgb-trns.png": 4,
+                "gray-alpha.png": 4,
+                "rgba.webp": 4,
+                "static.gif": 3,
+                "transparent.gif": 4,
+                "rgb.tiff": 3,
+                "strict.png": 3,
+            }
+            for filename, channels in expected_channels.items():
+                input_path = directory / filename
+                with open_image_source(input_path, directory) as source:
+                    self.assertEqual(source.channel_count, channels, filename)
+                    self.assertEqual(
+                        source.total_units,
+                        (3 * 2 if filename == "gray16.png" else 4 * 3 if filename == "rgb16-trns.png" else 9 * 7) * 3,
+                        filename,
+                    )
+                    if filename == "gray16.png":
+                        self.assertEqual(source._bit_depth, 16)
+                        self.assertTrue(
+                            np.array_equal(
+                                source._pixels,
+                                np.repeat(gray16[:, :, None], 3, axis=2),
+                            )
+                        )
+                    if filename == "rgb16-trns.png":
+                        self.assertEqual(source._bit_depth, 16)
+                        self.assertEqual(source._pixels[0, 0].tolist(), [0x1234, 0x5678, 0x9ABC, 0])
+                        self.assertEqual(int(source._pixels[0, 1, 3]), 65535)
+                    if filename in ("rgb-trns.png", "palette-alpha.png"):
+                        self.assertEqual(int(source._pixels[0, 0, 3]), 0, filename)
+                    if filename == "strict.png":
+                        self.assertEqual(Path(source.path), input_path)
+                    else:
+                        snapshot = Path(source.path)
+                        self.assertTrue(snapshot.is_file())
+                if filename != "strict.png":
+                    self.assertFalse(snapshot.exists(), filename)
+
+    def test_all_exif_orientations_are_pixel_exact_for_odd_rgb_and_rgba(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            gray = np.arange(3 * 5, dtype=np.uint8).reshape((3, 5))
+            rgba = np.arange(3 * 5 * 4, dtype=np.uint8).reshape((3, 5, 4))
+            operations = {
+                1: (),
+                2: (("hflip", None),),
+                3: (("transpose", "dir=clock"), ("transpose", "dir=clock")),
+                4: (("transpose", "dir=clock"), ("hflip", None), ("transpose", "dir=cclock")),
+                5: (("transpose", "dir=clock"), ("hflip", None)),
+                6: (("transpose", "dir=clock"),),
+                7: (("transpose", "dir=cclock"), ("hflip", None)),
+                8: (("transpose", "dir=cclock"),),
+            }
+            for orientation, filters in operations.items():
+                exif = Image.Exif()
+                exif[274] = orientation
+                gray_path = directory / f"gray-{orientation}.png"
+                Image.fromarray(gray).save(gray_path, exif=exif)
+                with Image.open(gray_path) as image:
+                    expected = np.asarray(ImageOps.exif_transpose(image).convert("RGB"))
+                with open_image_source(gray_path, directory) as source:
+                    actual = source._pixels.copy()
+                self.assertTrue(np.array_equal(actual, expected), f"gray orientation {orientation}")
+                self.assertEqual(actual.shape[:2], expected.shape[:2])
+
+                rgba_path = directory / f"rgba-{orientation}.webp"
+                Image.fromarray(rgba).save(rgba_path, format="WEBP", lossless=True, exif=exif)
+                with Image.open(rgba_path) as image:
+                    expected_rgba = np.asarray(ImageOps.exif_transpose(image).convert("RGBA"))
+                with open_image_source(rgba_path, directory) as source:
+                    actual_rgba = source._pixels.copy()
+                self.assertTrue(
+                    np.array_equal(actual_rgba, expected_rgba),
+                    f"RGBA orientation {orientation}",
+                )
+                if orientation in (5, 6, 7, 8):
+                    self.assertEqual(actual_rgba.shape[:2], (5, 3))
+                else:
+                    self.assertEqual(actual_rgba.shape[:2], (3, 5))
+
+    def test_additional_image_formats_depths_and_float_refusal(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            pixels = np.arange(12 * 10 * 3, dtype=np.uint8).reshape((10, 12, 3))
+            bmp_path = directory / "source.bmp"
+            Image.fromarray(pixels).save(bmp_path)
+            webp_path = directory / "lossy.webp"
+            Image.fromarray(pixels).save(webp_path, format="WEBP", quality=45, lossless=False)
+            one_bit_path = directory / "one-bit.png"
+            Image.fromarray(
+                (np.indices((10, 12)).sum(axis=0) & 1).astype(np.uint8) * 255
+            ).convert("1").save(one_bit_path)
+            avif8_path = directory / "eight-bit.avif"
+            self._write_avif(avif8_path, "yuv420p")
+            avif10_path = directory / "ten-bit.avif"
+            self._write_avif(avif10_path, "gbrp10le")
+            exr_path = directory / "float.exr"
+            self._write_float_exr(exr_path)
+
+            for source_path in (bmp_path, webp_path, one_bit_path, avif8_path):
+                with open_image_source(source_path, directory) as source:
+                    self.assertEqual(source._bit_depth, 8, source_path.name)
+                    self.assertEqual(source.channel_count, 3, source_path.name)
+            with open_image_source(avif10_path, directory) as source:
+                self.assertEqual(source._bit_depth, 16)
+                self.assertEqual(len(source.media_context), 10)
+                self.assertEqual(
+                    (source._pixels[0, 0, :3] >> 6).tolist(), [1023, 10, 341]
+                )
+            with patch("stego.sources._decoded_image_frames") as decode:
+                with self.assertRaisesRegex(
+                    ValueError, "image sample depth greater than 16 bits is not supported"
+                ):
+                    with open_image_source(exr_path, directory):
+                        self.fail("floating-point EXR must be refused")
+                decode.assert_not_called()
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_icc_profile_survives_snapshot_and_final_png_rewrite(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            pixels = np.random.default_rng(51).integers(
+                0, 256, (96, 96, 3), dtype=np.uint8
+            )
+            profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+            source_path = directory / "profile.jpg"
+            Image.fromarray(pixels).save(source_path, quality=90, icc_profile=profile)
+            output_path = directory / "stego.png"
+            encode_image(
+                source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"ICC snapshot", b"",
+            )
+            with Image.open(source_path) as source, Image.open(output_path) as output:
+                self.assertEqual(source.info["icc_profile"], profile)
+                self.assertEqual(output.info["icc_profile"], profile)
+            result = verify_png(output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY)
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload.user_payload, b"ICC snapshot")
+            payload_path = directory / "payload.bin"
+            payload_path.write_bytes(b"image file payload")
+            file_output = directory / "stego-file.png"
+            encode_image_from_payload_path(
+                source_path, file_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, payload_path, b"mime=application/octet-stream",
+            )
+            extracted_path = directory / "image-recovered.bin"
+            file_result = verify_png_to_payload_path(
+                file_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, extracted_path
+            )
+            self.assertEqual(file_result.verdict, "Authentic", file_result.detail)
+            self.assertEqual(extracted_path.read_bytes(), payload_path.read_bytes())
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_snapshot_drops_requested_metadata_and_keeps_colour_chunks(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            gray_path = directory / "gray.png"
+            exif = Image.Exif()
+            exif[274] = 6
+            Image.fromarray(np.arange(9 * 7, dtype=np.uint8).reshape((7, 9))).save(
+                gray_path, exif=exif
+            )
+            source_chunks = png_chunk_list(gray_path.read_bytes())
+            decorated = bytearray(b"\x89PNG\r\n\x1a\n")
+            decorated.extend(source_chunks[0][1])
+            source_colour_chunks = {
+                b"cICP": bytes((1, 13, 0, 1)),
+                b"mDCV": bytes(range(24)),
+                b"cLLI": struct.pack(">II", 1000, 400),
+            }
+            for kind, content in source_colour_chunks.items():
+                decorated.extend(png_chunk(kind, content))
+            decorated.extend(png_chunk(b"pHYs", struct.pack(">IIB", 1000, 1000, 1)))
+            decorated.extend(png_chunk(b"tEXt", b"Comment\x00remove me"))
+            decorated.extend(png_chunk(b"sBIT", b"\x08"))
+            decorated.extend(b"".join(chunk for _, chunk in source_chunks[1:]))
+            gray_path.write_bytes(decorated)
+            with open_image_source(gray_path, directory) as source:
+                snapshot_path = Path(source.path)
+                chunk_types = [kind for kind, _ in png_chunk_list(snapshot_path.read_bytes())]
+                self.assertTrue({b"IHDR", b"IDAT", b"IEND"}.issubset(chunk_types))
+                self.assertNotIn(b"pHYs", chunk_types)
+                self.assertNotIn(b"eXIf", chunk_types)
+                self.assertNotIn(b"tEXt", chunk_types)
+                self.assertNotIn(b"sBIT", chunk_types)
+                snapshot_chunks = {
+                    kind: whole[8:-4]
+                    for kind, whole in png_chunk_list(snapshot_path.read_bytes())
+                }
+                for kind, content in source_colour_chunks.items():
+                    self.assertEqual(snapshot_chunks[kind], content)
+            self.assertFalse(snapshot_path.exists())
+
+    def test_cicp_mdcv_and_clli_survive_strict_png_carrier_rewrite(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "colour.png"
+            pixels = np.zeros((96, 96, 3), dtype=np.uint8)
+            Image.fromarray(pixels).save(source_path)
+            chunks = png_chunk_list(source_path.read_bytes())
+            hdr_chunks = (
+                (b"cICP", bytes((1, 13, 0, 1))),
+                (b"mDCV", bytes(range(24))),
+                (b"cLLI", struct.pack(">II", 1000, 400)),
+            )
+            data = bytearray(b"\x89PNG\r\n\x1a\n")
+            data.extend(chunks[0][1])
+            data.extend(b"".join(png_chunk(kind, content) for kind, content in hdr_chunks))
+            data.extend(b"".join(chunk for _, chunk in chunks[1:]))
+            source_path.write_bytes(data)
+            output_path = directory / "stego.png"
+            encode_png(
+                source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"colour chunks", b"",
+            )
+            output_chunks = {
+                kind: whole[8:-4] for kind, whole in png_chunk_list(output_path.read_bytes())
+            }
+            for kind, content in hdr_chunks:
+                self.assertEqual(output_chunks[kind], content)
+
+    def test_animated_gif_apng_and_webp_are_rejected_before_decode(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            first = Image.new("RGBA", (5, 3), (255, 0, 0, 255))
+            second = Image.new("RGBA", (5, 3), (0, 255, 0, 128))
+            gif_first = Image.new("P", (5, 3), 0)
+            gif_palette = [255, 0, 0, 0, 255, 0] + [0, 0, 0] * 254
+            gif_first.putpalette(gif_palette)
+            gif_second = Image.new("P", (5, 3), 1)
+            gif_second.putpalette(gif_palette)
+            gif_first.save(
+                directory / "animated.gif", save_all=True,
+                append_images=[gif_second], duration=40, loop=0,
+            )
+            first.save(
+                directory / "animated.png", save_all=True,
+                append_images=[second], duration=40, loop=0,
+            )
+            first.save(
+                directory / "animated.webp", format="WEBP", save_all=True,
+                append_images=[second], duration=40, loop=0,
+            )
+            for filename, message in (
+                ("animated.gif", "animated GIF images are not supported"),
+                ("animated.png", "animated PNG images are not supported"),
+                ("animated.webp", "animated WebP images are not supported"),
+            ):
+                with patch("stego.sources.av.open", side_effect=AssertionError("decoded")):
+                    with self.assertRaisesRegex(ValueError, message):
+                        with open_image_source(directory / filename, directory):
+                            self.fail("animated source must be refused")
+
+    def test_cmyk_cap_and_corrupt_png_rules_do_not_fall_through(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            cmyk_path = directory / "cmyk.jpg"
+            Image.new("CMYK", (16, 12), (20, 30, 40, 50)).save(cmyk_path)
+            with patch("stego.sources.av.open", side_effect=AssertionError("decoded")):
+                with self.assertRaisesRegex(ValueError, "^CMYK images are not supported$"):
+                    with open_image_source(cmyk_path, directory):
+                        self.fail("CMYK source must be refused")
+
+            oversized_path = directory / "oversized.png"
+            oversized_path.write_bytes(oversized_rgb_png())
+            with patch("stego.sources.av.open", side_effect=AssertionError("decoded")):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"PNG decoded size exceeds configured limit: 1200000000 bytes > {_PNG_MAX_DECODED_BYTES} bytes",
+                ):
+                    with open_image_source(oversized_path, directory):
+                        self.fail("oversized source must be refused")
+
+            corrupt_path = directory / "corrupt.png"
+            corrupt_path.write_bytes(b"not a PNG")
+            with self.assertRaises(Exception) as strict_error:
+                PngCarrier(corrupt_path)
+            with patch("stego.sources._convert_image") as converter:
+                with self.assertRaises(type(strict_error.exception)) as error:
+                    with open_image_source(corrupt_path, directory):
+                        self.fail("corrupt PNG must be refused")
+                self.assertEqual(str(error.exception), str(strict_error.exception))
+                converter.assert_not_called()
+
+    def test_image_decode_once_and_snapshot_cleanup_on_failure(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.jpg"
+            Image.fromarray(np.zeros((48, 48, 3), dtype=np.uint8)).save(source_path)
+            with patch("stego.sources._decoded_image_frames", wraps=_decoded_image_frames) as decode:
+                with open_image_source(source_path, directory) as source:
+                    snapshot_path = Path(source.path)
+                    self.assertTrue(snapshot_path.exists())
+                    self.assertGreater(source.total_units, 0)
+                self.assertFalse(snapshot_path.exists())
+                self.assertEqual(decode.call_count, 1)
+
+            reused_output = directory / "reused.png"
+            with open_image_source(source_path, directory) as carrier:
+                encode_image(
+                    source_path, reused_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                    2048, 3, b"reuse carrier", b"", carrier_source=carrier,
+                )
+            reused_result = verify_png(
+                reused_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+            )
+            self.assertEqual(reused_result.verdict, "Authentic", reused_result.detail)
+            self.assertEqual(reused_result.payload.user_payload, b"reuse carrier")
+
+            output_path = directory / "fail.png"
+            with self.assertRaises(ValueError):
+                encode_image(
+                    source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                    1_000_000, 3, b"bad location", b"",
+                )
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_strict_png_and_wav_bypass_conversion_and_keep_metadata(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            png_path = directory / "strict.png"
+            Image.fromarray(np.zeros((96, 96, 3), dtype=np.uint8)).save(png_path)
+            chunks = png_chunk_list(png_path.read_bytes())
+            decorated_png = bytearray(b"\x89PNG\r\n\x1a\n")
+            decorated_png.extend(chunks[0][1])
+            decorated_png.extend(png_chunk(b"pHYs", struct.pack(">IIB", 1200, 1300, 1)))
+            decorated_png.extend(png_chunk(b"tEXt", b"Comment\x00keep me"))
+            decorated_png.extend(b"".join(chunk for _, chunk in chunks[1:]))
+            png_path.write_bytes(decorated_png)
+            wav_path = directory / "strict.wav"
+            write_pcm_wav(wav_path, 1, 2, 8192)
+            wav_data = wav_path.read_bytes()
+            list_chunk = riff_chunk(b"LIST", b"metadata")
+            wav_path.write_bytes(
+                wav_data[:4]
+                + struct.pack("<I", len(wav_data) + len(list_chunk) - 8)
+                + wav_data[8:]
+                + list_chunk
+            )
+            with open_image_source(png_path, directory) as image_source:
+                self.assertEqual(Path(image_source.path), png_path)
+            with open_audio_source(wav_path, directory) as audio_source:
+                self.assertEqual(Path(audio_source.path), wav_path)
+            png_output = directory / "strict-stego.png"
+            encode_image(
+                png_path, png_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"strict png", b"",
+            )
+            output_png_chunks = [kind for kind, _ in png_chunk_list(png_output.read_bytes())]
+            self.assertIn(b"pHYs", output_png_chunks)
+            self.assertIn(b"tEXt", output_png_chunks)
+            wav_output = directory / "strict-stego.wav"
+            encode_audio(
+                wav_path, wav_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"strict wav", b"",
+            )
+            self.assertIn(b"LIST", wav_output.read_bytes())
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_lossless_audio_widths_and_exact_signed_samples(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            values16 = np.array([-32768, -12345, 0, 1, 12345, 32767], dtype=np.int16)
+            values24 = np.array(
+                [0x123456, -0x123456, 0x7FFFFF, -0x800000, 1, -1], dtype=np.int32
+            )
+            fixtures = (
+                ("flac16.flac", "flac", "flac", "s16", values16, 2, values16),
+                ("flac24.flac", "flac", "flac", "s32", values24 << 8, 3, values24),
+                ("alac16.m4a", "alac", "ipod", "s16p", values16, 2, values16),
+                ("alac24.m4a", "alac", "ipod", "s32p", values24 << 8, 3, values24),
+                ("pcm24.mka", "pcm_s24le", "matroska", "s32", values24 << 8, 3, values24),
+            )
+            for filename, codec, container_format, sample_format, values, width, expected in fixtures:
+                source_path = directory / filename
+                write_av_audio(
+                    source_path, codec, container_format, sample_format,
+                    np.asarray(values).reshape((1, -1)),
+                )
+                with open_audio_source(source_path, directory) as source:
+                    self.assertEqual(source.info.sample_width, width, filename)
+                    with wave.open(str(source.path), "rb") as audio:
+                        raw = audio.readframes(audio.getnframes())
+                    actual = (
+                        read_signed_pcm24(raw)
+                        if width == 3
+                        else np.frombuffer(raw, dtype="<i2")
+                    )
+                    self.assertTrue(np.array_equal(actual, expected), filename)
+
+    def test_lossy_float_audio_widths_cover_art_and_channels(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            values = np.arange(4800, dtype=np.int16).reshape((1, -1)) - 2400
+            codecs = (
+                ("lossy.mp3", "libmp3lame", "mp3", "s16p", values),
+                ("aac.m4a", "aac", "ipod", "fltp", values.astype(np.float32) / 32768),
+                ("opus.ogg", "libopus", "ogg", "fltp", values.astype(np.float32) / 32768),
+                ("vorbis.ogg", "libvorbis", "ogg", "fltp", values.astype(np.float32) / 32768),
+                ("float.wav", "pcm_f32le", "wav", "flt", values.astype(np.float32) / 32768),
+            )
+            for filename, codec, fmt, sample_format, samples in codecs:
+                source_path = directory / filename
+                write_av_audio(source_path, codec, fmt, sample_format, samples)
+                with open_audio_source(source_path, directory) as source:
+                    self.assertEqual(source.info.sample_width, 2, filename)
+                    self.assertEqual(source.info.frame_rate, 48_000, filename)
+                    self.assertGreater(source.info.frame_count, 0, filename)
+                    if filename == "aac.m4a":
+                        self.assertEqual(source.info.frame_count, 5120)
+
+            cover_path = directory / "cover.mp3"
+            self._write_mp3_with_cover(cover_path, values)
+            with open_audio_source(cover_path, directory) as source:
+                self.assertEqual(source.info.sample_width, 2)
+                self.assertEqual(source.info.channels, 1)
+
+            multistream_path = directory / "two-audio.mka"
+            self._write_two_audio_streams(multistream_path)
+            with self.assertRaisesRegex(ValueError, "exactly one audio stream"):
+                with open_audio_source(multistream_path, directory):
+                    self.fail("two audio streams must be refused")
+
+            cover_first_path = directory / "cover-first.mkv"
+            self._write_cover_first_matroska(cover_first_path, values)
+            with av.open(str(cover_first_path), mode="r") as cover_first:
+                self.assertEqual(
+                    [stream.type for stream in cover_first.streams], ["video", "audio"]
+                )
+                self.assertTrue(cover_first.streams.video[0].disposition.attached_pic)
+            with open_audio_source(cover_first_path, directory) as source:
+                self.assertEqual(source.info.channels, 1)
+
+            movie_path = directory / "video-first.mkv"
+            self._write_video_then_audio(movie_path)
+            with av.open(str(movie_path), mode="r") as movie:
+                self.assertEqual([stream.type for stream in movie.streams], ["video", "audio"])
+                self.assertEqual([stream.index for stream in movie.streams], [0, 1])
+            movie_output = directory / "movie-audio-stego.wav"
+            encode_audio(
+                movie_path, movie_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"movie audio", b"",
+            )
+            movie_result = verify_wav(
+                movie_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+            )
+            self.assertEqual(movie_result.verdict, "Authentic", movie_result.detail)
+            self.assertEqual(movie_result.payload.user_payload, b"movie audio")
+
+            surround_path = directory / "surround.mka"
+            write_av_audio(
+                surround_path, "pcm_s16le", "matroska", "s16",
+                np.zeros((6, 480), dtype=np.int16), layout="5.1",
+            )
+            with self.assertRaisesRegex(ValueError, "unsupported audio channel count"):
+                with open_audio_source(surround_path, directory):
+                    self.fail("more than two channels must be refused")
+
+    def test_audio_decode_once_riff_cap_cleanup_and_payload_wrapper(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.mp3"
+            values = np.zeros((1, 4800), dtype=np.int16)
+            write_av_audio(source_path, "libmp3lame", "mp3", "s16p", values)
+            with patch("stego.sources._decoded_audio_frames", wraps=_decoded_audio_frames) as decode:
+                with open_audio_source(source_path, directory) as source:
+                    snapshot_path = Path(source.path)
+                    self.assertTrue(snapshot_path.exists())
+                    self.assertGreater(source.total_units, 0)
+                self.assertFalse(snapshot_path.exists())
+                self.assertEqual(decode.call_count, 1)
+
+            with patch("stego.sources._MAX_RIFF_DATA_BYTES", 1):
+                with self.assertRaisesRegex(ValueError, "RIFF 4 GiB limit"):
+                    with open_audio_source(source_path, directory):
+                        self.fail("patched RIFF limit must refuse")
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+            payload_path = directory / "payload.bin"
+            payload_path.write_bytes(b"payload file")
+            output_path = directory / "audio-stego.wav"
+            encode_audio_from_payload_path(
+                source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, payload_path, b"mime=application/octet-stream",
+            )
+            extracted_path = directory / "recovered.bin"
+            result = verify_wav_to_payload_path(
+                output_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, extracted_path
+            )
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(extracted_path.read_bytes(), payload_path.read_bytes())
+            message_output = directory / "audio-message.wav"
+            encode_audio(
+                source_path, message_output, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"audio message", b"",
+            )
+            message_result = verify_wav(
+                message_output, PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+            )
+            self.assertEqual(message_result.verdict, "Authentic", message_result.detail)
+            self.assertEqual(message_result.payload.user_payload, b"audio message")
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def _write_mp3_with_cover(self, path: Path, values: np.ndarray) -> None:
+        """Create an MP3 whose attached picture stream comes before its audio."""
+        with av.open(str(path), mode="w", format="mp3") as output:
+            picture = output.add_stream("mjpeg", rate=1)
+            picture.width = 8
+            picture.height = 8
+            picture.pix_fmt = "yuvj420p"
+            picture.disposition = av.stream.Disposition.attached_pic.value
+            audio = output.add_stream("libmp3lame", rate=48_000)
+            audio.layout = "mono"
+            audio.codec_context.format = av.AudioFormat("s16p")
+            frame = av.AudioFrame.from_ndarray(values, format="s16p", layout="mono")
+            frame.sample_rate = 48_000
+            frame.pts = 0
+            frame.time_base = Fraction(1, 48_000)
+            image = av.VideoFrame.from_ndarray(
+                np.zeros((8, 8, 3), dtype=np.uint8), format="rgb24"
+            )
+            image.pts = 0
+            image.time_base = Fraction(1, 1)
+            for packet in (
+                *picture.encode(image), *picture.encode(None),
+                *audio.encode(frame), *audio.encode(None),
+            ):
+                output.mux(packet)
+
+    def _write_cover_first_matroska(self, path: Path, values: np.ndarray) -> None:
+        """Write a cover-art video stream before its mono audio stream."""
+        with av.open(str(path), mode="w", format="matroska") as output:
+            picture = output.add_stream("mjpeg", rate=1)
+            picture.width = 8
+            picture.height = 8
+            picture.pix_fmt = "yuvj420p"
+            picture.disposition = av.stream.Disposition.attached_pic.value
+            audio = output.add_stream("pcm_s16le", rate=48_000)
+            audio.layout = "mono"
+            audio.codec_context.format = av.AudioFormat("s16")
+            image = av.VideoFrame.from_ndarray(
+                np.zeros((8, 8, 3), dtype=np.uint8), format="rgb24"
+            )
+            image.pts = 0
+            image.time_base = Fraction(1, 1)
+            frame = av.AudioFrame.from_ndarray(values, format="s16", layout="mono")
+            frame.sample_rate = 48_000
+            frame.pts = 0
+            frame.time_base = Fraction(1, 48_000)
+            for packet in (*picture.encode(image), *picture.encode(None)):
+                output.mux(packet)
+            for packet in (*audio.encode(frame), *audio.encode(None)):
+                output.mux(packet)
+
+    def _write_video_then_audio(self, path: Path) -> None:
+        """Write a real video stream first and a PCM audio stream second."""
+        with av.open(str(path), mode="w", format="matroska") as output:
+            video = output.add_stream("ffv1", rate=25)
+            video.width = 16
+            video.height = 16
+            video.pix_fmt = "yuv420p"
+            audio = output.add_stream("pcm_s16le", rate=48_000)
+            audio.layout = "mono"
+            audio.codec_context.format = av.AudioFormat("s16")
+            video_frame = av.VideoFrame.from_ndarray(
+                np.zeros((16, 16, 3), dtype=np.uint8), format="rgb24"
+            )
+            video_frame.pts = 0
+            video_frame.time_base = Fraction(1, 25)
+            audio_frame = av.AudioFrame.from_ndarray(
+                np.zeros((1, 6000), dtype=np.int16), format="s16", layout="mono"
+            )
+            audio_frame.sample_rate = 48_000
+            audio_frame.pts = 0
+            audio_frame.time_base = Fraction(1, 48_000)
+            for packet in (*video.encode(video_frame), *video.encode(None)):
+                output.mux(packet)
+            for packet in (*audio.encode(audio_frame), *audio.encode(None)):
+                output.mux(packet)
+
+    def _write_avif(self, path: Path, pixel_format: str) -> None:
+        """Create a tiny AVIF at the requested AV1 source depth."""
+        if pixel_format == "yuv420p":
+            frame = av.VideoFrame.from_ndarray(
+                np.full((4, 4, 3), 120, dtype=np.uint8), format="rgb24"
+            )
+        else:
+            frame = av.VideoFrame(4, 4, format=pixel_format)
+            plane_values = (10, 341, 1023)
+            for index, plane in enumerate(frame.planes):
+                pixels = np.ndarray(
+                    (4, 4), dtype="<u2", buffer=plane,
+                    strides=(plane.line_size, 2),
+                )
+                pixels.fill(plane_values[index])
+        with av.open(str(path), mode="w", format="avif") as output:
+            stream = output.add_stream("libaom-av1", rate=1)
+            stream.width = frame.width
+            stream.height = frame.height
+            stream.pix_fmt = pixel_format
+            stream.options = {"crf": "0", "still-picture": "1"}
+            frame.pts = 0
+            frame.time_base = Fraction(1, 1)
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                output.mux(packet)
+
+    def _write_float_exr(self, path: Path) -> None:
+        """Create a small floating-point OpenEXR image with PyAV."""
+        with av.open(str(path), mode="w", format="image2") as output:
+            stream = output.add_stream("exr")
+            stream.width = 4
+            stream.height = 4
+            stream.pix_fmt = "gbrpf32le"
+            frame = av.VideoFrame.from_ndarray(
+                np.zeros((4, 4, 3), dtype=np.float32), format="gbrpf32le"
+            )
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                output.mux(packet)
+
+    def _write_two_audio_streams(self, path: Path) -> None:
+        """Write two short PCM audio streams to one Matroska container."""
+        with av.open(str(path), mode="w", format="matroska") as output:
+            streams = []
+            for _ in range(2):
+                stream = output.add_stream("pcm_s16le", rate=48_000)
+                stream.layout = "mono"
+                streams.append(stream)
+            frames = []
+            for stream in streams:
+                frame = av.AudioFrame.from_ndarray(
+                    np.zeros((1, 480), dtype=np.int16), format="s16", layout="mono"
+                )
+                frame.sample_rate = 48_000
+                frame.pts = 0
+                frame.time_base = Fraction(1, 48_000)
+                frames.append(frame)
+            for stream, frame in zip(streams, frames):
+                for packet in (*stream.encode(frame), *stream.encode(None)):
+                    output.mux(packet)
 
 
 class TestMaskedStego(unittest.TestCase):
