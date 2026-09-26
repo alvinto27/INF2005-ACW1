@@ -7,8 +7,10 @@ package.
 
 The protocol encrypts the complete payload record with AES-256-GCM, authenticates
 the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
-the intended receiver with RSA-OAEP. The version 3 full media hash covers masked RGB units, RGBA alpha, and all bytes
-of each declared PCM sample. PNG ancillary chunks and WAV chunks outside the
+the intended receiver with RSA-OAEP. The version 3 full media hash covers the masked RGB units and RGBA alpha of
+PNG; the masked low byte and other bytes of each declared PCM sample; and video
+frame units, fixed bytes, and audio, as [Current Protocol](AGENT_docs/CURRENT-PROTOCOL.md)
+defines. PNG ancillary chunks and WAV chunks outside the
 declared samples are not covered. The encoded file keeps this metadata: PNG
 text, colour, EXIF, and other copyable ancillary chunks, and all WAV chunks
 outside the samples. A change to this metadata does not change the verdict.
@@ -93,7 +95,7 @@ The optional video library API includes `VideoCarrier`, `encode_video`,
 notebook, not in the Flask web application. It writes lossless FFV1 video and
 PCM audio to `.mkv`; this output can be much larger than the compressed input.
 See the [video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md#output-and-limits)
-for decoded-size, frame-pixel, output-size, and disk-space limits. PyAV is a
+for carrier-unit, canonical frame-byte, output-size, and disk-space limits. PyAV is a
 normal install dependency in `requirements.txt`, but the video import
 is lazy, so `import stego` works when PyAV is unavailable. The public
 `CarrierSource` abstraction and `prepare_carrier_encoding` /

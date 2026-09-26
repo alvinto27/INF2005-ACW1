@@ -38,8 +38,7 @@ from .layout import EmbeddingLayout
 from .packet import PayloadFileRecord, PayloadRecord
 
 _MAX_CARRIER_UNITS = 4 * 1024**3
-# Match Pillow's PNG-path error threshold: 2 * Image.MAX_IMAGE_PIXELS.
-_MAX_FRAME_PIXELS = 178_956_970
+_MAX_FRAME_BYTES = 256 * 1024**2
 _MAX_OUTPUT_BYTES = 2 * 1024**3
 _MIN_FREE_BYTES = 3 * 1024 * 1024 * 1024
 _AUDIO_CHANNEL_COUNTS = frozenset((1, 2))
@@ -48,13 +47,26 @@ _VIDEO_DEPTHS = (8, 9, 10, 12, 14, 16)
 _VIDEO_ALPHA_DEPTHS = (8, 10, 12, 14, 16)
 
 
-def _check_video_output_resources(path: str | bytes | PathLike[str]) -> Path:
+def _check_video_output_resources(
+    path: str | bytes | PathLike[str], additional_required_bytes: int = 0
+) -> Path:
     """Check destination free space and return its normalized path."""
+    if additional_required_bytes < 0:
+        raise ValueError("additional_required_bytes must be non-negative")
     destination = Path(os.fsdecode(fspath(path)))
     parent = destination.parent
-    if shutil.disk_usage(parent).free < _MIN_FREE_BYTES:
+    if shutil.disk_usage(parent).free < _MIN_FREE_BYTES + additional_required_bytes:
         raise ValueError("insufficient free disk space for video output")
     return destination
+
+
+def _check_video_frame_bytes(
+    width: int, height: int, depth: int, channel_count: int
+) -> None:
+    """Refuse a canonical decoded frame above the configured byte limit."""
+    bytes_per_sample = 1 if depth == 8 else 2
+    if width * height * channel_count * bytes_per_sample > _MAX_FRAME_BYTES:
+        raise ValueError("video frame exceeds configured frame-byte limit")
 
 
 def _new_video_stage(destination: Path) -> Path:
@@ -74,12 +86,6 @@ def _check_video_file_size(path: str | bytes | PathLike[str]) -> None:
         output_size = 0
     if output_size > _MAX_OUTPUT_BYTES:
         raise ValueError("video output exceeds configured byte limit")
-
-
-def _check_video_frame_pixels(width: int, height: int) -> None:
-    """Refuse frames above the PNG-compatible decompression-bomb threshold."""
-    if width * height > _MAX_FRAME_PIXELS:
-        raise ValueError("video frame exceeds configured pixel limit")
 
 
 def _video_format_info(video_format: object) -> tuple[int, bool, int, str, str]:
@@ -404,11 +410,14 @@ class VideoCarrier(CarrierSource):
             height = video_stream.codec_context.height
             if not width or not height:
                 raise ValueError("invalid video dimensions")
-            _check_video_frame_pixels(width, height)
             header_format = video_stream.codec_context.format
             header_info = (
                 _video_format_info(header_format) if header_format is not None else None
             )
+            if header_info is not None:
+                _check_video_frame_bytes(
+                    width, height, header_info[2], 4 if header_info[1] else 3
+                )
 
         first_video_time: Fraction | None = None
         frame_count = 0
@@ -422,11 +431,14 @@ class VideoCarrier(CarrierSource):
             video_stream, _ = self._select_streams(container)
             decoder = container.decode(video=0)
             for frame, _tick, exact_time in _frame_ticks(decoder, video_stream):
-                _check_video_frame_pixels(frame.width, frame.height)
-                if frame.width != width or frame.height != height:
-                    raise ValueError("video dimensions changed during decode")
                 frame_info = _video_format_info(frame.format)
                 frame_depth, frame_alpha, frame_canonical_depth, frame_decode_format, frame_output_format = frame_info
+                _check_video_frame_bytes(
+                    frame.width, frame.height, frame_canonical_depth,
+                    4 if frame_alpha else 3,
+                )
+                if frame.width != width or frame.height != height:
+                    raise ValueError("video dimensions changed during decode")
                 if source_depth is None:
                     if header_info is not None and frame_info[:2] != header_info[:2]:
                         raise ValueError("video pixel format changed during decode")
@@ -441,7 +453,7 @@ class VideoCarrier(CarrierSource):
                 total_units += frame.width * frame.height * 3
                 if total_units > _MAX_CARRIER_UNITS:
                     raise ValueError(
-                        "video carrier exceeds configured decoded-size limit"
+                        "video carrier exceeds configured carrier-unit limit"
                     )
                 if first_video_time is None:
                     first_video_time = exact_time
@@ -475,7 +487,7 @@ class VideoCarrier(CarrierSource):
                     total_units += frame.samples * audio_channels
                     if total_units > _MAX_CARRIER_UNITS:
                         raise ValueError(
-                            "video carrier exceeds configured decoded-size limit"
+                            "video carrier exceeds configured carrier-unit limit"
                         )
                     if audio_first_time is None:
                         audio_first_time = exact_time
@@ -1119,7 +1131,8 @@ def encode_video_from_payload_path(
     """Stream a payload file into a staged video carrier and publish it atomically."""
     if _paths_resolve_same(input_path, output_path):
         raise ValueError("input and output paths must be different")
-    destination = _check_video_output_resources(output_path)
+    payload_size = Path(os.fsdecode(fspath(payload_path))).stat().st_size
+    destination = _check_video_output_resources(output_path, payload_size)
     source = VideoCarrier(input_path)
     try:
         return _encode_file_from_payload_path(

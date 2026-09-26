@@ -44,10 +44,10 @@ Use this map before editing an unfamiliar part of the repository.
 | Flask-to-protocol-v3 streaming file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | Browser UI and controllers | [index.html](../stego_web/templates/index.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), and [style.css](../stego_web/static/style.css) |
 | Active Flask-to-protocol-v3 service | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
-| FR1–FR12 demonstration notebook: PNG/WAV and optional video carrier demos, verdict/fidelity evidence, and payload API | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
+| FR1–FR12 demonstration notebook: running it produces PNG/WAV and optional video demos, verdict/fidelity evidence, and payload API examples | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol and chunked-carrier tests | [test_stego.py](../test_stego.py), [test_video.py](../test_video.py) |
 | Flask integration and current protocol tests | [test_webapp.py](../test_webapp.py) and [test_stego.py](../test_stego.py) |
-| Sample media: PNG cover; GIF payload; 60-second 1080p30 H.264/AAC MP4 (above the 4 GiB decoded-size video cap, so usable as a payload, not a video cover); its 20-second cut (a valid video cover) | [Banana.png](../samples/Banana.png), [nia-tweeking.gif](../samples/nia-tweeking.gif), [test.mp4](../samples/test.mp4), [test-20s.mp4](../samples/test-20s.mp4) |
+| Sample media: PNG cover; GIF payload; 60-second 1080p30 H.264/AAC MP4 (above the 4 GiB carrier-unit video cap, so usable as a payload, not a video cover); its 20-second cut (a valid video cover) | [Banana.png](../samples/Banana.png), [nia-tweeking.gif](../samples/nia-tweeking.gif), [test.mp4](../samples/test.mp4), [test-20s.mp4](../samples/test-20s.mp4) |
 | Runtime and test dependencies | [requirements.txt](../requirements.txt) |
 | Optional demonstration-notebook dependency | [requirements-notebook.txt](../requirements-notebook.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |

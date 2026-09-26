@@ -848,6 +848,48 @@ class VideoCarrierReadTests(unittest.TestCase):
                     finally:
                         output_carrier.close()
 
+    def test_gbrap10_round_trip_at_eight_lsbs_preserves_high_bytes_and_alpha(self) -> None:
+        import av
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source-gbrap10.mkv"
+            output_path = root / "encoded-gbrap10.mkv"
+            payload = b"high-byte and alpha preservation at k=8"
+            make_pixel_format_clip(
+                source_path, "gbrap10le", ticks=(0, 40, 80), width=64, height=48
+            )
+
+            def decoded_frames(path: Path) -> list[np.ndarray]:
+                with av.open(str(path)) as container:
+                    return [
+                        frame.to_ndarray(format="gbrap10le")
+                        for frame in container.decode(video=0)
+                    ]
+
+            original_frames = decoded_frames(source_path)
+            with patch("stego.video._MIN_FREE_BYTES", 0):
+                encode_video(
+                    source_path, output_path, SIGNING_PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY, bootstrap_span(RECEIVER_PUBLIC_KEY),
+                    8, payload, b"{}",
+                )
+            result = verify_video(
+                output_path, SIGNING_PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+            )
+            self.assertEqual(result.verdict, "Authentic", result.detail)
+            self.assertEqual(result.payload.user_payload, payload)
+            encoded_frames = decoded_frames(output_path)
+            self.assertEqual(len(encoded_frames), len(original_frames))
+            for original, encoded in zip(original_frames, encoded_frames):
+                self.assertTrue(
+                    np.array_equal(original[:, :, :3] & 0xFF00,
+                                   encoded[:, :, :3] & 0xFF00)
+                )
+                self.assertTrue(
+                    np.array_equal(original[:, :, 3], encoded[:, :, 3])
+                )
+
     def test_rgba_and_gbrap_unit_and_fixed_byte_order(self) -> None:
         import av
 
@@ -1326,9 +1368,35 @@ class VideoCarrierReadTests(unittest.TestCase):
             )
             self.assertEqual(result.verdict, "Cannot Verify")
 
-    def test_pixel_limit_is_checked_on_stream_header_before_decode(self) -> None:
+    def test_frame_byte_limit_boundaries_for_rgb_and_high_depth_rgba(self) -> None:
         with TemporaryDirectory() as directory:
-            path = Path(directory) / "too-many-header-pixels.mkv"
+            root = Path(directory)
+            cases = (("rgb8", 12, 3), ("rgba10", 32, 8))
+            for label, exact_bytes, one_pixel_bytes in cases:
+                path = root / f"{label}.mkv"
+                if label == "rgb8":
+                    make_matroska(path, ticks=(0,), width=2, height=2)
+                else:
+                    make_pixel_format_clip(
+                        path, "gbrap10le", ticks=(0,), width=2, height=2
+                    )
+                with self.subTest(format=label):
+                    with patch("stego.video._MAX_FRAME_BYTES", exact_bytes):
+                        source = VideoCarrier(path)
+                        source.close()
+                    with patch(
+                        "stego.video._MAX_FRAME_BYTES",
+                        exact_bytes - one_pixel_bytes,
+                    ):
+                        with self.assertRaisesRegex(
+                            ValueError,
+                            "video frame exceeds configured frame-byte limit",
+                        ):
+                            VideoCarrier(path)
+
+    def test_frame_byte_limit_is_checked_on_stream_header_before_decode(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "too-large-header-frame.mkv"
             make_matroska(path, ticks=(0,), width=4, height=3)
             original_open = VideoCarrier._open
             open_count = 0
@@ -1338,14 +1406,16 @@ class VideoCarrierReadTests(unittest.TestCase):
                 open_count += 1
                 return original_open(carrier)
 
-            with patch("stego.video._MAX_FRAME_PIXELS", 11), patch.object(
+            with patch("stego.video._MAX_FRAME_BYTES", 35), patch.object(
                 VideoCarrier, "_open", counted_open
             ):
-                with self.assertRaisesRegex(ValueError, "configured pixel limit"):
+                with self.assertRaisesRegex(
+                    ValueError, "video frame exceeds configured frame-byte limit"
+                ):
                     VideoCarrier(path)
             self.assertEqual(open_count, 1)
 
-    def test_pixel_limit_is_checked_on_decoded_frames(self) -> None:
+    def test_frame_byte_limit_is_checked_on_decoded_frames(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "too-many-frame-pixels.mkv"
             make_matroska(path, ticks=(0,), width=4, height=2)
@@ -1365,13 +1435,15 @@ class VideoCarrierReadTests(unittest.TestCase):
                         exact_time,
                     )
 
-            with patch("stego.video._MAX_FRAME_PIXELS", 10), patch(
+            with patch("stego.video._MAX_FRAME_BYTES", 30), patch(
                 "stego.video._frame_ticks", side_effect=oversized_frame_ticks
             ):
-                with self.assertRaisesRegex(ValueError, "configured pixel limit"):
+                with self.assertRaisesRegex(
+                    ValueError, "video frame exceeds configured frame-byte limit"
+                ):
                     VideoCarrier(path)
 
-    def test_decoded_size_limit_stops_counting_video_frames_early(self) -> None:
+    def test_carrier_unit_limit_stops_counting_video_frames_early(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "many-frames.mkv"
             make_matroska(
@@ -1397,12 +1469,12 @@ class VideoCarrierReadTests(unittest.TestCase):
                 "stego.video._frame_ticks", side_effect=counted_frame_ticks
             ):
                 with self.assertRaisesRegex(
-                    ValueError, "video carrier exceeds configured decoded-size limit"
+                    ValueError, "video carrier exceeds configured carrier-unit limit"
                 ):
                     VideoCarrier(path)
             self.assertEqual(decoded_count, 3)
 
-    def test_decoded_size_limit_counts_audio_sample_units(self) -> None:
+    def test_carrier_unit_limit_counts_audio_sample_units(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "audio-units.mkv"
             make_matroska(
@@ -1415,7 +1487,7 @@ class VideoCarrierReadTests(unittest.TestCase):
             )
             with patch("stego.video._MAX_CARRIER_UNITS", 500):
                 with self.assertRaisesRegex(
-                    ValueError, "video carrier exceeds configured decoded-size limit"
+                    ValueError, "video carrier exceeds configured carrier-unit limit"
                 ):
                     VideoCarrier(path)
 
@@ -1469,6 +1541,38 @@ class VideoCarrierReadTests(unittest.TestCase):
                     )
             self.assertFalse(output_path.exists())
             self.assertFalse(list(root.glob(".stego-staging-*")))
+
+    def test_payload_path_disk_check_includes_payload_staging_size(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.mp4"
+            payload_path = root / "payload.bin"
+            output_path = root / "payload-output.mkv"
+            bytes_output_path = root / "bytes-output.mkv"
+            make_tiny_clip(source_path)
+            payload_path.write_bytes(b"p" * 100)
+
+            def disk_usage(_path: str | bytes | PathLike[str]) -> SimpleNamespace:
+                return SimpleNamespace(total=10_000, used=9_950, free=50)
+
+            with patch("stego.video._MIN_FREE_BYTES", 10), patch(
+                "stego.video.shutil.disk_usage", side_effect=disk_usage
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "insufficient free disk space for video output"
+                ):
+                    encode_video_from_payload_path(
+                        source_path, output_path, SIGNING_PRIVATE_KEY,
+                        RECEIVER_PUBLIC_KEY, bootstrap_span(RECEIVER_PUBLIC_KEY),
+                        3, payload_path, b"{}",
+                    )
+                self.assertFalse(output_path.exists())
+                encode_video(
+                    source_path, bytes_output_path, SIGNING_PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY, bootstrap_span(RECEIVER_PUBLIC_KEY),
+                    3, b"small bytes payload", b"{}",
+                )
+            self.assertTrue(bytes_output_path.is_file())
 
     def test_output_cap_failure_removes_staging_and_does_not_publish(self) -> None:
         with TemporaryDirectory() as directory:
