@@ -41,7 +41,6 @@ from .bits import (
 )
 from .carrier import (
     DEFAULT_CHUNK_BYTES,
-    ArrayCarrier,
     CarrierSource,
     _PackedByteRangeReader,
     _packed_lsb_range_transform,
@@ -765,21 +764,6 @@ def prepare_carrier_encoding_from_payload_path(source: CarrierSource, media_code
         raise
 
 
-def encode_carrier(carrier_units: np.ndarray, media_code: int, media_context: bytes, signing_private_key: rsa.RSAPrivateKey, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, user_payload: bytes, metadata: bytes) -> tuple[np.ndarray, EmbeddingLayout, PayloadRecord]:
-    """Encrypt, sign, and embed a record with a receiver bootstrap."""
-    source = ArrayCarrier(_validate_carrier_units(carrier_units))
-    encoding = prepare_carrier_encoding(
-        source, media_code, media_context, signing_private_key, receiver_public_key,
-        start_unit, lsb_count, user_payload, metadata,
-    )
-    try:
-        encoded = source.rewrite(encoding.embed_chunk)
-        encoding.finish()
-        return encoded, encoding.layout, encoding.payload
-    finally:
-        encoding.close()
-
-
 @dataclass(frozen=True)
 class VerificationResult:
     """Keep a carrier's verification verdict and the details that support it."""
@@ -1091,12 +1075,6 @@ def decode_carrier_source_to_payload_path(source: CarrierSource, media_code: int
             source, media_code, media_context, sender_public_key,
             receiver_private_key, session, output_path,
         )
-
-
-def decode_carrier(carrier_units: np.ndarray, media_code: int, media_context: bytes, sender_public_key: rsa.RSAPublicKey, receiver_private_key: rsa.RSAPrivateKey) -> VerificationResult:
-    """Recover and verify an encrypted packet using the receiver's private key."""
-    source = ArrayCarrier(_validate_carrier_units(carrier_units))
-    return decode_carrier_source(source, media_code, media_context, sender_public_key, receiver_private_key)
 
 
 def _paths_resolve_same(first_path: str | bytes | PathLike[str], second_path: str | bytes | PathLike[str]) -> bool:

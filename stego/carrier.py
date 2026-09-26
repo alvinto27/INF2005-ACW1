@@ -17,7 +17,6 @@ from .bits import (
     _validate_carrier_units,
     _validate_lsb_count,
     _validate_non_negative_integer,
-    _validate_positive_integer,
     write_lsb_bits,
 )
 
@@ -244,45 +243,3 @@ class CarrierSource(ABC):
         """
         for units in self.iter_chunks():
             yield units, b""
-
-
-class ArrayCarrier(CarrierSource):
-    """Expose an in-memory one-dimensional uint8 array as a carrier source.
-
-    The array is referenced, not copied. The caller must not change it while
-    the carrier is in use.
-    """
-
-    def __init__(self, carrier_units: np.ndarray, chunk_units: int = DEFAULT_CHUNK_BYTES) -> None:
-        """Wrap ``carrier_units`` and yield chunks of ``chunk_units`` units."""
-        self._units = _validate_carrier_units(carrier_units)
-        self._chunk_units = _validate_positive_integer(chunk_units, "chunk_units")
-
-    @property
-    def total_units(self) -> int:
-        """Return the number of units in the wrapped array."""
-        return int(self._units.size)
-
-    def read_units(self, start_unit: int, count: int) -> np.ndarray:
-        """Return a copy of ``count`` units starting at ``start_unit``."""
-        start_unit, count = _validate_unit_range(start_unit, count, self.total_units)
-        return self._units[start_unit:start_unit + count].copy()
-
-    def iter_chunks(self) -> Iterator[np.ndarray]:
-        """Yield copies of consecutive chunks of the wrapped array."""
-        for offset in range(0, self.total_units, self._chunk_units):
-            yield self._units[offset:offset + self._chunk_units].copy()
-
-    def rewrite(self, transform: Callable[[int, np.ndarray], np.ndarray]) -> np.ndarray:
-        """Pass each chunk through ``transform`` in order and return the new array.
-
-        ``transform`` receives the chunk's first global unit index and its
-        original units, and returns the replacement units.
-        """
-        result = np.empty(self.total_units, dtype=np.uint8)
-        offset = 0
-        for chunk in self.iter_chunks():
-            replaced = _validate_transformed_units(transform(offset, chunk), chunk.size)
-            result[offset:offset + chunk.size] = replaced
-            offset += chunk.size
-        return result

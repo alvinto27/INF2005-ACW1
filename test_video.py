@@ -23,7 +23,8 @@ from stego import (
     generate_rsa_keypair,
     prepare_carrier_encoding,
 )
-from stego.carrier import ArrayCarrier, CarrierSource
+from stego.carrier import CarrierSource
+from test_stego import ArrayCarrier
 from stego.core import (
     CarrierEncoding,
     _encode_file_from_payload_path,

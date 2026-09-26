@@ -7,7 +7,7 @@ import tracemalloc
 import unittest
 import wave
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
@@ -21,13 +21,15 @@ from PIL import Image, ImageCms, ImageOps
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 from stego import *
 from stego.carrier import (
     DEFAULT_CHUNK_BYTES,
-    ArrayCarrier,
+    CarrierSource,
     _packed_lsb_range_transform,
+    _validate_transformed_units,
+    _validate_unit_range,
     lsb_range_transform,
 )
 from stego.core import (
@@ -36,10 +38,8 @@ from stego.core import (
     _StagingSession,
     _stream_decrypt,
     _stream_encrypt,
-    decode_carrier,
     decode_carrier_source,
     decode_carrier_source_to_payload_path,
-    encode_carrier,
     prepare_carrier_encoding,
 )
 from stego.layout import MaskedMediaHasher
@@ -49,7 +49,11 @@ from stego.media import (
     encode_wav_media_context,
 )
 from stego.constants import MEDIA_ID_SIZE, RSA_PSS_SALT_LENGTH
-from stego.bits import encode_protocol_field
+from stego.bits import (
+    _validate_carrier_units,
+    _validate_positive_integer,
+    encode_protocol_field,
+)
 from stego.crypto import (
     _sign_digest,
     _verify_digest,
@@ -67,7 +71,75 @@ PRIVATE_KEY = SIGNING_PRIVATE_KEY
 PUBLIC_KEY = SENDER_PUBLIC_KEY
 
 
-def carrier(size=24000):
+class ArrayCarrier(CarrierSource):
+    """Keep an in-memory carrier backend for protocol tests only."""
+
+    def __init__(self, carrier_units: np.ndarray, chunk_units: int = DEFAULT_CHUNK_BYTES) -> None:
+        self._units = _validate_carrier_units(carrier_units)
+        self._chunk_units = _validate_positive_integer(chunk_units, "chunk_units")
+
+    @property
+    def total_units(self) -> int:
+        return int(self._units.size)
+
+    def read_units(self, start_unit: int, count: int) -> np.ndarray:
+        start_unit, count = _validate_unit_range(start_unit, count, self.total_units)
+        return self._units[start_unit:start_unit + count].copy()
+
+    def iter_chunks(self) -> Iterator[np.ndarray]:
+        for offset in range(0, self.total_units, self._chunk_units):
+            yield self._units[offset:offset + self._chunk_units].copy()
+
+    def rewrite(self, transform: Callable[[int, np.ndarray], np.ndarray]) -> np.ndarray:
+        result = np.empty(self.total_units, dtype=np.uint8)
+        offset = 0
+        for chunk in self.iter_chunks():
+            replaced = _validate_transformed_units(transform(offset, chunk), chunk.size)
+            result[offset:offset + chunk.size] = replaced
+            offset += chunk.size
+        return result
+
+
+def encode_carrier(
+    carrier_units: np.ndarray,
+    media_code: int,
+    media_context: bytes,
+    signing_private_key: rsa.RSAPrivateKey,
+    receiver_public_key: rsa.RSAPublicKey,
+    start_unit: int,
+    lsb_count: int,
+    user_payload: bytes,
+    metadata: bytes,
+) -> tuple[np.ndarray, EmbeddingLayout, PayloadRecord]:
+    """Encode test units using the production two-pass protocol encoder."""
+    source = ArrayCarrier(_validate_carrier_units(carrier_units))
+    encoding = prepare_carrier_encoding(
+        source, media_code, media_context, signing_private_key, receiver_public_key,
+        start_unit, lsb_count, user_payload, metadata,
+    )
+    try:
+        encoded = source.rewrite(encoding.embed_chunk)
+        encoding.finish()
+        return encoded, encoding.layout, encoding.payload
+    finally:
+        encoding.close()
+
+
+def decode_carrier(
+    carrier_units: np.ndarray,
+    media_code: int,
+    media_context: bytes,
+    sender_public_key: rsa.RSAPublicKey,
+    receiver_private_key: rsa.RSAPrivateKey,
+) -> VerificationResult:
+    """Verify test units through the production carrier-source decoder."""
+    source = ArrayCarrier(_validate_carrier_units(carrier_units))
+    return decode_carrier_source(
+        source, media_code, media_context, sender_public_key, receiver_private_key
+    )
+
+
+def carrier(size: int = 24000) -> np.ndarray:
     return np.arange(size, dtype=np.uint8)
 
 
