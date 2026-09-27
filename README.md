@@ -116,7 +116,8 @@ plus their payload-file variants. The core provides PNG, WAV, and video
 payload-file encode and verify functions. Source converters accept still
 JPEG, PNG, WebP, GIF, TIFF, BMP, and AVIF images, and audio with exactly one
 mono or stereo audio stream. They create temporary canonical PNG/WAV carriers;
-strict PNG and PCM WAV inputs bypass conversion. Converted snapshots are removed
+strict PNG and PCM WAV inputs bypass conversion. Strict PCM WAV carriers accept
+any positive channel count. Converted snapshots are removed
 when the context or encode call ends. CMYK images are refused because a CMYK ICC
 profile is not valid on an RGB PNG, and colour-managed conversion needs a library
 outside PyAV. See [Source conversion](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md#source-conversion).
