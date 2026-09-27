@@ -215,7 +215,7 @@ class CarrierSource(ABC):
 
     def open_rewritten_output(
         self, path: str | bytes | PathLike[str]
-    ) -> CarrierSource:
+    ) -> "CarrierSource":
         """Open a rewritten carrier for optional read-back validation."""
         raise NotImplementedError("this carrier does not support output checks")
 

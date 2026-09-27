@@ -851,7 +851,7 @@ class VideoCarrier(CarrierSource):
 
     def open_rewritten_output(
         self, path: str | bytes | PathLike[str]
-    ) -> VideoCarrier:
+    ) -> "VideoCarrier":
         """Open a read-back iterator that validates during its single full pass.
 
         The expected context is copied as a comparison target. The output pass

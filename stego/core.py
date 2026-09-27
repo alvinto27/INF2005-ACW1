@@ -282,7 +282,7 @@ class _StagingSession:
             return None
         return Path(self._temporary_directory.name)
 
-    def __enter__(self) -> _StagingSession:
+    def __enter__(self) -> "_StagingSession":
         """Create the private directory when the file backend is selected."""
         if self.file_backed and self._temporary_directory is None:
             self._temporary_directory = tempfile.TemporaryDirectory(
@@ -450,7 +450,7 @@ class CarrierEncoding:
         self._rehash = _new_masked_hasher(media_code, layout, fixed_byte_count)
         self._next_unit = 0
 
-    def __enter__(self) -> CarrierEncoding:
+    def __enter__(self) -> "CarrierEncoding":
         """Return this resource for use in a context manager."""
         return self
 
