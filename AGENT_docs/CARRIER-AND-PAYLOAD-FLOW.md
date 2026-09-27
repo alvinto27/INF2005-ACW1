@@ -208,7 +208,7 @@ The two images have different decoded sizes (480,004,128 and 454,780,524 bytes).
 
 ## 10. Whole-file WAV cap
 
-`WavCarrier` reads whole PCM frames, verifies headers when reopening the file, checks the last declared frame on open, and preserves sample bytes outside the low-byte carrier unit. A short file fails early. File reads and early-end failures become `CarrierAccessError`; verification maps these to `Cannot Verify`. WAV output is a chunked copy of the input file with only the declared samples patched; see [Metadata in the output](#metadata-in-the-output). For a 96 MiB 16-bit stereo WAV, three separate-process encode runs took about 0.3 s with 54 MiB peak RSS, before and after this change. The whole-file `WavPcmData`, `load_pcm_wav_from_path`, and `MAX_WAV_FRAME_BYTES` cap are removed. The optional 72 MiB WAV test passes through the file-backed path with traced peak below 16 MiB.
+`WavCarrier` reads whole PCM frames, verifies headers when reopening the file, checks the last declared frame on open, and preserves sample bytes outside the low-byte carrier unit. A short file fails early. File reads and early-end failures become `CarrierAccessError`; verification maps these to `Cannot Verify`. WAV output is a chunked copy of the input file with only the declared samples patched; see [Metadata in the output](#metadata-in-the-output). For a 96 MiB 16-bit stereo WAV, three separate-process encode runs took about 0.3 s with 54 MiB peak RSS, before and after this change. The whole-file `WavPcmData`, `load_pcm_wav_from_path`, and `MAX_WAV_FRAME_BYTES` cap are removed. The 8 MiB and 64 MiB WAV file-payload tests (`test_stego.py:876, 881`) stay below a 16 MiB traced peak.
 
 Flask has no fixed request-size cap by default. Before reading an encode or verify body, it rejects a declared `Content-Length` greater than the free space in `STEGO_WORK_DIR` minus a 1 GiB margin. Multipart streams and request-scoped temporary files use `STEGO_WORK_DIR`, defaulting to `instance/work` on the same filesystem as carrier outputs; this host uses `/tmp` as a RAM-backed tmpfs. A deployment can still set `MAX_CONTENT_LENGTH`. Encode outputs go to `instance/stego-outputs`; authenticated recovered payloads and sidecars go to `instance/recovered-payloads`. These files have no expiry and users delete them manually. Recovered payloads are plaintext on disk. The service returns URLs, not carrier or payload Base64. Browser responses use `Cache-Control: no-store`.
 
@@ -223,9 +223,9 @@ Flask has no fixed request-size cap by default. Before reading an encode or veri
 
 ## 12. Web boundary follow-up
 
-- Uploads use request-scoped files; keys remain bounded byte inputs. Carrier detection reads the first 12 bytes.
+- Uploads use request-scoped files; keys remain bounded byte inputs. Carrier detection reads a 16-byte signature; when it is not PNG or RIFF/WAVE, it uses PyAV to identify the stream family.
 - Bytes-API encode functions write directly to the output path and remove partial outputs on failure. File-payload encode functions write to staging and publish with `os.replace`.
-- Verification publishes payload bytes only after `Authentic`; MIME sniffing reads at most 12 bytes and UTF-8 validation uses an incremental decoder.
+- Verification publishes payload bytes only after `Authentic`; MIME sniffing reads at most 4 KiB (4,096 bytes) and UTF-8 validation uses an incremental decoder.
 - `/download/<id>.<ext>` and `/payload/<id>` validate identifiers and extensions, stream output, and apply browser safety headers. Failed sidecar creation removes the recovered payload.
 - `Cache-Control: no-store` is retained. Stored files have no expiry.
 

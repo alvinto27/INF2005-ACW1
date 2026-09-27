@@ -28,7 +28,8 @@ bash scripts/install-hooks.sh
 ## State
 
 - This is a standalone Python module repository with no package build configuration or CI workflow.
-- The `stego/` package requires Python 3.10+ and uses PyAV, `cryptography`, and NumPy. Pillow is only for tests and the demonstration notebook.
+- The `stego/` package requires Python 3.12+ and uses PyAV, `cryptography`, and NumPy. Pillow is only for tests and the demonstration notebook.
+- On Python 3.12 and 3.13, importing `stego` currently fails with `NameError: name 'CarrierSource' is not defined` at `stego/carrier.py:218` because of a self-referencing return annotation added in commit `a376ed8`. Python 3.14 is not affected. This known defect does not change the supported Python floor.
 - The active Flask routes use the `stego/` protocol through `stego_web/services/current_protocol.py`; the earlier `STG1` implementation and its web services have been removed.
 - `test_stego.py`, `test_video.py`, and `test_webapp.py` are the active test modules.
 

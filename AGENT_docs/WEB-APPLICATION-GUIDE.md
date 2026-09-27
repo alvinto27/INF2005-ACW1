@@ -39,8 +39,11 @@ changes move focus to the new heading. Form labels, visible focus outlines,
 live progress messages, and text verdicts support keyboard and screen-reader
 use. CSS and the optional GSAP motion layer respect reduced-motion preferences.
 If GSAP is unavailable, the existing local motion helper keeps interactions
-functional. JavaScript is required for the workflow; a `noscript` notice explains
-this. Exported media and recovered payloads remain on disk until deleted.
+functional. Both templates load GSAP 3.15 from `https://cdn.jsdelivr.net` (an
+external request; the rest of the app is local). Without network access or when
+reduced motion is enabled, `motion.js` skips GSAP and the workflow still works.
+JavaScript is required for the workflow; a `noscript` notice explains this.
+Exported media and recovered payloads remain on disk until deleted.
 
 ## Encode request
 

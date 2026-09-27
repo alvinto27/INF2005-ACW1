@@ -24,7 +24,11 @@ to RGBA. The protocol carrier accepts only single-frame 8-bit or 16-bit RGB/RGBA
 PNG images. Its decoded image size cannot exceed 715,827,880 bytes; see [Current
 Protocol](AGENT_docs/CURRENT-PROTOCOL.md) for sample and context rules.
 
-Requires Python 3.10+.
+Requires Python 3.12+ because NumPy 2.5.3 requires it.
+
+On Python 3.12 and 3.13, importing `stego` currently fails with
+`NameError: name 'CarrierSource' is not defined` at `stego/carrier.py:218`.
+Python 3.14 is not affected. This is a known defect, not the supported floor.
 
 ## Setup and run
 
