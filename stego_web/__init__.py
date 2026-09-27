@@ -9,7 +9,6 @@ from pathlib import Path
 from flask import Flask, Request, Response, current_app, jsonify, request
 from werkzeug.exceptions import BadRequest, HTTPException, RequestEntityTooLarge
 
-
 _UPLOAD_DISK_MARGIN = 1024**3
 
 
@@ -47,12 +46,18 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.before_request
     def check_upload_disk_space() -> tuple[Response, int] | None:
-        """Reject uploads that cannot fit with a one-GiB free-space margin."""
+        """Require request length and keep a one-GiB free-space margin."""
         if request.method != "POST" or request.endpoint not in {"web.encode", "web.decode"}:
             return None
         content_length = request.content_length
         if content_length is None:
-            return None
+            body: dict[str, object] = {
+                "ok": False,
+                "error": "Content-Length header is required",
+            }
+            if request.endpoint == "web.decode":
+                body["verdict"] = "Cannot Verify"
+            return jsonify(body), 411
         work_dir = Path(current_app.config["STEGO_WORK_DIR"])
         work_dir.mkdir(parents=True, exist_ok=True)
         available = max(shutil.disk_usage(work_dir).free - _UPLOAD_DISK_MARGIN, 0)

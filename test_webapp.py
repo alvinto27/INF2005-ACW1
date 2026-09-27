@@ -1487,6 +1487,27 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIn("user payload exceeds capacity", response.get_json()["error"])
         self.assertEqual(list(self.output_dir.iterdir()), [])
 
+    def test_request_without_content_length_returns_411_before_disk_check(self) -> None:
+        """Refuse encode and decode requests without parsing their bodies."""
+        with patch("stego_web.shutil.disk_usage") as disk_usage:
+            for path, expected_verdict in (
+                ("/encode", None),
+                ("/decode", "Cannot Verify"),
+            ):
+                response = self.client.open(
+                    path,
+                    method="POST",
+                    data=b"",
+                    environ_overrides={"CONTENT_LENGTH": None},
+                )
+                self.assertEqual(response.status_code, 411)
+                self.assertEqual(
+                    response.get_json()["error"],
+                    "Content-Length header is required",
+                )
+                self.assertEqual(response.get_json().get("verdict"), expected_verdict)
+        disk_usage.assert_not_called()
+
     def test_disk_guard_rejects_upload_before_body_parsing(self) -> None:
         """The free-space check refuses requests above the guarded capacity."""
         with patch("stego_web.shutil.disk_usage") as disk_usage:

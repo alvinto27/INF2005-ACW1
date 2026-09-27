@@ -70,6 +70,7 @@ The route uses these HTTP status codes:
 
 | Condition | HTTP status | Body |
 | --- | --- | --- |
+| The request has no `Content-Length` header | 411 | JSON error with verdict `Cannot Verify` |
 | A required upload or form field is missing or empty, or the upload cannot be saved | 400 | `ok`, `error`, and verdict `Cannot Verify`; no report fields |
 | A key file exceeds 64 KiB | 400 | JSON error with verdict `Cannot Verify` |
 | All fields are present, but the service cannot use them: the carrier is unsupported or unreadable, the sender public key cannot be read, or the receiver private key cannot be opened with the password | 200 | Full report with verdict `Cannot Verify` |
@@ -130,13 +131,14 @@ The `POST /encode` status rules are:
 
 | Condition | HTTP status | Body |
 | --- | --- | --- |
+| The request has no `Content-Length` header | 411 | JSON `error` |
 | Missing fields, unsupported or unreadable source, source conversion refusal, invalid or oversized key files, or layout/capacity failure | 400 | JSON `error`; known source failures keep the library message |
 | Upload exceeds a configured request limit or the free-space guard | 413 | JSON error |
 | Unexpected server failure | 500 | Generic JSON error |
 
 Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the image decoded-byte cap, RIFF-size cap, unsupported video pixel formats, more than two audio channels in converted sources, unsupported lossless audio sample depths, and extra video/audio/subtitle/data streams. Strict PCM WAV carriers accept any positive channel count. Video backend messages are returned for carrier-unit, frame-byte, free-space, and output-size limit failures. The source converter turns RGB PNG `tRNS` colour-key transparency into RGBA alpha. The strict PNG adapter still refuses that input when it is used directly. Unsupported or unreadable files return HTTP 400. `/decode` accepts PNG, PCM WAV, and Matroska video. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
 
-The default `MAX_CONTENT_LENGTH` is `None`; deployments and tests can configure a fixed request cap. Before Flask reads an encode/decode body, it compares `Content-Length` with free space in `STEGO_WORK_DIR` minus a 1 GiB margin. Exceeding that space returns 413 with `upload is larger than the free disk space allows`. Werkzeug's multipart file streams, both route request directories (`inf2005-encode-*` and `inf2005-stego-*`), and converted source snapshots use `STEGO_WORK_DIR`. The default is `instance/work`, on the same filesystem as outputs; do not use `/tmp`, which is a tmpfs RAM disk on this host. Key files have a 64 KiB limit. Other uploads have no fixed application size cap by default, but the free-space guard, configured `MAX_CONTENT_LENGTH`, and backend limits still apply. Backend video limits are:
+The default `MAX_CONTENT_LENGTH` is `None`; deployments and tests can configure a fixed request cap. Before Flask reads an encode/decode body, it requires `Content-Length`; a missing header returns 411. It compares the declared length with free space in `STEGO_WORK_DIR` minus a 1 GiB margin. An upload that does not fit returns 413 with `upload is larger than the free disk space allows`. Werkzeug's multipart file streams, both route request directories (`inf2005-encode-*` and `inf2005-stego-*`), and converted source snapshots use `STEGO_WORK_DIR`. The default is `instance/work`, on the same filesystem as outputs; do not use `/tmp`, which is a tmpfs RAM disk on this host. Key files have a 64 KiB limit. Other uploads have no fixed application size cap by default, but the free-space guard, configured `MAX_CONTENT_LENGTH`, and backend limits still apply. Backend video limits are:
 
 | Limit | Value | Refusal |
 | --- | ---: | --- |
