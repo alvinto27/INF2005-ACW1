@@ -47,7 +47,7 @@ Exported media and recovered payloads remain on disk until deleted.
 
 ## Encode request
 
-`POST /encode` accepts a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or a video container with one real video stream and zero or one audio stream. It also accepts either a message or payload file, required `team_id` and `sender` values, optional additional metadata, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them.
+`POST /encode` accepts a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or a video container with one real video stream and zero or one audio stream. It also accepts either a message or payload file, required `team_id` and `sender` values, optional additional metadata, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them. Each sender or receiver key file can be up to 64 KiB.
 
 Flask saves each request's uploads and working files under `STEGO_WORK_DIR`, defaulting to `instance/work`. This host uses `/tmp` as a RAM-backed filesystem, so multipart uploads and video snapshots must stay on the instance filesystem. The request deletes its temporary directory after success or failure. PyAV multipart file streams are also created in the work directory. PNG and RIFF/WAVE use the fast signature path. For other sources, the service inspects PyAV streams and uses `detect_source_family()` to select an adapter. Strict PNG and PCM WAV carriers bypass conversion and keep their current ancillary data. Key PEMs remain byte inputs.
 
@@ -62,6 +62,8 @@ The adapter calls `open_image_source()` or `open_audio_source()`, then passes th
 - `receiver_private_key`: the intended receiver's encrypted RSA-2048 private PEM; and
 - `receiver_key_password`: the password for that private key.
 
+The sender public key and receiver private key files can each be up to 64 KiB.
+
 The request does not include media type, LSB count, start unit, record length, a shared location secret, or the original cover. The bootstrap supplies geometry and AES session material. Flask stores the upload in the work directory and calls `verify_png_to_payload_path`, `verify_wav_to_payload_path`, or `verify_video_to_payload_path` based on the carrier family.
 
 The route uses these HTTP status codes:
@@ -69,6 +71,7 @@ The route uses these HTTP status codes:
 | Condition | HTTP status | Body |
 | --- | --- | --- |
 | A required upload or form field is missing or empty, or the upload cannot be saved | 400 | `ok`, `error`, and verdict `Cannot Verify`; no report fields |
+| A key file exceeds 64 KiB | 400 | JSON error with verdict `Cannot Verify` |
 | All fields are present, but the service cannot use them: the carrier is unsupported or unreadable, the sender public key cannot be read, or the receiver private key cannot be opened with the password | 200 | Full report with verdict `Cannot Verify` |
 | The receiver private key cannot open the bootstrap | 422 | Full report with verdict `Payload Missing` |
 | Verification completes with any other verdict | 200 | Full report; callers must read the verdict |
@@ -127,13 +130,13 @@ The `POST /encode` status rules are:
 
 | Condition | HTTP status | Body |
 | --- | --- | --- |
-| Missing fields, unsupported or unreadable source, source conversion refusal, invalid keys, or layout/capacity failure | 400 | JSON `error`; known source failures keep the library message |
+| Missing fields, unsupported or unreadable source, source conversion refusal, invalid or oversized key files, or layout/capacity failure | 400 | JSON `error`; known source failures keep the library message |
 | Upload exceeds a configured request limit or the free-space guard | 413 | JSON error |
 | Unexpected server failure | 500 | Generic JSON error |
 
 Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the image decoded-byte cap, RIFF-size cap, unsupported video pixel formats, more than two audio channels, and extra video/audio/subtitle/data streams. Video backend messages are returned for carrier-unit, frame-byte, free-space, and output-size limit failures. The source converter turns RGB PNG `tRNS` colour-key transparency into RGBA alpha. The strict PNG adapter still refuses that input when it is used directly. Unsupported or unreadable files return HTTP 400. `/decode` accepts PNG, PCM WAV, and Matroska video. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
 
-The default `MAX_CONTENT_LENGTH` is `None`; deployments and tests can configure a fixed request cap. Before Flask reads an encode/decode body, it compares `Content-Length` with free space in `STEGO_WORK_DIR` minus a 1 GiB margin. Exceeding that space returns 413 with `upload is larger than the free disk space allows`. Werkzeug's multipart file streams, both route request directories (`inf2005-encode-*` and `inf2005-stego-*`), and converted source snapshots use `STEGO_WORK_DIR`. The default is `instance/work`, on the same filesystem as outputs; do not use `/tmp`, which is a tmpfs RAM disk on this host. There are no additional web upload-size caps. Backend video limits are:
+The default `MAX_CONTENT_LENGTH` is `None`; deployments and tests can configure a fixed request cap. Before Flask reads an encode/decode body, it compares `Content-Length` with free space in `STEGO_WORK_DIR` minus a 1 GiB margin. Exceeding that space returns 413 with `upload is larger than the free disk space allows`. Werkzeug's multipart file streams, both route request directories (`inf2005-encode-*` and `inf2005-stego-*`), and converted source snapshots use `STEGO_WORK_DIR`. The default is `instance/work`, on the same filesystem as outputs; do not use `/tmp`, which is a tmpfs RAM disk on this host. Key files have a 64 KiB limit. Other uploads have no fixed application size cap by default, but the free-space guard, configured `MAX_CONTENT_LENGTH`, and backend limits still apply. Backend video limits are:
 
 | Limit | Value | Refusal |
 | --- | ---: | --- |

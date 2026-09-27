@@ -41,7 +41,7 @@ from stego.sources import (
     _decoded_audio_frames,
     _decoded_image_frames,
 )
-from stego_web import create_app
+from stego_web import create_app, routes
 from stego_web.services.current_protocol import (
     CurrentProtocolService,
     infer_payload_claim,
@@ -1365,6 +1365,108 @@ class WebApplicationTests(unittest.TestCase):
             empty_stego.get_json()["error"], "uploaded file is empty: stego"
         )
         self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_encode_rejects_sender_private_key_over_64_kib(self) -> None:
+        """Reject an oversized sender key before reading it into memory."""
+        limit = 64 * 1024
+        response = self.client.post(
+            "/encode",
+            data={
+                "cover": (io.BytesIO(sample_png()), "cover.png"),
+                "sender_private_key": (io.BytesIO(b"x" * (limit + 1)), "sender.pem"),
+                "sender_key_password": PASSWORD,
+                "receiver_public_key": (
+                    io.BytesIO(self.receiver_public_pem), "receiver.pem"
+                ),
+                "team_id": "P1-4",
+                "sender": "Test User",
+                "secret_message": "message",
+                "start_unit": "2048",
+                "lsb_bits": "1",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "ok": False,
+                "error": (
+                    "uploaded file is too large: sender_private_key "
+                    f"(limit {limit} bytes)"
+                ),
+            },
+        )
+
+    def test_decode_rejects_receiver_private_key_over_64_kib(self) -> None:
+        """Reject an oversized receiver key with the existing decode response."""
+        limit = 64 * 1024
+        response = self.client.post(
+            "/decode",
+            data={
+                "stego": (io.BytesIO(b"not decoded before key loading"), "cover.png"),
+                "sender_public_key": (
+                    io.BytesIO(self.sender_public_pem), "sender.pem"
+                ),
+                "receiver_private_key": (
+                    io.BytesIO(b"x" * (limit + 1)), "receiver.pem"
+                ),
+                "receiver_key_password": PASSWORD,
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "ok": False,
+                "error": (
+                    "uploaded file is too large: receiver_private_key "
+                    f"(limit {limit} bytes)"
+                ),
+                "verdict": "Cannot Verify",
+            },
+        )
+
+    def test_required_upload_without_limit_reads_full_file(self) -> None:
+        """Read the complete multipart upload when no size limit is set."""
+        content = b"the complete cover upload"
+        with self.client.application.test_request_context(
+            "/layout/estimate",
+            method="POST",
+            data={"cover": (io.BytesIO(content), "cover.png")},
+            content_type="multipart/form-data",
+        ):
+            self.assertEqual(
+                routes._required_upload("cover", max_bytes=None), content
+            )
+
+    def test_key_upload_at_64_kib_is_not_refused_for_size(self) -> None:
+        """Accept the size boundary, then report the invalid key itself."""
+        limit = 64 * 1024
+        response = self.client.post(
+            "/encode",
+            data={
+                "cover": (io.BytesIO(sample_png()), "cover.png"),
+                "sender_private_key": (io.BytesIO(b"x" * limit), "sender.pem"),
+                "sender_key_password": PASSWORD,
+                "receiver_public_key": (
+                    io.BytesIO(self.receiver_public_pem), "receiver.pem"
+                ),
+                "team_id": "P1-4",
+                "sender": "Test User",
+                "secret_message": "message",
+                "start_unit": "2048",
+                "lsb_bits": "1",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "sender private key could not be loaded with that password",
+        )
+        self.assertNotIn("uploaded file is too large", response.get_json()["error"])
 
     def test_failed_encode_leaves_no_output_file(self) -> None:
         """An encode refusal removes any incomplete output file."""

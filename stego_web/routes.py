@@ -29,6 +29,7 @@ from .services.current_protocol import (
 web = Blueprint("web", __name__)
 protocol_service = CurrentProtocolService()
 _STEGO_ID = re.compile(r"[A-Za-z0-9_-]{22}\Z")
+_MAX_KEY_UPLOAD_BYTES = 64 * 1024
 _DOWNLOAD_TYPES = {
     "png": "image/png",
     "wav": "audio/wav",
@@ -73,9 +74,13 @@ def encode() -> Response | tuple[Response, int]:
             result = protocol_service.encode(
                 cover_path,
                 output_path,
-                _required_upload("sender_private_key"),
+                _required_upload(
+                    "sender_private_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
+                ),
                 _required_form_value("sender_key_password"),
-                _required_upload("receiver_public_key"),
+                _required_upload(
+                    "receiver_public_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
+                ),
                 _integer_form_value("start_unit", minimum=0),
                 _lsb_bits(),
                 payload_path,
@@ -147,8 +152,10 @@ def estimate_layout() -> Response | tuple[Response, int]:
     try:
         user_payload, payload_mime, payload_name = _payload_input()
         result = protocol_service.estimate_layout(
-            _required_upload("cover"),
-            _required_upload("receiver_public_key"),
+            _required_upload("cover", max_bytes=None),
+            _required_upload(
+                "receiver_public_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
+            ),
             _integer_form_value("start_unit", minimum=0),
             _lsb_bits(),
             user_payload,
@@ -224,8 +231,10 @@ def decode() -> Response | tuple[Response, int]:
             report, recovered_path = protocol_service.verify(
                 stego_path,
                 payload_output_path,
-                _required_upload("sender_public_key"),
-                _required_upload("receiver_private_key"),
+                _required_upload("sender_public_key", max_bytes=_MAX_KEY_UPLOAD_BYTES),
+                _required_upload(
+                    "receiver_private_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
+                ),
                 _required_form_value("receiver_key_password"),
             )
     except (OSError, TypeError, ValueError) as error:
@@ -350,12 +359,19 @@ def _save_carrier_upload(name: str, destination: Path) -> None:
         raise ValueError(f"uploaded file is empty: {name}")
 
 
-def _required_upload(name: str) -> bytes:
-    """Read one required non-empty, non-carrier multipart upload."""
+def _required_upload(name: str, *, max_bytes: int | None) -> bytes:
+    """Read one required non-empty multipart upload with an optional size limit."""
     upload = request.files.get(name)
     if upload is None or not upload.filename:
         raise ValueError(f"missing required upload: {name}")
-    data = upload.read()
+    if max_bytes is None:
+        data = upload.read()
+    else:
+        data = upload.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise ValueError(
+                f"uploaded file is too large: {name} (limit {max_bytes} bytes)"
+            )
     if not data:
         raise ValueError(f"uploaded file is empty: {name}")
     return data
