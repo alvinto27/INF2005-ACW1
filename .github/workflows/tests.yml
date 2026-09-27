@@ -34,5 +34,8 @@ jobs:
       - name: Run tests
         run: python -m unittest -v
 
+      - name: Test browser request handling
+        run: node --test scripts/test-api-js.cjs
+
       - name: Check documentation
         run: python scripts/check-docs.py

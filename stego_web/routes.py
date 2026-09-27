@@ -16,6 +16,7 @@ from flask import (
     send_file,
     url_for,
 )
+from werkzeug.datastructures import FileStorage
 
 from stego import PROTOCOL_VERSION
 
@@ -88,7 +89,7 @@ def encode() -> Response | tuple[Response, int]:
                 payload_name,
                 _required_form_value("team_id"),
                 _required_form_value("sender"),
-                request.form.get("metadata", "").strip(),
+                _optional_form_value("metadata").strip(),
                 detected_source=detected_source,
             )
         payload_fields = protocol_service.payload_record(result.payload)
@@ -124,10 +125,19 @@ def encode() -> Response | tuple[Response, int]:
                 "media-exported",
             ],
         )
-    except (OSError, TypeError, ValueError) as error:
+    except ValueError as error:
         if output_path is not None:
             output_path.unlink(missing_ok=True)
         return _error(str(error), 400)
+    except OSError:
+        if output_path is not None:
+            output_path.unlink(missing_ok=True)
+        current_app.logger.exception("Encode storage failure")
+        return _error("Could not read or store the media. Check available disk space and try again.", 500)
+    except Exception:
+        if output_path is not None:
+            output_path.unlink(missing_ok=True)
+        raise
 
 
 @web.get("/download/<stego_id>.<ext>")
@@ -148,55 +158,15 @@ def download(stego_id: str, ext: str) -> Response | tuple[Response, int]:
 
 @web.post("/layout/estimate")
 def estimate_layout() -> Response | tuple[Response, int]:
-    """Return authoritative packet geometry for the interactive carrier map."""
-    try:
-        user_payload, payload_mime, payload_name = _payload_input()
-        result = protocol_service.estimate_layout(
-            _required_upload("cover", max_bytes=None),
-            _required_upload(
-                "receiver_public_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
-            ),
-            _integer_form_value("start_unit", minimum=0),
-            _lsb_bits(),
-            user_payload,
-            payload_mime,
-            payload_name,
-            _required_form_value("team_id"),
-            _required_form_value("sender"),
-            request.form.get("metadata", "").strip(),
-        )
-    except (OSError, TypeError, ValueError) as error:
-        return _error(str(error), 400)
-
-    layout = result.layout
-    remaining_units = result.total_units - layout.start_unit - layout.footprint
-    return jsonify(
-        ok=True,
-        media_type=result.media_type,
-        total_units=result.total_units,
-        width=result.width,
-        height=result.height,
-        start_unit=layout.start_unit,
-        lsb_bits=layout.lsb_count,
-        bootstrap_span=layout.bootstrap_span,
-        footprint=layout.footprint,
-        packet_end_unit=layout.start_unit + layout.footprint,
-        ciphertext_bytes=layout.ciphertext_length,
-        payload_bytes=result.payload_bytes,
-        capacity_bytes=result.payload_capacity,
-        available_after_start=result.total_units - layout.start_unit,
-        remaining_units=remaining_units,
-        usage_ratio=layout.footprint / result.total_units,
-        preserved_bits=result.preserved_bits,
-        preserved_ratio=result.preserved_ratio,
-    )
+    """Explain that the disconnected carrier-map estimator is unavailable."""
+    return _error("Layout estimation is unavailable; use the manual start unit in the encode wizard.", 503)
 
 
 @web.post("/keys/generate")
 def generate_keys() -> Response | tuple[Response, int]:
     """Generate a sender or receiver RSA pair as an explicit setup action."""
     try:
-        role = request.form.get("role", "key").strip().lower()
+        role = _optional_form_value("role", "key").strip().lower()
         if role not in {"sender", "receiver", "key"}:
             raise ValueError("role must be sender or receiver")
         keys = protocol_service.generate_key_pair(
@@ -237,10 +207,15 @@ def decode() -> Response | tuple[Response, int]:
                 ),
                 _required_form_value("receiver_key_password"),
             )
-    except (OSError, TypeError, ValueError) as error:
+    except ValueError as error:
         if payload_output_path is not None:
             payload_output_path.unlink(missing_ok=True)
         return _error(str(error), 400, "Cannot Verify")
+    except OSError:
+        if payload_output_path is not None:
+            payload_output_path.unlink(missing_ok=True)
+        current_app.logger.exception("Decode storage failure")
+        return _error("Could not read or store the media. Check available disk space and try again.", 500, "Cannot Verify")
     except Exception:
         if payload_output_path is not None:
             payload_output_path.unlink(missing_ok=True)
@@ -255,9 +230,10 @@ def decode() -> Response | tuple[Response, int]:
             _, payload_fields["payload_url"] = _store_recovered_payload(
                 recovered_path, payload_fields
             )
-        except (OSError, TypeError, ValueError) as error:
+        except (OSError, TypeError, ValueError):
             recovered_path.unlink(missing_ok=True)
-            return _error(f"could not store recovered payload: {error}", 500, "Cannot Verify")
+            current_app.logger.exception("Could not publish authenticated payload")
+            return _error("Could not store the verified payload. Check available disk space and try again.", 500, "Cannot Verify")
 
     status = 422 if report["verdict"] == "Payload Missing" else 200
     return jsonify(report), status
@@ -351,9 +327,7 @@ def _new_payload_path(output_dir: Path) -> Path:
 
 def _save_carrier_upload(name: str, destination: Path) -> None:
     """Save a required carrier upload to disk and reject an empty file."""
-    upload = request.files.get(name)
-    if upload is None or not upload.filename:
-        raise ValueError(f"missing required upload: {name}")
+    upload = _single_upload(name)
     upload.save(destination)
     if destination.stat().st_size == 0:
         raise ValueError(f"uploaded file is empty: {name}")
@@ -361,9 +335,7 @@ def _save_carrier_upload(name: str, destination: Path) -> None:
 
 def _required_upload(name: str, *, max_bytes: int | None) -> bytes:
     """Read one required non-empty multipart upload with an optional size limit."""
-    upload = request.files.get(name)
-    if upload is None or not upload.filename:
-        raise ValueError(f"missing required upload: {name}")
+    upload = _single_upload(name)
     if max_bytes is None:
         data = upload.read()
     else:
@@ -377,18 +349,37 @@ def _required_upload(name: str, *, max_bytes: int | None) -> bytes:
     return data
 
 
+def _single_upload(name: str) -> FileStorage:
+    """Require exactly one named file, never silently choose among duplicates."""
+    uploads = request.files.getlist(name)
+    if not uploads or not uploads[0].filename:
+        raise ValueError(f"missing required upload: {name}")
+    if len(uploads) != 1:
+        raise ValueError(f"upload exactly one file: {name}")
+    return uploads[0]
+
+
 def _required_form_value(name: str) -> str:
     """Read one required non-empty form value."""
-    value = request.form.get(name, "").strip()
+    value = _optional_form_value(name).strip()
     if not value:
         raise ValueError(f"missing required field: {name}")
     return value
 
 
+def _optional_form_value(name: str, default: str = "") -> str:
+    """Return one optional form value or reject an ambiguous duplicate."""
+    values = request.form.getlist(name)
+    if len(values) > 1:
+        raise ValueError(f"provide exactly one value: {name}")
+    return values[0] if values else default
+
+
 def _integer_form_value(name: str, minimum: int) -> int:
     """Read a bounded integer form field."""
+    raw = _required_form_value(name)
     try:
-        value = int(request.form.get(name, ""))
+        value = int(raw)
     except ValueError as error:
         raise ValueError(f"{name} must be an integer") from error
     if value < minimum:
@@ -406,8 +397,11 @@ def _lsb_bits() -> int:
 
 def _payload_input(directory: Path) -> tuple[Path, str, str]:
     """Save one uploaded payload or UTF-8 message to a request-scoped file."""
-    upload = request.files.get("payload_file")
-    message = request.form.get("secret_message", "")
+    uploads = request.files.getlist("payload_file")
+    if len(uploads) > 1:
+        raise ValueError("upload exactly one file: payload_file")
+    upload = uploads[0] if uploads else None
+    message = _optional_form_value("secret_message")
     has_upload = upload is not None and bool(upload.filename)
     has_message = bool(message.strip())
     if has_upload and has_message:

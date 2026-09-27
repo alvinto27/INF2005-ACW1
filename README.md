@@ -40,7 +40,13 @@ python -m unittest -v
 python scripts/check-docs.py
 ```
 
-CI runs these same commands on Python 3.12, 3.13, and 3.14.
+CI runs these commands on Python 3.12, 3.13, and 3.14. It also runs the
+dependency-free browser-request boundary test; run it locally if Node is
+available:
+
+```sh
+node --test scripts/test-api-js.cjs
+```
 
 The optional demonstration notebook additionally needs:
 

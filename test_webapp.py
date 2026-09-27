@@ -18,6 +18,7 @@ import numpy as np
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from PIL import Image
+from werkzeug.datastructures import MultiDict
 
 from stego import (
     BOOTSTRAP_LSB_COUNT,
@@ -1233,6 +1234,96 @@ class WebApplicationTests(unittest.TestCase):
             response = self.decode(encoded, "stego.png")
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assertNotIn("sidecar failed", response.get_data(as_text=True))
+        self.assert_no_recovered_payloads()
+
+    def test_large_text_payload_is_download_only(self) -> None:
+        """Avoid reading a multi-megabyte authenticated text payload into the browser."""
+        payload = PayloadRecord(
+            "ID", 0, b"\0" * 16, b"\0" * 32, b"x",
+            b"mime=text/plain;name=large.txt",
+        )
+        path = self.payload_dir / "large.bin"
+        path.write_bytes(b"a" * (1024 * 1024 + 1))
+        details = CurrentProtocolService()._verified_payload(payload, path)
+        self.assertTrue(details["type_agrees"])
+        self.assertFalse(details["preview_allowed"])
+        path.write_bytes(b"a" * (1024 * 1024))
+        self.assertTrue(CurrentProtocolService()._verified_payload(payload, path)["preview_allowed"])
+
+    def test_inactive_layout_estimate_returns_controlled_failure(self) -> None:
+        """The disconnected map API must not raise or mislabel its failure as bad input."""
+        response = self.client.post("/layout/estimate", data={})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["ok"], False)
+        self.assertIn("manual start unit", response.get_json()["error"])
+
+    def test_duplicate_file_and_form_fields_are_rejected(self) -> None:
+        """Multipart duplicates must not silently choose an arbitrary first value."""
+        duplicate = self.client.post(
+            "/decode",
+            data=MultiDict([
+                ("stego", (io.BytesIO(b"one"), "one.png")),
+                ("stego", (io.BytesIO(b"two"), "two.png")),
+            ]),
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(duplicate.get_json()["error"], "upload exactly one file: stego")
+        self.assertEqual(list(self.payload_dir.iterdir()), [])
+        with self.client.application.test_request_context(
+            "/encode", method="POST",
+            data=MultiDict([("team_id", "first"), ("team_id", "second")]),
+        ):
+            with self.assertRaisesRegex(ValueError, "exactly one value: team_id"):
+                routes._required_form_value("team_id")
+        with self.client.application.test_request_context(
+            "/encode", method="POST",
+            data=MultiDict([("start_unit", "2048"), ("start_unit", "2049")]),
+        ):
+            with self.assertRaisesRegex(ValueError, "exactly one value: start_unit"):
+                routes._integer_form_value("start_unit", 0)
+        with self.client.application.test_request_context(
+            "/encode", method="POST",
+            data=MultiDict([("secret_message", "one"), ("secret_message", "two")]),
+        ):
+            with self.assertRaisesRegex(ValueError, "exactly one value: secret_message"):
+                routes._payload_input(self.work_dir)
+
+    def test_bad_numeric_fields_do_not_reach_the_encoder(self) -> None:
+        """Decimal, negative, and out-of-range layout values give controlled errors."""
+        for value, expected in (("1.5", "integer"), ("-1", "at least"), ("9", "between 1 and 8")):
+            with self.subTest(value=value):
+                data = {"start_unit": value, "lsb_bits": "1"}
+                if value == "9":
+                    data = {"start_unit": "2048", "lsb_bits": value}
+                with self.client.application.test_request_context("/encode", method="POST", data=data):
+                    with self.assertRaisesRegex(ValueError, expected):
+                        routes._lsb_bits() if value == "9" else routes._integer_form_value("start_unit", 0)
+
+    def test_encode_storage_failure_is_safe_and_removes_partial_output(self) -> None:
+        """An output-device failure is a 500 without path disclosure or leftover media."""
+        def fail_after_write(*args: object, **kwargs: object) -> None:
+            Path(str(args[1])).write_bytes(b"partial")
+            raise OSError("private path /secret/output")
+
+        with patch("stego_web.routes.protocol_service.encode", side_effect=fail_after_write):
+            response = self.encode(sample_png(), "cover.png")
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("/secret", response.get_data(as_text=True))
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_decode_storage_failure_is_safe_and_removes_partial_payload(self) -> None:
+        """A read/write failure cannot publish a partial plaintext payload."""
+        def fail_after_write(*args: object, **kwargs: object) -> None:
+            Path(str(args[1])).write_bytes(b"partial secret")
+            raise OSError("private path /secret/payload")
+
+        with patch("stego_web.routes.protocol_service.verify", side_effect=fail_after_write):
+            response = self.decode_bytes(sample_png(), "received.png")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assertNotIn("/secret", response.get_data(as_text=True))
         self.assert_no_recovered_payloads()
 
     def test_key_generation_supports_both_roles(self) -> None:

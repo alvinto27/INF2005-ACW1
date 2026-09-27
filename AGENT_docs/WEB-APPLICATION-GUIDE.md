@@ -45,6 +45,16 @@ reduced motion is enabled, `motion.js` skips GSAP and the workflow still works.
 JavaScript is required for the workflow; a `noscript` notice explains this.
 Exported media and recovered payloads remain on disk until deleted.
 
+Both pages use the local `api.js` request boundary for JSON response validation,
+status-specific messages, connection failures, and timeouts. It does not
+automatically retry POST operations. Encode and key generation keep controls
+retryable after failure; encode freezes its form inputs while a request is in
+flight. The browser validates successful response fields and same-origin
+download URLs before showing success. Non-video encode requests time out after
+five minutes; video encode after one hour; key generation after one minute;
+verification after two minutes or 30 minutes for MKV. A browser timeout does
+not prove that server-side processing stopped.
+
 ## Encode request
 
 `POST /encode` accepts a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or a video container with one real video stream and zero or one audio stream. It also accepts either a message or payload file, required `team_id` and `sender` values, optional additional metadata, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them. Each sender or receiver key file can be up to 64 KiB.
@@ -125,7 +135,16 @@ The service reads at most a 4 KiB prefix to recognize preview types; it does not
 | Audio | `audio/wav`, `audio/mpeg`, `audio/ogg`, `audio/flac`, `audio/mp4`, `audio/webm` |
 | Video | `video/mp4`, `video/webm`, `video/ogg` |
 
-The browser uses native image, audio, and video elements for allowed media. WebM is conservatively sniffed as `video/webm`; an audio-only WebM claim does not match that sniff and stays download-only. Matroska, SVG, HTML, XML, PDF, and other non-allowlisted types remain download-only. A signed false MIME claim does not change the cryptographic verdict; the payload is saved but not rendered. The browser inserts response text with `textContent`, prevents duplicate submits, and handles JSON and transport failures.
+The browser uses native image, audio, and video elements for allowed media. Text
+previews are limited to 1 MiB; larger authenticated text remains downloadable.
+Text preview reads are bounded and time out after 30 seconds, with a retry
+control if they fail. WebM is conservatively sniffed as `video/webm`; an
+audio-only WebM claim does not match that sniff and stays download-only.
+Matroska, SVG, HTML, XML, PDF, and other non-allowlisted types remain
+download-only. A signed false MIME claim does not change the cryptographic
+verdict; the payload is saved but not rendered. The browser inserts response
+text with `textContent`, prevents duplicate submits, and handles JSON and
+transport failures.
 
 `GET /payload/<id>` validates the token and sidecar, sets a safe MIME type and download name, and applies `nosniff`, a restrictive Content Security Policy, and `Cache-Control: no-store`. Files have no expiry. Recovered payloads are plaintext on disk; anyone who can read the instance folder can read them. Use host-level access controls outside a trusted localhost deployment.
 
@@ -136,9 +155,9 @@ The `POST /encode` status rules are:
 | Condition | HTTP status | Body |
 | --- | --- | --- |
 | The request has no `Content-Length` header | 411 | JSON `error` |
-| Missing fields, unsupported or unreadable source, source conversion refusal, invalid or oversized key files, or layout/capacity failure | 400 | JSON `error`; known source failures keep the library message |
+| Missing or duplicate fields/files, unsupported or unreadable source, source conversion refusal, invalid or oversized key files, or layout/capacity failure | 400 | JSON `error`; known source failures keep the library message |
 | Upload exceeds a configured request limit or the free-space guard | 413 | JSON error |
-| Unexpected server failure | 500 | Generic JSON error |
+| Storage or unexpected server failure | 500 | Generic JSON error without filesystem details; server logs the exception |
 
 Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the image decoded-byte cap, converted PCM size limit, unsupported video pixel formats, more than two audio channels in converted sources, unsupported lossless audio sample depths, and extra video/audio/subtitle/data streams. Strict PCM WAV carriers accept any positive channel count. Video backend messages are returned for carrier-unit, frame-byte, free-space, and output-size limit failures. The source converter turns RGB PNG `tRNS` colour-key transparency into RGBA alpha. The strict PNG adapter still refuses that input when it is used directly. Unsupported or unreadable files return HTTP 400. `/decode` accepts PNG, PCM WAV, and Matroska video. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
 
@@ -183,7 +202,7 @@ Run `python -m unittest -v`. `test_webapp.py` covers the Flask request/response 
 
 ## Three.js carrier map
 
-**Status: Not connected.** The map assets exist, but the active GUI does not load them, and the estimate route that they call fails. Manual `start_unit` entry is the only working layout control.
+**Status: Not connected.** The map assets exist, but the active GUI does not load them. `POST /layout/estimate` returns a controlled 503 because the estimator service is not implemented. Manual `start_unit` entry is the only working layout control.
 
 ### Current state
 
@@ -202,11 +221,10 @@ they do not prove a working interface.
 
 ### Known gaps
 
-- The map module posts the cover, receiver key, payload, metadata,
-  `start_unit`, and LSB count to `POST /layout/estimate`. The route is declared
-  in `stego_web/routes.py`, but it calls `protocol_service.estimate_layout()`,
-  which does not exist in `CurrentProtocolService`. The call raises an
-  `AttributeError`. The route does not catch it, so Flask returns HTTP 500.
+- The map module is intended to post the cover, receiver key, payload, metadata,
+  `start_unit`, and LSB count to `POST /layout/estimate`. The estimator does not
+  exist in `CurrentProtocolService`. The route reports this explicitly with
+  HTTP 503 instead of attempting the missing call.
 - `index.html` does not load `stego-map.js` and does not contain the map
   controls.
 - The map and geometry assets have no active integration test in

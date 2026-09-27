@@ -34,6 +34,7 @@ from stego.packet import serialized_record_length
 _METADATA_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}\Z")
 _MIME_TYPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*/[A-Za-z0-9][A-Za-z0-9.+-]*\Z")
 _RESERVED_METADATA_KEYS = frozenset({"flow", "team", "sender", "mime", "name"})
+_MAX_TEXT_PREVIEW_BYTES = 1024 * 1024
 _PREVIEW_MIME_TYPES = frozenset(
     {
         "text/plain",
@@ -345,6 +346,7 @@ class CurrentProtocolService:
         safe_name = self.safe_filename(claimed_name or "recovered-payload.bin")
         preview_allowed = bool(
             type_agrees and declared_mime in _PREVIEW_MIME_TYPES
+            and (declared_mime != "text/plain" or payload_path.stat().st_size <= _MAX_TEXT_PREVIEW_BYTES)
         )
         return {
             **self.payload_record(payload),
