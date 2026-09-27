@@ -173,8 +173,8 @@ The optional fixed request cap and the upload free-space guard return 413. `crea
 | FR8 extraction and decoding | Implemented | Receiver private key opens the bootstrap and recovers geometry and AES material. |
 | FR9 hash verification | Implemented | The receiver hashes masked RGB units, RGBA alpha, declared PCM sample bytes, and canonical video/audio data without the original cover. |
 | FR10 verdict generation | Implemented | Protocol verdicts are returned without weaker web-specific substitutes. |
-| FR11 positive and negative cases | Automated coverage present | PNG/WAV round trips, all LSB counts, wrong keys, tampering, MIME mismatch, invalid inputs, and upload limits are tested. Captured demonstration evidence is still needed. |
-| FR12 evidence and reproducibility | Partly implemented | Setup, tests, notebook, and GUI exist. The final submission still needs selected screenshots/logs and sample transfer evidence. |
+| FR11 positive and negative cases | Demonstrated and tested | The notebook shows positive PNG/WAV runs and negative image/audio verdicts, capacity refusals, all LSB counts, and file-payload cases. Tests add wrong-key, tampering, MIME mismatch, invalid-input, upload-limit, and other edge coverage. |
+| FR12 evidence and reproducibility | Partly implemented | Setup, tests, GUI, and an executable notebook provide repeatable evidence. The notebook simulates Party A-to-B folder transfer; live email transfer and the team's final screenshots/logs and submission package remain demo/submission work. |
 | FR13 innovation | Candidate implemented | Receiver-gated location confidentiality and encrypted typed payloads are available; the team must finalize its explanation. |
 
 ## Tests and limits

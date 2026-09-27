@@ -51,16 +51,21 @@ python -m pip install -r requirements-notebook.txt
 The notebook is a human-readable, human-verifiable proof of the end-to-end flow.
 It runs the sender and receiver steps in order. Each step states what to expect
 and prints the evidence beside it, so a reader can check the result without
-reading library code. It shows the main flows: PNG, RGBA
-and WAV encoding and verification, the failure verdicts, typed payloads,
-basic source conversion (JPEG to PNG, MP3 to WAV), and an 8-bit video
-example. It does not show every feature. The tests and the guides in
-`AGENT_docs/` cover the rest, for example 16-bit PNG, metadata that the
-output keeps, EXIF orientation and refused sources, high bit-depth and
-alpha video, the PNG and video payload-file functions, the size limits,
-and the web application. The tests prove individual rules and edge cases. The
-library code, the tests, and those guides are the reference for exact API
-contracts.
+reading library code. It demonstrates PNG (including 16-bit RGB), RGBA and WAV
+encoding and verification, failure verdicts, typed payloads, PNG/WAV payload-file
+flows, assignment payload sizes, all LSB counts from 1 through 8, JPEG-to-PNG and
+MP3-to-WAV conversion, and a short 8-bit video example. It also simulates
+low-space, audio-depth, RIFF-size, and video mux-space refusals without creating
+large files, and prints video limits and cost estimates. Party A-to-Party B
+transfer is a folder simulation; live email transfer remains for demo day.
+
+The notebook does not show every feature. Tests and the guides in `AGENT_docs/`
+cover details it omits, including the decoded-PNG size cap, metadata and EXIF
+handling, refused source formats, high-bit-depth and alpha video, video
+payload-file functions, and the web application. The notebook's storage and
+limit refusals are safe simulations, not tests at the real maximum sizes. The
+tests prove individual rules and edge cases. The library code, tests, and guides
+are the reference for exact API contracts.
 
 ## Web application flow
 
