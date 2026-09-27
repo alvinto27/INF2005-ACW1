@@ -24,6 +24,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
 | Web request contracts, response handling, payload previews, and requirement coverage | [WEB-APPLICATION-GUIDE.md](WEB-APPLICATION-GUIDE.md) |
 | Current and older protocol compatibility | [CURRENT-PROTOCOL.md](CURRENT-PROTOCOL.md#limits-and-compatibility) |
+| Three.js carrier map design and geometry | [STEGANOGRAPHY-MAP.md](STEGANOGRAPHY-MAP.md) |
 
 ## Implementation locations
 
@@ -33,18 +34,16 @@ Use this map before editing an unfamiliar part of the repository.
 | Constants and domain separators | [stego/constants.py](../stego/constants.py) |
 | Validation and LSB primitives | [stego/bits.py](../stego/bits.py) |
 | Public file-backed carrier backends; internal carrier interface and chunk size | [stego/carrier.py](../stego/carrier.py), [stego/media.py](../stego/media.py) |
-| Layout, incremental masked hash (`MaskedMediaHasher`), and signing input | [stego/layout.py](../stego/layout.py) |
+| Layout geometry, carrier capacity, fixed-width protocol fields, incremental masked hash (`MaskedMediaHasher`), and signing input | [stego/layout.py](../stego/layout.py) |
 | Bootstrap envelope and authenticated data | [stego/bootstrap.py](../stego/bootstrap.py) |
 | Payload records and serialisation | [stego/packet.py](../stego/packet.py) |
 | RSA-PSS keys, signatures, fingerprints, and PEM | [stego/crypto.py](../stego/crypto.py) |
-| Carrier capacity and fixed-width protocol fields | [stego/layout.py](../stego/layout.py) |
 | Public `PngCarrier`, `WavCarrier`, WAV header reader, and PNG/WAV file adapters, including the writers that keep PNG ancillary chunks and WAV chunks outside the samples | [stego/media.py](../stego/media.py) |
 | Public image/audio source conversion context managers and encode wrappers; canonical PNG/WAV snapshots | [stego/sources.py](../stego/sources.py) |
 | Public video carrier reader/writer, canonical timing, bounded reads, and video APIs | [stego/video.py](../stego/video.py) |
-| Two-pass encode, receiver-gated verification over a carrier backend, and file wrappers | [stego/core.py](../stego/core.py) |
+| Carrier encoding, receiver-gated verification over a carrier backend, output read-back checks, and file wrappers | [stego/core.py](../stego/core.py) |
 | Flask application factory, work-directory multipart spooling, disk-backed image/audio/video encode and verify routes, validated PNG/WAV/MKV downloads, and `/payload/<id>` recovered-payload downloads; runtime files use `instance/work`, `instance/stego-outputs`, and `instance/recovered-payloads` | [stego_web/__init__.py](../stego_web/__init__.py), [stego_web/routes.py](../stego_web/routes.py) |
-| Flask-to-protocol-v3 streaming file adapter | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
-| Separate full-width encode and verify pages, accessible controllers, page motion, and scroll-triggered protocol diagrams | [index.html](../stego_web/templates/index.html), [verify.html](../stego_web/templates/verify.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), [navigation.js](../stego_web/static/navigation.js), [motion.js](../stego_web/static/motion.js), [feature-motion.js](../stego_web/static/feature-motion.js), and [style.css](../stego_web/static/style.css) |
+| Separate encode and verify pages, seven-step wizard, active browser controllers, protocol diagrams, and unconnected Three.js map assets | [index.html](../stego_web/templates/index.html), [verify.html](../stego_web/templates/verify.html), [app.js](../stego_web/static/app.js), [verify.js](../stego_web/static/verify.js), [stego-map.js](../stego_web/static/stego-map.js), [stego-map-geometry.js](../stego_web/static/stego-map-geometry.js), [navigation.js](../stego_web/static/navigation.js), [motion.js](../stego_web/static/motion.js), [feature-motion.js](../stego_web/static/feature-motion.js), [style.css](../stego_web/static/style.css), and the locally bundled [Three.js files](../stego_web/static/vendor/three/) with [LICENSE](../stego_web/static/vendor/three/LICENSE) and [VERSION.txt](../stego_web/static/vendor/three/VERSION.txt) |
 | Active Flask-to-protocol-v3 service | [stego_web/services/current_protocol.py](../stego_web/services/current_protocol.py) |
 | FR1–FR12 demonstration notebook: running it produces PNG/WAV, source-conversion, and optional video demos, verdict/fidelity evidence, and payload API examples | [notebooks/FR1-12 Prototype.ipynb](../notebooks/FR1-12%20Prototype.ipynb) |
 | Masked-media protocol and chunked-carrier tests | [test_stego.py](../test_stego.py), [test_video.py](../test_video.py) |

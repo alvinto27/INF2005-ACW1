@@ -1,16 +1,40 @@
 # Three.js steganography map
 
-## Purpose
+**Status:** Not connected. The map assets exist, but the active GUI does not load them, and the estimate route that they call fails. Manual `start_unit` entry is the only working layout control.
 
-Step 4 of the encoding wizard includes a technical PNG carrier map. It is a
-progressive enhancement over the existing numeric `start_unit` field: the map
-selects and explains protocol geometry, while the Flask encoder remains the
-only component that validates and writes steganographic data.
+## Current state
 
-The packet format, traversal order, cryptography, verification flow, and WAV
-behavior are unchanged.
+The repository contains `stego_web/static/stego-map.js`,
+`stego_web/static/stego-map-geometry.js`, and locally bundled Three.js files
+under `stego_web/static/vendor/three/`. `VERSION.txt` records version 0.180.0
+(`r180`) and the upstream source. The vendor directory includes its upstream
+MIT `LICENSE`.
 
-## Coordinate and footprint model
+`index.html` does not load these map assets, and the template does not contain
+the controls that the map module expects. The active seven-step wizard uses the
+manual `start_unit` field in Step 4. Therefore, the Three.js map,
+click-to-select behavior, footprint overlays, hover inspector, and difference
+view are not active GUI features. The source files describe an intended map;
+they do not prove a working interface.
+
+## Known gaps
+
+- The map module posts the cover, receiver key, payload, metadata,
+  `start_unit`, and LSB count to `POST /layout/estimate`. The route is declared
+  in `stego_web/routes.py`, but it calls `protocol_service.estimate_layout()`,
+  which does not exist in `CurrentProtocolService`. The call raises an
+  `AttributeError`. The route does not catch it, so Flask returns HTTP 500.
+- `index.html` does not load `stego-map.js` and does not contain the map
+  controls.
+- The map and geometry assets have no active integration test in
+  `test_webapp.py`.
+
+`POST /encode` remains the active validation path.
+
+## Intended geometry (design notes)
+
+These notes describe the intended map. They are not active behavior until the
+gaps above are fixed.
 
 An RGB PNG contributes three carrier units per pixel. For a pixel at `(x, y)`:
 
@@ -20,74 +44,16 @@ start_unit = pixel_index * 3
 total_units = width * height * 3
 ```
 
-Map clicks always select the first channel of a pixel. Manual entry still allows
-an exact channel-level unit. The first 2,048 units are drawn as the receiver
-bootstrap region and map clicks inside that region are rejected. Because unit
-2,048 is the third channel of pixel 682, the first whole pixel that the map can
-select begins at unit 2,049.
+Map clicks select the first channel of a pixel. Manual entry can select any
+exact carrier unit. Units 0–2,047 are reserved for the receiver bootstrap.
+Unit 2,048 is the third channel of pixel 682, so the first whole-pixel map
+selection would be unit 2,049.
 
-The packet remains one contiguous carrier-unit range. The client maps that range
-to at most three overlay meshes: a partial first row, a block of complete rows,
-and a partial final row. It does not create one mesh or DOM element per pixel.
+The packet is one contiguous carrier-unit range. The client maps that range to
+at most three row rectangles: a partial first row, a block of complete rows,
+and a partial final row. WAV covers use linear sample units, not the image map.
 
-## Authoritative layout flow
-
-The browser posts the current cover, receiver public key, payload, metadata,
-`start_unit`, and LSB count to `POST /layout/estimate`. The service uses the same
-strict PNG/WAV loaders, metadata builder, RSA bootstrap sizing,
-`serialized_record_length`, `build_embedding_layout`,
-`max_user_payload_length`, and `preserved_bit_count` calculations as `/encode`.
-
-The response contains non-secret layout information only: carrier dimensions,
-unit counts, packet footprint, payload capacity, remaining units, usage, and
-preserved-bit ratio. The normal `/encode` submission repeats all validation and
-is authoritative. No session key, private key material, or bootstrap plaintext
-is exposed to the viewer.
-
-## Browser components
-
-- `stego-map-geometry.js` contains framework-free coordinate and row-span helpers.
-- `stego-map.js` owns the Three.js scene, texture plane, constrained
-  `OrbitControls`, raycasting, marker, overlays, statistics, and lifecycle.
-- `index.html` contains the Step 4 map, mode controls, inspector, statistics, and
-  the retained manual input.
-- `style.css` supplies the responsive technical-viewer layout.
-- `app.js` emits the successful image result to the optional difference view.
-
-Normal mode keeps the exact footprint subtle. Embedding Map exaggerates the
-same footprint and states that it is not a prediction of visible distortion.
-After a successful PNG encode, Difference mode compares original and stego RGB
-values in browser memory and highlights pixels that changed; this overlay never
-modifies the exported image.
-
-Hovering reports pixel coordinates, row-major pixel index, first carrier unit,
-RGB values, and the three channel bit strings. Changing the existing 1-8 LSB
-control requests fresh authoritative geometry and updates the explanatory bit
-count.
-
-## Progressive enhancement and lifecycle
-
-If Three.js, WebGL, image decoding, or canvas access fails, the manual
-`start_unit` input remains usable and the server still performs normal
-validation. WAV covers never enter the Three.js path and show the manual linear
-sample-unit control.
-
-New covers dispose the prior plane geometry, materials, texture, marker,
-footprint meshes, and difference texture. Resizing uses one `ResizeObserver`;
-hovering reuses one raycaster and the existing image buffer.
-
-## Local dependency
-
-Three.js is bundled under `stego_web/static/vendor/three/`; the application does
-not fetch it from a CDN. `VERSION.txt` records version `0.180.0` (`r180`), the
-retained module and `OrbitControls` files, and their npm source. The upstream MIT
-license is retained beside them.
-
-## Verification
-
-`test_webapp.py` checks the endpoint against real encode geometry, LSB and
-payload-size changes, invalid reserved and end-of-carrier starts, PNG dimensions,
-WAV linear units, and the rendered local-module entry points. When Node.js is
-available, it also imports the real geometry module to test both documented
-coordinate examples, inverse mapping, image corners/Y-axis conversion, the
-bootstrap boundary, and partial-row footprint rectangles.
+The estimate response is intended to contain non-secret layout information
+only: carrier dimensions, unit counts, packet footprint, payload capacity,
+remaining units, usage, and preserved-bit ratio. `POST /encode` repeats all
+validation and is authoritative.

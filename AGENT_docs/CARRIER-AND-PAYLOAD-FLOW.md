@@ -219,7 +219,7 @@ Flask has no fixed request-size cap by default. Before reading an encode or veri
 - GCM emits unauthenticated plaintext before the tag check; private staging and delayed publication are mandatory.
 - Temporary disk space is proportional to encrypted and staged plaintext payload sizes. A crash may leave plaintext staging as described by the cleanup rule.
 - Atomic replacement requires staging and output paths on the same filesystem.
-- The web request limit is 256 MiB; PNG images have a 715,827,880-byte decoded-size cap checked before decode; FFmpeg also receives a format-specific `max_pixels` limit.
+- Flask has no fixed request-size cap by default. Its free-space guard rejects a declared request body that exceeds the free space in `STEGO_WORK_DIR` minus a 1 GiB margin; deployments can set `MAX_CONTENT_LENGTH`. PNG images have a 715,827,880-byte decoded-size cap checked before decode, and FFmpeg also receives a format-specific `max_pixels` limit.
 
 ## 12. Web boundary follow-up
 

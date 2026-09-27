@@ -21,7 +21,8 @@ For repository structure and implementation entry points, see the [Agent Navigat
 - [Current Protocol](CURRENT-PROTOCOL.md) — active version 3 hash, wire format, typed metadata, discovery behavior, verdicts, capacity, and compatibility.
 - [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) — bounded carrier access, payload APIs, staging cleanup, measurements, and file boundary.
 - [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) — approved design, implementation details, test record, and video performance measurements for media code 3 (`VID-`).
-- [Web Application Guide](WEB-APPLICATION-GUIDE.md) — request contracts, response handling, payload previews, and requirement coverage.
+- [Web Application Guide](WEB-APPLICATION-GUIDE.md) — request contracts, response handling, payload previews, the encode wizard, and requirement coverage.
+- [Steganography Map](STEGANOGRAPHY-MAP.md) — Three.js map assets, intended geometry, and the missing GUI and estimate-route integration.
 
 ## Historical records and project status
 

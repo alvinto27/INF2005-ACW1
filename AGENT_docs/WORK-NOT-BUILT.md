@@ -30,7 +30,7 @@ This record lists work that still needs a team decision, demonstration, or imple
 
 ### Repository integration
 
-The `yx` branch has not been merged into `main`. The team must agree on the merge and complete it separately. Do not treat this migration record as a merge decision.
+The GUI redesign is present on `yx` and `Alvin` at commit `3e17ec3` (`Redesign of GUI`). PR #10 (`c259441`) merged the earlier `yx` work into `main`, but `main` does not yet contain this GUI redesign. This status record does not make a merge decision.
 
 ## Known limits
 

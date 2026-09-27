@@ -61,7 +61,7 @@ are the reference for API behaviour, not the notebook.
 Encoding requires:
 
 1. a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or video source with one video stream and zero or one audio stream; the output is lossless PNG, WAV, or FFV1/PCM Matroska (`.mkv`);
-2. either a UTF-8 message or one arbitrary payload file; its MIME and filename claims are generated automatically from the selected input and are read-only in the browser; the server ignores submitted claim overrides;
+2. either a UTF-8 message or one arbitrary payload file, plus required team ID and sender values; its MIME and filename claims are generated automatically from the selected input and are read-only in the browser; the server ignores submitted claim overrides;
 3. an encrypted sender RSA private key and its password;
 4. the intended receiver's RSA public key;
 5. a packet start unit at or after the 2,048-unit RSA-2048 bootstrap span; and
@@ -74,9 +74,10 @@ It constructs typed authenticated metadata, builds the full media hash, encrypts
 record, embeds the receiver bootstrap and packet, and returns the stego media plus
 the sender public key. Payload bytes are processed in bounded chunks.
 
-Verification accepts only the received PNG or WAV stego file, the trusted
-sender public key, and the intended receiver private key/password. The receiver bootstrap
-recovers the start unit, LSB count, record length, and AES session material.
+Verification accepts the received PNG, WAV, or Matroska video stego file, the
+trusted sender public key, and the intended receiver private key and password.
+The receiver bootstrap recovers the start unit, LSB count, record length, and
+AES session material.
 The original cover and the previous shared start-location secret are not inputs.
 
 After an `Authentic` result, the protocol writes only the recovered payload to a
@@ -108,9 +109,11 @@ manually when they are no longer needed.
 ## Protocol API
 
 The public Python API includes `encode_png`, `verify_png`, `encode_wav`,
-`verify_wav`, `PngCarrier`, `WavCarrier`, and the optional source converters
-`open_image_source`, `open_audio_source`, `detect_source_family`, `encode_image`, and `encode_audio`.
-File-payload source helpers are also available. Source converters accept still
+`verify_wav`, `PngCarrier`, `WavCarrier`, `VideoCarrier`, `encode_video`, and
+`verify_video`. It also includes the source helpers `open_image_source`,
+`open_audio_source`, `detect_source_family`, `encode_image`, and `encode_audio`,
+plus their payload-file variants. The core provides PNG, WAV, and video
+payload-file encode and verify functions. Source converters accept still
 JPEG, PNG, WebP, GIF, TIFF, BMP, and AVIF images, and audio with exactly one
 mono or stereo audio stream. They create temporary canonical PNG/WAV carriers;
 strict PNG and PCM WAV inputs bypass conversion. Converted snapshots are removed
@@ -170,4 +173,5 @@ removal record](AGENT_docs/MERGE-LEFTOVER-REMOVAL.md).
 - [Carrier and payload flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md)
 - [Video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md)
 - [Web application guide](AGENT_docs/WEB-APPLICATION-GUIDE.md)
+- [Three.js steganography map](AGENT_docs/STEGANOGRAPHY-MAP.md)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)

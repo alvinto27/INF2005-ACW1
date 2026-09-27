@@ -21,6 +21,13 @@ verification verdict. They are inline decorative SVGs with scroll-triggered
 motion; they require no image downloads or WebGL. Reduced-motion users see them
 without animation.
 
+The encode page has seven steps: Input, Sender, Receiver, Layout, Integrity,
+Protect, and Export. Step 4 currently uses the manual `start_unit` control.
+Three.js carrier-map assets exist, but the template does not load them and the
+map is not part of the active page. A separate `/verify` page handles
+receiver-side verification. See [Steganography Map](STEGANOGRAPHY-MAP.md) for
+the asset status and known gaps.
+
 The existing form field names, request contracts, key-generation controls,
 media previews, downloads, and verdicts remain unchanged. The layout uses four
 feature columns on desktop, two on tablets, and one on phones; workspace forms
@@ -37,7 +44,7 @@ this. Exported media and recovered payloads remain on disk until deleted.
 
 ## Encode request
 
-`POST /encode` accepts a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or a video container with one real video stream and zero or one audio stream. It also accepts a message or payload file, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them.
+`POST /encode` accepts a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or a video container with one real video stream and zero or one audio stream. It also accepts either a message or payload file, required `team_id` and `sender` values, optional additional metadata, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them.
 
 Flask saves each request's uploads and working files under `STEGO_WORK_DIR`, defaulting to `instance/work`. This host uses `/tmp` as a RAM-backed filesystem, so multipart uploads and video snapshots must stay on the instance filesystem. The request deletes its temporary directory after success or failure. PyAV multipart file streams are also created in the work directory. PNG and RIFF/WAVE use the fast signature path. For other sources, the service inspects PyAV streams and uses `detect_source_family()` to select an adapter. Strict PNG and PCM WAV carriers bypass conversion and keep their current ancillary data. Key PEMs remain byte inputs.
 
@@ -149,7 +156,7 @@ The optional fixed request cap and the free-space guard return 413. `create_app(
 | FR6 audio LSB embedding | Implemented | WAV adapter embeds into the low byte of each PCM sample and supports 1–8 LSBs. |
 | FR7 variable start location | Implemented | GUI selects a start unit outside the bootstrap; the encrypted bootstrap carries it. |
 | FR8 extraction and decoding | Implemented | Receiver private key opens the bootstrap and recovers geometry and AES material. |
-| FR9 hash verification | Implemented | The receiver hashes masked RGB units, RGBA alpha, and declared PCM sample bytes without the original cover. |
+| FR9 hash verification | Implemented | The receiver hashes masked RGB units, RGBA alpha, declared PCM sample bytes, and canonical video/audio data without the original cover. |
 | FR10 verdict generation | Implemented | Protocol verdicts are returned without weaker web-specific substitutes. |
 | FR11 positive and negative cases | Automated coverage present | PNG/WAV round trips, all LSB counts, wrong keys, tampering, MIME mismatch, invalid inputs, and upload limits are tested. Captured demonstration evidence is still needed. |
 | FR12 evidence and reproducibility | Partly implemented | Setup, tests, notebook, and GUI exist. The final submission still needs selected screenshots/logs and sample transfer evidence. |
