@@ -887,6 +887,44 @@ class TestPayloadStreaming(unittest.TestCase):
 class TestPng16Bit(unittest.TestCase):
     """Check native-depth PNG carrier values and fixed-byte rules."""
 
+    def test_png_encode_temporary_file_stays_next_to_output(self) -> None:
+        """Do not use the system temporary directory for encoded PNG staging."""
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            output_dir = root / "output"
+            system_tmp = root / "system-tmp"
+            output_dir.mkdir()
+            system_tmp.mkdir()
+            source_path = output_dir / "source.png"
+            output_path = output_dir / "rewritten.png"
+            Image.new("RGB", (32, 32), (10, 20, 30)).save(source_path)
+
+            created_paths: list[Path] = []
+            real_named_temporary_file = tempfile.NamedTemporaryFile
+
+            def record_temporary_file(*args: object, **kwargs: object) -> object:
+                temporary_file = real_named_temporary_file(*args, **kwargs)
+                created_paths.append(Path(temporary_file.name))
+                return temporary_file
+
+            with patch("stego.media.tempfile.tempdir", str(system_tmp)), patch(
+                "stego.media.tempfile.NamedTemporaryFile",
+                side_effect=record_temporary_file,
+            ):
+                PngCarrier(source_path).rewrite_to_path(
+                    output_path, lambda _start, units: units
+                )
+
+            self.assertEqual(len(created_paths), 1)
+            self.assertEqual(created_paths[0].parent, output_dir)
+            self.assertTrue(created_paths[0].name.startswith(".stego-staging-"))
+            self.assertTrue(created_paths[0].name.endswith(".png"))
+            self.assertTrue(output_path.is_file())
+            self.assertEqual(list(system_tmp.iterdir()), [])
+            self.assertFalse(
+                any(path.name.startswith(".stego-staging-") for path in output_dir.iterdir())
+            )
+
     def test_low_byte_units_and_high_bytes_use_numeric_sample_order(self) -> None:
         with TemporaryDirectory() as directory_name:
             path = Path(directory_name) / "known.png"

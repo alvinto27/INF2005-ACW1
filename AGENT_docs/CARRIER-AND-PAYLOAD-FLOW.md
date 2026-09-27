@@ -37,7 +37,7 @@ PNG output uses the PyAV PNG encoder for IHDR, IDAT, and IEND; encoder ancillary
 
 `_PngChunkSplicer` receives bytes from the PyAV PNG encoder, parses the PNG chunks, drops encoder ancillary chunks, and writes the image chunks to the output file. It inserts the copied chunks that came before the first input IDAT immediately before the first new IDAT, and the copied chunks that came after IDAT immediately before IEND. The copied chunks keep their order, data, and CRC; only a replaced `tIME` gets new data and a new CRC. `_utc_now()` supplies the time; tests patch it. The time is read only in the rewrite pass. PyAV ancillary chunks are discarded; unexpected critical chunks cause `ValueError`, so no chunk type is written twice.
 
-The splicer holds only chunk offsets, the new `tIME` chunk, and one copy block, so it does not add a decoded-image copy.
+The splicer holds only chunk offsets, the new `tIME` chunk, and one copy block, so it does not add a decoded-image copy. The PyAV-encoded PNG is first staged in a `.stego-staging-*.png` file beside the output, not in `/tmp`; normal exits remove it. Crash cleanup includes this file.
 
 These rules apply only to encoding. `PngCarrier` loading and verification do not read ancillary chunks. A stego file that later gets a `tRNS` chunk or other metadata verifies as before.
 
