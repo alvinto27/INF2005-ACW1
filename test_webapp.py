@@ -10,6 +10,7 @@ import wave
 import zlib
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import av
@@ -49,6 +50,22 @@ from stego_web.services.current_protocol import (
 
 
 PASSWORD = "test-password"
+
+
+_STORAGE_SPACE_PATCH = patch(
+    "stego.storage.shutil.disk_usage",
+    return_value=SimpleNamespace(free=16 * 1024**3),
+)
+
+
+def setUpModule() -> None:
+    """Give disk-space checks a deterministic default for test fixtures."""
+    _STORAGE_SPACE_PATCH.start()
+
+
+def tearDownModule() -> None:
+    """Restore the real disk-space query after this module's tests."""
+    _STORAGE_SPACE_PATCH.stop()
 
 
 def sample_png() -> bytes:
@@ -1489,7 +1506,7 @@ class WebApplicationTests(unittest.TestCase):
 
     def test_request_without_content_length_returns_411_before_disk_check(self) -> None:
         """Refuse encode and decode requests without parsing their bodies."""
-        with patch("stego_web.shutil.disk_usage") as disk_usage:
+        with patch("stego.storage.shutil.disk_usage") as disk_usage:
             for path, expected_verdict in (
                 ("/encode", None),
                 ("/decode", "Cannot Verify"),
@@ -1510,8 +1527,8 @@ class WebApplicationTests(unittest.TestCase):
 
     def test_disk_guard_rejects_upload_before_body_parsing(self) -> None:
         """The free-space check refuses requests above the guarded capacity."""
-        with patch("stego_web.shutil.disk_usage") as disk_usage:
-            disk_usage.return_value.free = 1024**3 + 10
+        with patch("stego.storage.shutil.disk_usage") as disk_usage:
+            disk_usage.return_value.free = 3 * 1024**3 + 10
             response = self.client.post(
                 "/decode",
                 data={"stego": (io.BytesIO(b"x" * 1024), "cover.mkv")},

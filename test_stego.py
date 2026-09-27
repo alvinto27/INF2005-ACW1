@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import av
@@ -62,6 +63,11 @@ from stego.crypto import (
 from stego.layout import build_embedding_layout, encode_signing_input_prefix
 from stego.packet import parse_payload_from_reader, serialized_record_length
 from stego.sources import _decoded_audio_frames, _decoded_image_frames, detect_source_family
+from stego.storage import (
+    DISK_SPACE_RESERVE_BYTES,
+    _check_free_space,
+    _png_output_size_bound,
+)
 
 
 SIGNING_PRIVATE_KEY, SENDER_PUBLIC_KEY = generate_rsa_keypair()
@@ -69,6 +75,21 @@ RECEIVER_PRIVATE_KEY, RECEIVER_PUBLIC_KEY = generate_rsa_keypair()
 OTHER_PRIVATE_KEY, OTHER_PUBLIC_KEY = generate_rsa_keypair()
 PRIVATE_KEY = SIGNING_PRIVATE_KEY
 PUBLIC_KEY = SENDER_PUBLIC_KEY
+
+_STORAGE_SPACE_PATCH = patch(
+    "stego.storage.shutil.disk_usage",
+    return_value=SimpleNamespace(free=16 * 1024**3),
+)
+
+
+def setUpModule() -> None:
+    """Give disk-space checks a deterministic default for test fixtures."""
+    _STORAGE_SPACE_PATCH.start()
+
+
+def tearDownModule() -> None:
+    """Restore the real disk-space query after this module's tests."""
+    _STORAGE_SPACE_PATCH.stop()
 
 
 class ArrayCarrier(CarrierSource):
@@ -1078,8 +1099,174 @@ class TestPng16Bit(unittest.TestCase):
                     PngCarrier(sixteen_over)
 
 
+class TestStorageChecks(unittest.TestCase):
+    """Check size bounds and preflight for image and audio storage."""
+
+    def test_png_bound_uses_exact_reserve_boundary(self) -> None:
+        """Accept exact space and refuse when free space is one byte lower."""
+        bound = _png_output_size_bound(100, 2, 20)
+        expected = 102 + 5 + 20 + 1024**2
+        self.assertEqual(bound, expected)
+        with patch("stego.storage.shutil.disk_usage") as disk_usage:
+            disk_usage.return_value.free = DISK_SPACE_RESERVE_BYTES + bound
+            _check_free_space(Path("unused"), bound, DISK_SPACE_RESERVE_BYTES, "low")
+            disk_usage.return_value.free -= 1
+            with self.assertRaisesRegex(ValueError, "^low$"):
+                _check_free_space(Path("unused"), bound, DISK_SPACE_RESERVE_BYTES, "low")
+
+    def test_png_output_preflight_counts_staging_and_final_png(self) -> None:
+        """Refuse output unless two PNG bounds and the reserve fit."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.png"
+            output_path = directory / "output.png"
+            Image.fromarray(np.zeros((64, 64, 3), dtype=np.uint8)).save(source_path)
+            source = PngCarrier(source_path)
+            height, width, channels = source._shape
+            bound = _png_output_size_bound(
+                height * width * channels * (source._bit_depth // 8),
+                height,
+                source_path.stat().st_size,
+            )
+            with patch("stego.storage.shutil.disk_usage") as disk_usage:
+                disk_usage.return_value.free = (
+                    DISK_SPACE_RESERVE_BYTES + 2 * bound - 1
+                )
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for image output$"
+                ):
+                    encode_png(
+                        source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                        2048, 3, b"x", b"",
+                    )
+            self.assertFalse(output_path.exists())
+
+    def test_wav_output_preflight_counts_source_file(self) -> None:
+        """Refuse WAV output unless one source-file-size bound fits."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.wav"
+            output_path = directory / "output.wav"
+            write_pcm_wav(source_path, 1, 2, 8000)
+            source_size = source_path.stat().st_size
+            with patch("stego.storage.shutil.disk_usage") as disk_usage:
+                disk_usage.return_value.free = (
+                    DISK_SPACE_RESERVE_BYTES + source_size - 1
+                )
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for audio output$"
+                ):
+                    encode_wav(
+                        source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                        2048, 3, b"payload", b"",
+                    )
+            self.assertFalse(output_path.exists())
+
+    def test_payload_file_size_is_included_before_staging(self) -> None:
+        """Include payload bytes in the output-space preflight."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.wav"
+            payload_path = directory / "payload.bin"
+            output_path = directory / "output.wav"
+            write_pcm_wav(source_path, 1, 2, 8000)
+            payload_path.write_bytes(b"a payload that needs staging")
+            needed_bytes = source_path.stat().st_size + payload_path.stat().st_size
+            with patch("stego.storage.shutil.disk_usage") as disk_usage:
+                disk_usage.return_value.free = DISK_SPACE_RESERVE_BYTES + needed_bytes - 1
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for audio output$"
+                ):
+                    encode_wav_from_payload_path(
+                        source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                        2048, 3, payload_path, b"",
+                    )
+            self.assertFalse(output_path.exists())
+            self.assertEqual(list(directory.glob(".stego-staging-*")), [])
+
+
 class TestSourceConverters(unittest.TestCase):
     """Check snapshot conversion, source rules, cleanup, and metadata handling."""
+
+    def test_image_snapshot_space_is_checked_before_frame_decode(self) -> None:
+        """Refuse image conversion if two bounded PNG files do not fit."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.jpg"
+            Image.fromarray(np.zeros((32, 32, 3), dtype=np.uint8)).save(source_path)
+            with (
+                patch("stego.storage.shutil.disk_usage") as disk_usage,
+                patch(
+                    "stego.sources._decoded_image_frames",
+                    wraps=_decoded_image_frames,
+                ) as decode,
+            ):
+                disk_usage.return_value.free = DISK_SPACE_RESERVE_BYTES
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for image conversion$"
+                ):
+                    with open_image_source(source_path, directory):
+                        self.fail("low disk space must refuse image conversion")
+            decode.assert_not_called()
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_audio_conversion_stops_at_configured_pcm_cap(self) -> None:
+        """Refuse PCM above the configured cap before writing a frame."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.flac"
+            samples = np.arange(4096, dtype=np.int16)
+            write_av_audio(source_path, "flac", "flac", "s16", samples)
+            with patch("stego.sources._MAX_AUDIO_PCM_BYTES", 1, create=True):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^canonical PCM data exceeds configured limit of 1 bytes$",
+                ):
+                    with open_audio_source(source_path, directory):
+                        self.fail("PCM above the cap must be refused")
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_audio_conversion_checks_space_before_first_and_each_64_mib(self) -> None:
+        """Reserve a full interval before writing more decoded PCM."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.flac"
+            samples = np.arange(65_536, dtype=np.int16)
+            write_av_audio(source_path, "flac", "flac", "s16", samples)
+            interval_bytes = 64 * 1024
+            required_bytes = interval_bytes + 44
+            with (
+                patch(
+                    "stego.sources._AUDIO_SPACE_CHECK_INTERVAL_BYTES",
+                    interval_bytes,
+                    create=True,
+                ),
+                patch(
+                    "stego.storage.shutil.disk_usage",
+                    side_effect=(
+                        SimpleNamespace(
+                            free=DISK_SPACE_RESERVE_BYTES + required_bytes
+                        ),
+                        *(
+                            SimpleNamespace(
+                                free=DISK_SPACE_RESERVE_BYTES + interval_bytes // 2
+                            ),
+                        ) * 20,
+                    ),
+                ),
+                patch("stego.sources._check_free_space", wraps=_check_free_space) as check_space,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for audio conversion$"
+                ):
+                    with open_audio_source(source_path, directory):
+                        self.fail("the second low-space check must refuse conversion")
+            self.assertEqual(check_space.call_count, 2)
+            self.assertEqual(
+                [call.args[1] for call in check_space.call_args_list],
+                [required_bytes, required_bytes],
+            )
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
 
     def test_image_source_kinds_and_alpha_channels(self) -> None:
         with TemporaryDirectory() as directory_name:

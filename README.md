@@ -98,10 +98,12 @@ Normal exits remove them. A power loss or `SIGKILL` can leave unauthenticated
 plaintext in these private directories. After a crash, stop the server and
 manually delete `.stego-staging-*` directories under the instance folder.
 
-The local server has no fixed request-size cap by default. It checks free space
-before reading each encode or verify upload, and stores multipart streams and
-request temporary files under `instance/work`, not `/tmp` (a RAM-backed tmpfs on
-this host). A configured `MAX_CONTENT_LENGTH` still applies. Video backend limits
+The local server has no fixed request-size cap by default. It requires
+`Content-Length` and keeps a shared 3 GiB free-space reserve before it reads an
+encode or verify upload. It stores multipart streams and request temporary files
+under `instance/work`, not `/tmp` (a RAM-backed tmpfs on this host). A configured
+`MAX_CONTENT_LENGTH` still applies. Converted audio is limited to 2 GiB of
+canonical PCM data. Video backend limits
 are 4 GiB carrier units, 256 MiB per canonical decoded frame, a 2 GiB output,
 and 3 GiB free disk before encode (plus payload size for file payloads). It stores
 encoded PNG, WAV, and MKV files in `instance/stego-outputs` and returns a download URL instead of sending

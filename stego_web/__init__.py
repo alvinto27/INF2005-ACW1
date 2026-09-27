@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import shutil
 import tempfile
 from pathlib import Path
 
 from flask import Flask, Request, Response, current_app, jsonify, request
 from werkzeug.exceptions import BadRequest, HTTPException, RequestEntityTooLarge
 
-_UPLOAD_DISK_MARGIN = 1024**3
+from stego.storage import DISK_SPACE_RESERVE_BYTES, _check_free_space
 
 
 class WorkDirectoryRequest(Request):
@@ -46,7 +45,7 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.before_request
     def check_upload_disk_space() -> tuple[Response, int] | None:
-        """Require request length and keep a one-GiB free-space margin."""
+        """Require request length and keep the shared free-space reserve."""
         if request.method != "POST" or request.endpoint not in {"web.encode", "web.decode"}:
             return None
         content_length = request.content_length
@@ -60,12 +59,15 @@ def create_app(test_config: dict | None = None) -> Flask:
             return jsonify(body), 411
         work_dir = Path(current_app.config["STEGO_WORK_DIR"])
         work_dir.mkdir(parents=True, exist_ok=True)
-        available = max(shutil.disk_usage(work_dir).free - _UPLOAD_DISK_MARGIN, 0)
-        if content_length > available:
-            return jsonify(
-                ok=False,
-                error="upload is larger than the free disk space allows",
-            ), 413
+        try:
+            _check_free_space(
+                work_dir,
+                content_length,
+                DISK_SPACE_RESERVE_BYTES,
+                "upload is larger than the free disk space allows",
+            )
+        except ValueError as error:
+            return jsonify(ok=False, error=str(error)), 413
         return None
 
     from .routes import web

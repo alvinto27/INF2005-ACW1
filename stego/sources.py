@@ -34,10 +34,18 @@ from .media import (
     WavCarrier,
 )
 from .packet import PayloadFileRecord, PayloadRecord
+from .storage import (
+    DISK_SPACE_RESERVE_BYTES,
+    _check_free_space,
+    _png_output_size_bound,
+)
 from .video import _audio_layout_identities
 
 
 _MAX_RIFF_DATA_BYTES = 0xFFFFFFFF - 36
+_MAX_AUDIO_PCM_BYTES = 2 * 1024**3
+_AUDIO_SPACE_CHECK_INTERVAL_BYTES = 64 * 1024**2
+_WAV_HEADER_BYTES = 44
 _PNG_SIG = b"\x89PNG\r\n\x1a\n"
 _PNG_CORE_CHUNKS = frozenset((b"IHDR", b"IDAT", b"IEND"))
 _PNG_COLOR_CHUNKS = frozenset((b"iCCP", b"cICP", b"sRGB", b"gAMA", b"cHRM", b"mDCV", b"cLLI"))
@@ -614,6 +622,22 @@ def _decoded_image_frames(
     yield from container.decode(stream)
 
 
+def _check_image_snapshot_space(
+    path: Path,
+    snapshot: Path,
+    decoded_bytes: int,
+    height: int,
+) -> None:
+    """Check space for both PNG snapshot files and the shared reserve."""
+    bound = _png_output_size_bound(decoded_bytes, height, path.stat().st_size)
+    _check_free_space(
+        snapshot.parent,
+        2 * bound,
+        DISK_SPACE_RESERVE_BYTES,
+        "insufficient free disk space for image conversion",
+    )
+
+
 def _convert_image(path: Path, snapshot: Path) -> None:
     """Decode one supported image and write its single canonical PNG snapshot."""
     with path.open("rb") as source:
@@ -666,6 +690,8 @@ def _convert_image(path: Path, snapshot: Path) -> None:
             width, height = height, width
         channels = 4 if alpha_from_header else 3
         _pixel_cap(width, height, channels, depth)
+        decoded_bytes = width * height * channels * (depth // 8)
+        _check_image_snapshot_space(path, snapshot, decoded_bytes, height)
     else:
         orientation, has_icc, is_cmyk, alpha_from_header = _image_metadata(path, None)
         _reject_cmyk(is_cmyk)
@@ -710,6 +736,8 @@ def _convert_image(path: Path, snapshot: Path) -> None:
             if signature[:6] in (b"GIF87a", b"GIF89a"):
                 channels = 4 if alpha_from_header else 3
             _pixel_cap(width, height, channels, depth)
+            decoded_bytes = width * height * channels * (depth // 8)
+            _check_image_snapshot_space(path, snapshot, decoded_bytes, height)
         try:
             codec.max_pixels = max(
                 1_000_000,
@@ -968,13 +996,14 @@ def _convert_audio(path: Path, snapshot: Path) -> None:
             else None
         )
         bytes_written = 0
+        last_space_check_bytes: int | None = None
         with wave.open(str(snapshot), "wb") as output:
             output.setnchannels(channels)
             output.setsampwidth(sample_width)
             output.setframerate(rate)
 
             def write_frame(frame: av.AudioFrame) -> None:
-                nonlocal bytes_written
+                nonlocal bytes_written, last_space_check_bytes
                 if frame.sample_rate != rate:
                     raise ValueError("audio sample rate changed during decode")
                 if len(frame.layout.channels) != channels:
@@ -984,8 +1013,29 @@ def _convert_audio(path: Path, snapshot: Path) -> None:
                     if resampler is None
                     else frame.to_ndarray().astype("<i2", copy=False).tobytes()
                 )
+                if bytes_written + len(raw) > _MAX_AUDIO_PCM_BYTES:
+                    raise ValueError(
+                        "canonical PCM data exceeds configured limit of "
+                        f"{_MAX_AUDIO_PCM_BYTES} bytes"
+                    )
                 if bytes_written + len(raw) > _MAX_RIFF_DATA_BYTES:
                     raise ValueError("canonical PCM data exceeds the RIFF 4 GiB limit")
+                if (
+                    last_space_check_bytes is None
+                    or bytes_written - last_space_check_bytes
+                    >= _AUDIO_SPACE_CHECK_INTERVAL_BYTES
+                ):
+                    required_bytes = min(
+                        _AUDIO_SPACE_CHECK_INTERVAL_BYTES,
+                        _MAX_AUDIO_PCM_BYTES - bytes_written,
+                    ) + _WAV_HEADER_BYTES
+                    _check_free_space(
+                        snapshot.parent,
+                        required_bytes,
+                        DISK_SPACE_RESERVE_BYTES,
+                        "insufficient free disk space for audio conversion",
+                    )
+                    last_space_check_bytes = bytes_written
                 output.writeframesraw(raw)
                 bytes_written += len(raw)
 

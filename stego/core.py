@@ -83,6 +83,7 @@ from .packet import (
     parse_payload_from_reader,
     serialized_record_length,
 )
+from .storage import DISK_SPACE_RESERVE_BYTES, _check_free_space, _png_output_size_bound
 
 
 def _validate_carrier_source(source: CarrierSource) -> CarrierSource:
@@ -540,6 +541,36 @@ class CarrierEncoding:
         self._closed = True
 
 
+def _check_file_carrier_output_space(
+    source: CarrierSource,
+    output_path: str | bytes | PathLike[str],
+    additional_required_bytes: int = 0,
+) -> None:
+    """Check the output bound and reserve for a strict PNG or PCM WAV carrier."""
+    destination = Path(os.fsdecode(fspath(output_path)))
+    if isinstance(source, PngCarrier):
+        height, width, channels = source._shape
+        decoded_bytes = height * width * channels * (source._bit_depth // 8)
+        source_path = Path(os.fsdecode(fspath(source.path)))
+        bound = _png_output_size_bound(
+            decoded_bytes, height, source_path.stat().st_size
+        )
+        required_bytes = 2 * bound + additional_required_bytes
+        error_message = "insufficient free disk space for image output"
+    elif isinstance(source, WavCarrier):
+        source_path = Path(os.fsdecode(fspath(source.path)))
+        required_bytes = source_path.stat().st_size + additional_required_bytes
+        error_message = "insufficient free disk space for audio output"
+    else:
+        return
+    _check_free_space(
+        destination.parent,
+        required_bytes,
+        DISK_SPACE_RESERVE_BYTES,
+        error_message,
+    )
+
+
 def _rewrite_checked(
     source: CarrierSource,
     encoding: CarrierEncoding,
@@ -547,6 +578,7 @@ def _rewrite_checked(
 ) -> None:
     """Rewrite one carrier, optionally check its output, then finish encoding."""
     try:
+        _check_file_carrier_output_space(source, path)
         source.rewrite_to_path(
             path, encoding.embed_chunk, encoding.update_fixed_bytes
         )
@@ -1190,6 +1222,7 @@ def _encode_file_from_payload_path(
     payload_file_path = Path(os.fsdecode(fspath(payload_path)))
     payload_size = payload_file_path.stat().st_size
     output_file_path = Path(os.fsdecode(fspath(output_path)))
+    _check_file_carrier_output_space(source, output_file_path, payload_size)
     with _StagingSession(True, output_file_path.parent) as session:
         encoding = _prepare_carrier_encoding(
             source,
