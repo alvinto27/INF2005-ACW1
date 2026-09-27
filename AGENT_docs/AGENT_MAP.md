@@ -52,6 +52,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Required runtime and test dependencies (Pillow is test/notebook-only) | [requirements.txt](../requirements.txt) |
 | Optional demonstration-notebook dependency | [requirements-notebook.txt](../requirements-notebook.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |
+| CI tests and documentation check on Python 3.12–3.14 | [.github/workflows/tests.yml](../.github/workflows/tests.yml) |
 | Git-hook installer | [scripts/install-hooks.sh](../scripts/install-hooks.sh) |
 
 ## Repository boundaries

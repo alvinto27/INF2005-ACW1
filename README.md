@@ -40,6 +40,8 @@ python -m unittest -v
 python scripts/check-docs.py
 ```
 
+CI runs these same commands on Python 3.12, 3.13, and 3.14.
+
 The optional demonstration notebook additionally needs:
 
 ```sh
