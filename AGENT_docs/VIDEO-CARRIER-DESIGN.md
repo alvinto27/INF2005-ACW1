@@ -118,6 +118,8 @@ Implemented resource limits: total carrier units (three RGB low-byte units per p
 
 Before every Matroska packet write, the mux checks free space. It requires the **3 GiB** reserve, the packet size, and **1 MiB** of fixed mux slack. A failed check aborts encoding, closes the output, removes staging, and does not publish the destination. The existing output-size check still runs after every packet write. Linear scaling from the measured 197,180,817-byte, 150-frame encode gives about **900 MB** of FFV1 output at the 1080p maximum; the new **1280 GiB** output cap allows much larger lossless output.
 
+Allowed, but not advised. The limits accept a 10-minute 4K video at 30 fps with 16-bit RGBA. This video has about 1.2 TB of uncompressed image data. The lossless MKV output can be close to that size. To verify the output, you must upload it again, and the upload needs the same space again. Processing can take many hours. A file of this size cannot be sent by email. For demonstrations, use short clips (30 seconds or less at 1080p). The application refuses the encode when free disk space falls below the 3 GiB reserve.
+
 ## Performance evidence and targets
 
 A generated 5-second 1080p, 30-fps H.264/AAC MP4 had 150 frames and size 4,261,819 bytes.

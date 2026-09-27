@@ -112,6 +112,8 @@ encoded PNG, WAV, and MKV files in `instance/stego-outputs` and returns a downlo
 the media as base64. These files also stay without an expiry. Delete them
 manually when they are no longer needed.
 
+Allowed, but not advised. The limits accept a 10-minute 4K video at 30 fps with 16-bit RGBA. This video has about 1.2 TB of uncompressed image data. The lossless MKV output can be close to that size. To verify the output, you must upload it again, and the upload needs the same space again. Processing can take many hours. A file of this size cannot be sent by email. For demonstrations, use short clips (30 seconds or less at 1080p). The application refuses the encode when free disk space falls below the 3 GiB reserve.
+
 ## Protocol API
 
 The public Python API includes `encode_png`, `verify_png`, `encode_wav`,

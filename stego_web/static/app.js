@@ -9,6 +9,10 @@ const coverInput = document.querySelector('#cover-input');
 const coverDrop = document.querySelector('#cover-drop');
 const coverName = document.querySelector('#cover-name');
 const coverMeta = document.querySelector('#cover-meta');
+const DEFAULT_COVER_META =
+  'Maximum upload size is limited by free disk space and the carrier backend.';
+const VIDEO_COVER_WARNING =
+  'Allowed, but not advised: long or 4K videos make very large MKV files and can take hours. Use a short clip for demonstrations.';
 const payloadFile = document.querySelector('#payload-file');
 const secretMessage = document.querySelector('#secret-message');
 const payloadMime = document.querySelector('#payload-mime');
@@ -124,7 +128,7 @@ function handleCoverFile(file) {
   if (!file) {
     coverInput.setCustomValidity('');
     coverName.textContent = 'Drop an image, audio, or video file here';
-    coverMeta.textContent = 'Maximum upload size is limited by free disk space and the carrier backend.';
+    coverMeta.textContent = DEFAULT_COVER_META;
     coverDrop.classList.remove('has-file', 'has-error');
     return;
   }
@@ -132,7 +136,6 @@ function handleCoverFile(file) {
   coverDrop.classList.add('has-file');
   coverDrop.classList.remove('has-error');
   coverName.textContent = file.name;
-  coverMeta.textContent = `${formatBytes(file.size)} - ${file.type || 'type detected by server'}`;
   const extension = file.name.split('.').pop().toLowerCase();
   const fallbackMimes = {
     mp4: 'video/mp4', mov: 'video/quicktime', mkv: 'video/x-matroska',
@@ -141,6 +144,11 @@ function handleCoverFile(file) {
     flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
   };
   const previewMime = file.type || fallbackMimes[extension] || 'image/png';
+  const isVideo = file.type.startsWith('video/')
+    || (fallbackMimes[extension] || '').startsWith('video/');
+  coverMeta.textContent = isVideo
+    ? VIDEO_COVER_WARNING
+    : `${formatBytes(file.size)} - ${file.type || 'type detected by server'}`;
   renderMedia(document.querySelector('#cover-preview'), URL.createObjectURL(file), previewMime, true);
   motion.pulse(coverDrop);
 }

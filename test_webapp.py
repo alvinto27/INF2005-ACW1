@@ -436,6 +436,14 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIn(b'accept=".png,.wav,.mkv,image/png,audio/wav,video/x-matroska" required', verify_page.data)
         app_js = self.client.get("/static/app.js")
         self.assertIn(b"source was converted to a lossless", app_js.data)
+        self.assertIn(
+            b"Allowed, but not advised: long or 4K videos make very large MKV files "
+            b"and can take hours. Use a short clip for demonstrations.",
+            app_js.data,
+        )
+        self.assertIn(b"coverMeta.textContent = DEFAULT_COVER_META", app_js.data)
+        self.assertIn(b"coverMeta.textContent = isVideo", app_js.data)
+        self.assertNotIn(b"coverMeta.innerHTML", app_js.data)
         app_js.close()
 
     def test_16bit_png_cover_works_through_web_routes(self) -> None:
