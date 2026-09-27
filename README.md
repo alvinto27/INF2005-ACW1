@@ -183,8 +183,8 @@ version 1 and version 2 masked-media files are not accepted by the active
 version-3 web routes. A readable version 2 bootstrap returns `Cannot Verify`
 with `unsupported bootstrap version`. The separate legacy `STG1` implementation
 has been removed and is not interoperable with this protocol. See [Protocol
-Compatibility](AGENT_docs/CURRENT-PROTOCOL.md#limits-and-compatibility) and the [merge-leftover
-removal record](AGENT_docs/MERGE-LEFTOVER-REMOVAL.md).
+Compatibility](AGENT_docs/CURRENT-PROTOCOL.md#limits-and-compatibility) and [Repository
+History](AGENT_docs/REPOSITORY-HISTORY.md).
 
 ## Documentation
 
@@ -192,9 +192,10 @@ removal record](AGENT_docs/MERGE-LEFTOVER-REMOVAL.md).
 - [Documentation index](AGENT_docs/README.md)
 - [Agent navigation map](AGENT_docs/AGENT_MAP.md)
 - [Current protocol](AGENT_docs/CURRENT-PROTOCOL.md)
-- [PyAV migration record](AGENT_docs/PYAV-MIGRATION-RECORD.md)
+- [Protocol history](AGENT_docs/PROTOCOL-HISTORY.md)
+- [Repository history](AGENT_docs/REPOSITORY-HISTORY.md)
 - [Carrier and payload flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md)
 - [Video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md)
 - [Web application guide](AGENT_docs/WEB-APPLICATION-GUIDE.md)
-- [Three.js steganography map](AGENT_docs/STEGANOGRAPHY-MAP.md)
+- [Three.js map status and design](AGENT_docs/WEB-APPLICATION-GUIDE.md#threejs-carrier-map)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)

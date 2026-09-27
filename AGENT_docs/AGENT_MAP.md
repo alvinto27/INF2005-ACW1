@@ -13,18 +13,13 @@ Use this map before editing an unfamiliar part of the repository.
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
 | Current version-3 wire format, media hash, typed metadata, discovery, and verdicts | [CURRENT-PROTOCOL.md](CURRENT-PROTOCOL.md#verification-verdicts) |
-| PyAV media migration stages and measured implementation evidence | [PYAV-MIGRATION-RECORD.md](PYAV-MIGRATION-RECORD.md) |
-| Version-1 design history | [PROTOCOL-V1-HISTORY.md](PROTOCOL-V1-HISTORY.md#decisions-and-what-was-rejected) |
-| Removal of imported legacy files, the old `STG1` stack, and duplicate assignment PDF | [MERGE-LEFTOVER-REMOVAL.md](MERGE-LEFTOVER-REMOVAL.md) |
-| Historical protocol version 2 design; stages 0 through 6b complete; 6c cancelled | [LOCATION-CONFIDENTIALITY-PLAN.md](LOCATION-CONFIDENTIALITY-PLAN.md) |
-| Completed version 2 stage outcomes and measurements | [PROTOCOL-V2-STAGE-RECORD.md](PROTOCOL-V2-STAGE-RECORD.md) |
+| Protocol design history: v1, v2 plan and stages, KISS reduction, and transition to v3 | [PROTOCOL-HISTORY.md](PROTOCOL-HISTORY.md) |
+| PyAV media migration and imported-legacy cleanup history | [REPOSITORY-HISTORY.md](REPOSITORY-HISTORY.md) |
 | Chunked carrier access, payload APIs, staging cleanup, measurements, and known limits | [CARRIER-AND-PAYLOAD-FLOW.md](CARRIER-AND-PAYLOAD-FLOW.md#4-protocol-flow) |
 | Video carrier design, implementation details, and measurements | [VIDEO-CARRIER-DESIGN.md](VIDEO-CARRIER-DESIGN.md) |
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
-| Reduction specification and outcome | [REDUCTION-SPEC.md](REDUCTION-SPEC.md), [KISS-REDUCTION-RECORD.md](KISS-REDUCTION-RECORD.md) |
-| Web request contracts, response handling, payload previews, and requirement coverage | [WEB-APPLICATION-GUIDE.md](WEB-APPLICATION-GUIDE.md) |
+| Web request contracts, response handling, payload previews, requirement coverage, and disconnected Three.js map status/design | [WEB-APPLICATION-GUIDE.md](WEB-APPLICATION-GUIDE.md#threejs-carrier-map) |
 | Current and older protocol compatibility | [CURRENT-PROTOCOL.md](CURRENT-PROTOCOL.md#limits-and-compatibility) |
-| Three.js carrier map design and geometry | [STEGANOGRAPHY-MAP.md](STEGANOGRAPHY-MAP.md) |
 
 ## Implementation locations
 

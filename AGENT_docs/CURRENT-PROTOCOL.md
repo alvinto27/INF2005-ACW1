@@ -1,6 +1,6 @@
 # Current Protocol
 
-**Status:** Protocol version 3 is implemented. This file is the source of truth for the current masked-media wire format, security checks, compatibility, and typed-payload rules. Historical version 1 decisions are in [Protocol Version 1 History](PROTOCOL-V1-HISTORY.md).
+**Status:** Protocol version 3 is implemented. This file is the source of truth for the current masked-media wire format, security checks, compatibility, and typed-payload rules. Historical version 1 decisions are in [Protocol History](PROTOCOL-HISTORY.md#version-1-integrity-protocol).
 
 ## Overview
 
@@ -176,5 +176,5 @@ The bootstrap plaintext is 62 bytes and GCM additional data is 18 bytes. Minimum
 - Transparent RGBA pixel colour can change even when alpha is zero. The strict PNG adapter refuses an RGB PNG with a `tRNS` colour key, because embedding can move pixels onto or off the key colour. The source converter can turn the key into RGBA alpha before encoding. PNG ancillary data, including text, `eXIf`, `iCCP`, and `tRNS`, and WAV data outside declared PCM samples, such as `LIST` chunks, are outside the hash. Verification does not read them, so a `tRNS` chunk added after encoding does not change the verdict. The output keeps this metadata, but anyone can change it and the verdict stays `Authentic`. Do not use it as evidence.
 - Verification reads a file more than once. A file changed during verification can produce a verdict that combines two file states. Timestamps and nonces alone do not prevent replay.
 - A wrong receiver key and an absent payload share one verdict. The sender public key must be trusted through a separate method.
-- Version 1 and version 2 masked-media files are not accepted. A readable version 2 bootstrap returns `Cannot Verify`; the verifier does not retry. The old `STG1` format was a separate protocol and was not interoperable; its code and tests have been removed. See the [removal record](MERGE-LEFTOVER-REMOVAL.md).
+- Version 1 and version 2 masked-media files are not accepted. A readable version 2 bootstrap returns `Cannot Verify`; the verifier does not retry. The old `STG1` format was a separate protocol and was not interoperable; its code and tests have been removed. See [Repository History](REPOSITORY-HISTORY.md) for the removal record.
 - The protocol does not implement key management, a trust store, PKI, networking, replay protection, public-key-only verification, or automatic packet discovery.
