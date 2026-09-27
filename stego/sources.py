@@ -42,8 +42,9 @@ from .storage import (
 from .video import _audio_layout_identities
 
 
-_MAX_RIFF_DATA_BYTES = 0xFFFFFFFF - 36
-_MAX_AUDIO_PCM_BYTES = 2 * 1024**3
+# RIFF size is 36 + PCM data and must fit u32; round down to 8 bytes,
+# the largest canonical frame (stereo x 32-bit samples).
+_MAX_AUDIO_PCM_BYTES = 0xFFFFFFFF - 36 - 3
 _AUDIO_SPACE_CHECK_INTERVAL_BYTES = 64 * 1024**2
 _WAV_HEADER_BYTES = 44
 _PNG_SIG = b"\x89PNG\r\n\x1a\n"
@@ -1018,8 +1019,6 @@ def _convert_audio(path: Path, snapshot: Path) -> None:
                         "canonical PCM data exceeds configured limit of "
                         f"{_MAX_AUDIO_PCM_BYTES} bytes"
                     )
-                if bytes_written + len(raw) > _MAX_RIFF_DATA_BYTES:
-                    raise ValueError("canonical PCM data exceeds the RIFF 4 GiB limit")
                 if (
                     last_space_check_bytes is None
                     or bytes_written - last_space_check_bytes

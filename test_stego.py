@@ -62,7 +62,12 @@ from stego.crypto import (
 )
 from stego.layout import build_embedding_layout, encode_signing_input_prefix
 from stego.packet import parse_payload_from_reader, serialized_record_length
-from stego.sources import _decoded_audio_frames, _decoded_image_frames, detect_source_family
+from stego.sources import (
+    _MAX_AUDIO_PCM_BYTES,
+    _decoded_audio_frames,
+    _decoded_image_frames,
+    detect_source_family,
+)
 from stego.storage import (
     DISK_SPACE_RESERVE_BYTES,
     _check_free_space,
@@ -1102,6 +1107,11 @@ class TestPng16Bit(unittest.TestCase):
 class TestStorageChecks(unittest.TestCase):
     """Check size bounds and preflight for image and audio storage."""
 
+    def test_audio_pcm_cap_is_the_largest_aligned_riff_data_size(self) -> None:
+        self.assertEqual(_MAX_AUDIO_PCM_BYTES % 8, 0)
+        self.assertLessEqual(36 + _MAX_AUDIO_PCM_BYTES, 0xFFFFFFFF)
+        self.assertGreater(36 + _MAX_AUDIO_PCM_BYTES + 8, 0xFFFFFFFF)
+
     def test_png_bound_uses_exact_reserve_boundary(self) -> None:
         """Accept exact space and refuse when free space is one byte lower."""
         bound = _png_output_size_bound(100, 2, 20)
@@ -1217,7 +1227,7 @@ class TestSourceConverters(unittest.TestCase):
             source_path = directory / "source.flac"
             samples = np.arange(4096, dtype=np.int16)
             write_av_audio(source_path, "flac", "flac", "s16", samples)
-            with patch("stego.sources._MAX_AUDIO_PCM_BYTES", 1, create=True):
+            with patch("stego.sources._MAX_AUDIO_PCM_BYTES", 1):
                 with self.assertRaisesRegex(
                     ValueError,
                     "^canonical PCM data exceeds configured limit of 1 bytes$",
@@ -1827,7 +1837,7 @@ class TestSourceConverters(unittest.TestCase):
                 with open_audio_source(surround_path, directory):
                     self.fail("more than two channels must be refused")
 
-    def test_audio_decode_once_riff_cap_cleanup_and_payload_wrapper(self) -> None:
+    def test_audio_decode_once_cleanup_and_payload_wrapper(self) -> None:
         with TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
             source_path = directory / "source.mp3"
@@ -1840,12 +1850,6 @@ class TestSourceConverters(unittest.TestCase):
                     self.assertGreater(source.total_units, 0)
                 self.assertFalse(snapshot_path.exists())
                 self.assertEqual(decode.call_count, 1)
-
-            with patch("stego.sources._MAX_RIFF_DATA_BYTES", 1):
-                with self.assertRaisesRegex(ValueError, "RIFF 4 GiB limit"):
-                    with open_audio_source(source_path, directory):
-                        self.fail("patched RIFF limit must refuse")
-            self.assertEqual(list(directory.glob(".stego-source-*")), [])
 
             payload_path = directory / "payload.bin"
             payload_path.write_bytes(b"payload file")

@@ -102,8 +102,13 @@ The local server has no fixed request-size cap by default. It requires
 `Content-Length` and keeps a shared 3 GiB free-space reserve before it reads an
 encode or verify upload. It stores multipart streams and request temporary files
 under `instance/work`, not `/tmp` (a RAM-backed tmpfs on this host). A configured
-`MAX_CONTENT_LENGTH` still applies. Converted audio is limited to 2 GiB of
-canonical PCM data. Video backend limits are 512 Gi carrier units, 256 MiB per
+`MAX_CONTENT_LENGTH` still applies. Converted audio can hold up to
+4,294,967,256 bytes of PCM data, the largest size that a standard WAV file can
+record. Allowed, but not advised. A WAV file larger than 2 GiB can fail to open
+in some older audio programs, because they read the WAV size field as a signed
+number. The application reads it correctly. Such a file also needs about 8 GiB
+of disk during encoding (converted copy plus output) and cannot be sent by
+email. Video backend limits are 512 Gi carrier units, 256 MiB per
 canonical decoded frame, a 1280 GiB (1.25 TiB) output, and a 3 GiB free-space
 reserve before encode (plus payload size for file payloads). Before each
 Matroska packet write, the encoder also checks room for that packet and 1 MiB of
