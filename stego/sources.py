@@ -955,12 +955,17 @@ def _convert_audio(path: Path, snapshot: Path) -> None:
         identities = _audio_layout_identities(codec.layout)
         channels = len(identities)
         width = _audio_integer_width(stream)
-        if width not in (8, 16, 24, 32):
+        if width is not None and width > 16 and width not in (24, 32):
+            raise ValueError(f"unsupported lossless audio sample depth: {width} bits")
+        resampler_needed = width not in (8, 16, 24, 32)
+        if resampler_needed:
             width = 16
         sample_width = width // 8
         layout = "mono" if channels == 1 else "stereo"
-        resampler = None if _audio_integer_width(stream) in (8, 16, 24, 32) else av.AudioResampler(
-            format="s16", layout=layout, rate=rate
+        resampler = (
+            av.AudioResampler(format="s16", layout=layout, rate=rate)
+            if resampler_needed
+            else None
         )
         bytes_written = 0
         with wave.open(str(snapshot), "wb") as output:

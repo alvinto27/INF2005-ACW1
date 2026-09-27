@@ -572,6 +572,16 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "Authentic")
         self.assertEqual(self.get_payload(report["payload"]).get_data(), b"mp3 payload")
 
+    def test_lossless_audio_depth_refusal_returns_http_400(self) -> None:
+        """Expose the source converter's lossless-depth refusal to the client."""
+        with patch("stego.sources._audio_integer_width", return_value=20):
+            response = self.encode(sample_mp3(), "cover.mp3")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "unsupported lossless audio sample depth: 20 bits",
+        )
+
     def test_video_cover_with_audio_encodes_and_verifies(self) -> None:
         """Video with audio uses a Matroska output and recovers the exact payload."""
         payload = b"payload for video carrier"

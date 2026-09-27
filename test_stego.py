@@ -1463,6 +1463,42 @@ class TestSourceConverters(unittest.TestCase):
             self.assertIn(b"LIST", wav_output.read_bytes())
             self.assertEqual(list(directory.glob(".stego-source-*")), [])
 
+    def test_unsupported_lossless_audio_depth_is_refused(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "lossless.flac"
+            write_av_audio(
+                source_path,
+                "flac",
+                "flac",
+                "s16",
+                np.array([[-12000, -1, 0, 1, 12000]], dtype=np.int16),
+            )
+            with patch("stego.sources._audio_integer_width", return_value=20) as depth:
+                with self.assertRaisesRegex(
+                    ValueError, "unsupported lossless audio sample depth: 20 bits"
+                ):
+                    with open_audio_source(source_path, directory):
+                        self.fail("unsupported lossless sample depth must be refused")
+            depth.assert_called_once()
+
+    def test_12_bit_lossless_audio_converts_to_16_bit_wav(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "lossless.flac"
+            values = np.array([[-2048, -1, 0, 1, 2047]], dtype=np.int16)
+            write_av_audio(source_path, "flac", "flac", "s16", values)
+            with patch("stego.sources._audio_integer_width", return_value=12) as depth:
+                with open_audio_source(source_path, directory) as source:
+                    self.assertEqual(source.info.sample_width, 2)
+                    with wave.open(str(source.path), "rb") as audio:
+                        self.assertEqual(audio.getsampwidth(), 2)
+                        actual = np.frombuffer(
+                            audio.readframes(audio.getnframes()), dtype="<i2"
+                        )
+                self.assertTrue(np.array_equal(actual, values.reshape(-1)))
+            depth.assert_called_once()
+
     def test_lossless_audio_widths_and_exact_signed_samples(self) -> None:
         with TemporaryDirectory() as directory_name:
             directory = Path(directory_name)

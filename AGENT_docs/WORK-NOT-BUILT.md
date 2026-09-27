@@ -5,7 +5,7 @@ This record lists work that still needs a team decision, demonstration, or imple
 ## Built now
 
 - The Flask application uses protocol version 3. It accepts common still-image, audio, and video sources for encode and writes canonical PNG, WAV, or FFV1/PCM Matroska. Strict PNG and PCM WAV inputs bypass conversion. Verification accepts PNG, WAV, and Matroska video carriers.
-- The source converter uses PyAV. It supports PNG, JPEG, WebP, AVIF, BMP, TIFF, and GIF images, with documented depth, frame, size, metadata, EXIF, ICC, and CMYK rules. It supports audio sources with exactly one mono or stereo stream. Lossless integer sample widths are kept. Lossy or floating-point audio becomes 16-bit PCM. The converter keeps all decoded samples, including codec delay or padding.
+- The source converter uses PyAV. It supports PNG, JPEG, WebP, AVIF, BMP, TIFF, and GIF images, with documented depth, frame, size, metadata, EXIF, ICC, and CMYK rules. It supports audio sources with exactly one mono or stereo stream. Lossless 8-, 16-, 24-, and 32-bit samples are kept. Lossless depths below 16 bits become 16-bit PCM without loss; other lossless depths above 16 bits are refused. Lossy or floating-point audio becomes 16-bit PCM. The converter keeps all decoded samples, including codec delay or padding.
 - The library, notebook, and Flask application support the optional video carrier.
 - The protocol encrypts and signs typed payload records. The web app returns authenticated payloads only after verification and MIME checks. Current response rules and previews are in the [Web Application Guide](WEB-APPLICATION-GUIDE.md).
 - Pillow is not used by the application. It is used only by tests and the demonstration notebook.
