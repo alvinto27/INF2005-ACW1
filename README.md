@@ -103,9 +103,11 @@ The local server has no fixed request-size cap by default. It requires
 encode or verify upload. It stores multipart streams and request temporary files
 under `instance/work`, not `/tmp` (a RAM-backed tmpfs on this host). A configured
 `MAX_CONTENT_LENGTH` still applies. Converted audio is limited to 2 GiB of
-canonical PCM data. Video backend limits
-are 4 GiB carrier units, 256 MiB per canonical decoded frame, a 2 GiB output,
-and 3 GiB free disk before encode (plus payload size for file payloads). It stores
+canonical PCM data. Video backend limits are 512 Gi carrier units, 256 MiB per
+canonical decoded frame, a 1280 GiB (1.25 TiB) output, and a 3 GiB free-space
+reserve before encode (plus payload size for file payloads). Before each
+Matroska packet write, the encoder also checks room for that packet and 1 MiB of
+mux slack above the reserve. It stores
 encoded PNG, WAV, and MKV files in `instance/stego-outputs` and returns a download URL instead of sending
 the media as base64. These files also stay without an expiry. Delete them
 manually when they are no longer needed.

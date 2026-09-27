@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import numpy as np
+import stego.video as video
 
 from stego import (
     VIDEO_MEDIA_CODE,
@@ -1451,6 +1452,64 @@ class VideoCarrierReadTests(unittest.TestCase):
                 ):
                     VideoCarrier(path)
 
+    def test_video_limits_match_requested_4k_duration_and_output_bound(self) -> None:
+        self.assertEqual(video._MAX_CARRIER_UNITS, 512 * 1024**3)
+        self.assertEqual(video._MAX_FRAME_BYTES, 256 * 1024**2)
+        self.assertEqual(video._MAX_OUTPUT_BYTES, 1280 * 1024**3)
+
+    def test_mux_space_check_adds_packet_size_and_fixed_slack(self) -> None:
+        destination = Path("output.mkv")
+        packet_size = 12_345
+        with patch("stego.video._check_video_output_resources") as check:
+            video._check_video_mux_space(destination, packet_size)
+        check.assert_called_once_with(
+            destination, packet_size + video._MUX_SPACE_SLACK_BYTES
+        )
+
+    def test_low_space_during_mux_removes_stage_and_does_not_publish(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.mp4"
+            output_path = root / "late-insufficient-space.mkv"
+            mux_slack_bytes = 1024**2
+            make_tiny_clip(source_path)
+            with (
+                patch("stego.video._MIN_FREE_BYTES", 4096),
+                patch(
+                    "stego.storage.shutil.disk_usage",
+                    side_effect=(
+                        SimpleNamespace(free=10 * 1024**2),
+                        SimpleNamespace(free=10 * 1024**2),
+                        SimpleNamespace(
+                            free=4096 + mux_slack_bytes
+                        ),
+                    ),
+                ) as disk_usage,
+                patch(
+                    "stego.video._check_video_output_resources",
+                    wraps=video._check_video_output_resources,
+                ) as check_resources,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for video output$"
+                ):
+                    encode_video(
+                        source_path,
+                        output_path,
+                        SIGNING_PRIVATE_KEY,
+                        RECEIVER_PUBLIC_KEY,
+                        bootstrap_span(RECEIVER_PUBLIC_KEY),
+                        3,
+                        b"mux reserve",
+                        b"{}",
+                    )
+            self.assertEqual(disk_usage.call_count, 3)
+            self.assertEqual(check_resources.call_count, 3)
+            self.assertGreater(check_resources.call_args_list[1].args[1], mux_slack_bytes)
+            self.assertGreater(check_resources.call_args_list[2].args[1], mux_slack_bytes)
+            self.assertFalse(output_path.exists())
+            self.assertEqual(list(root.glob(".stego-staging-*")), [])
+
     def test_video_beyond_previous_frame_and_duration_limits_round_trips(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1512,11 +1571,16 @@ class VideoCarrierReadTests(unittest.TestCase):
             make_tiny_clip(source_path)
             payload_path.write_bytes(b"p" * 100)
 
+            disk_usage_calls = 0
+
             def disk_usage(_path: str | bytes | PathLike[str]) -> SimpleNamespace:
-                return SimpleNamespace(total=10_000, used=9_950, free=50)
+                nonlocal disk_usage_calls
+                disk_usage_calls += 1
+                free_bytes = 50 if disk_usage_calls == 1 else 10 * 1024**2
+                return SimpleNamespace(total=10_000, used=9_950, free=free_bytes)
 
             with patch("stego.video._MIN_FREE_BYTES", 10), patch(
-                "stego.video.shutil.disk_usage", side_effect=disk_usage
+                "stego.storage.shutil.disk_usage", side_effect=disk_usage
             ):
                 with self.assertRaisesRegex(
                     ValueError, "insufficient free disk space for video output"
@@ -1565,7 +1629,8 @@ class VideoCarrierReadTests(unittest.TestCase):
             make_tiny_clip(source_path)
             source = VideoCarrier(source_path)
             try:
-                source.rewrite_to_path(output_path, lambda _offset, units: units)
+                with patch("stego.video._MIN_FREE_BYTES", 0):
+                    source.rewrite_to_path(output_path, lambda _offset, units: units)
             finally:
                 source.close()
 
@@ -1867,7 +1932,8 @@ class VideoCarrierReadTests(unittest.TestCase):
             make_h264_aac(source_path, frame_count=3, audio_frames=48_000)
             source = VideoCarrier(source_path)
             try:
-                source.rewrite_to_path(rewritten_path, lambda _offset, units: units)
+                with patch("stego.video._MIN_FREE_BYTES", 0):
+                    source.rewrite_to_path(rewritten_path, lambda _offset, units: units)
             finally:
                 source.close()
 
@@ -1893,7 +1959,8 @@ class VideoCarrierReadTests(unittest.TestCase):
             second_rewrite = root / "rewritten-again.mkv"
             carrier = VideoCarrier(rewritten_path)
             try:
-                carrier.rewrite_to_path(second_rewrite, lambda _offset, units: units)
+                with patch("stego.video._MIN_FREE_BYTES", 0):
+                    carrier.rewrite_to_path(second_rewrite, lambda _offset, units: units)
             finally:
                 carrier.close()
             self.assertTrue(np.array_equal(source_samples, audio_s16(second_rewrite)))

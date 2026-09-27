@@ -1,7 +1,6 @@
 """Read a bounded, canonical video-plus-audio carrier with PyAV."""
 
 import os
-import shutil
 import struct
 import tempfile
 from collections.abc import Callable, Iterator
@@ -37,11 +36,13 @@ from .core import (
 )
 from .layout import EmbeddingLayout
 from .packet import PayloadFileRecord, PayloadRecord
+from .storage import _check_free_space
 
-_MAX_CARRIER_UNITS = 4 * 1024**3
+_MAX_CARRIER_UNITS = 512 * 1024**3
 _MAX_FRAME_BYTES = 256 * 1024**2
-_MAX_OUTPUT_BYTES = 2 * 1024**3
+_MAX_OUTPUT_BYTES = 1280 * 1024**3
 _MIN_FREE_BYTES = 3 * 1024 * 1024 * 1024
+_MUX_SPACE_SLACK_BYTES = 1024**2
 _AUDIO_CHANNEL_COUNTS = frozenset((1, 2))
 _VIDEO_CONTEXT_FORMAT = ">IIQBBIHQ"
 _VIDEO_DEPTHS = (8, 9, 10, 12, 14, 16)
@@ -55,9 +56,12 @@ def _check_video_output_resources(
     if additional_required_bytes < 0:
         raise ValueError("additional_required_bytes must be non-negative")
     destination = Path(os.fsdecode(fspath(path)))
-    parent = destination.parent
-    if shutil.disk_usage(parent).free < _MIN_FREE_BYTES + additional_required_bytes:
-        raise ValueError("insufficient free disk space for video output")
+    _check_free_space(
+        destination.parent,
+        additional_required_bytes,
+        _MIN_FREE_BYTES,
+        "insufficient free disk space for video output",
+    )
     return destination
 
 
@@ -77,6 +81,15 @@ def _new_video_stage(destination: Path) -> Path:
     )
     os.close(descriptor)
     return Path(stage_name)
+
+
+def _check_video_mux_space(
+    path: str | bytes | PathLike[str], packet_size: int
+) -> None:
+    """Require one packet, mux slack, and the free-space reserve before muxing."""
+    if packet_size < 0:
+        raise ValueError("packet_size must be non-negative")
+    _check_video_output_resources(path, packet_size + _MUX_SPACE_SLACK_BYTES)
 
 
 def _check_video_file_size(path: str | bytes | PathLike[str]) -> None:
@@ -721,6 +734,7 @@ class VideoCarrier(CarrierSource):
         def mux_packets(stream: object, frame: object | None = None) -> None:
             packets = stream.encode() if frame is None else stream.encode(frame)
             for packet in packets:
+                _check_video_mux_space(path, packet.size)
                 output.mux(packet)
                 _check_video_file_size(path)
 
