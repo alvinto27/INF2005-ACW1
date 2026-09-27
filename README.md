@@ -48,15 +48,19 @@ The optional demonstration notebook additionally needs:
 python -m pip install -r requirements-notebook.txt
 ```
 
-The notebook is a demonstration only. It shows the main flows: PNG, RGBA
+The notebook is a human-readable, human-verifiable proof of the end-to-end flow.
+It runs the sender and receiver steps in order. Each step states what to expect
+and prints the evidence beside it, so a reader can check the result without
+reading library code. It shows the main flows: PNG, RGBA
 and WAV encoding and verification, the failure verdicts, typed payloads,
 basic source conversion (JPEG to PNG, MP3 to WAV), and an 8-bit video
 example. It does not show every feature. The tests and the guides in
 `AGENT_docs/` cover the rest, for example 16-bit PNG, metadata that the
 output keeps, EXIF orientation and refused sources, high bit-depth and
 alpha video, the PNG and video payload-file functions, the size limits,
-and the web application. The library code, the tests, and those guides
-are the reference for API behaviour, not the notebook.
+and the web application. The tests prove individual rules and edge cases. The
+library code, the tests, and those guides are the reference for exact API
+contracts.
 
 ## Web application flow
 

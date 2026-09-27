@@ -35,7 +35,7 @@ bash scripts/install-hooks.sh
 ## Conventions
 
 - Commit the notebook with all outputs cleared.
-- The notebook is an API demonstration of the main flows, not the reference for API behaviour, and it does not show every feature. Keep notebook changes minimal; prove behaviour with tests.
+- The notebook is a human-readable, human-verifiable proof of the end-to-end flow: it runs the sender and receiver steps in order and shows each result and verdict. The flow is part of the behaviour. Before each step, state in plain words what the step does and what result to expect. After the step, print the evidence (values, verdicts, hashes, or changed-unit counts) beside that expected result, so that a reader can check it without reading library code. The tests prove individual rules and edge cases. The library code, the tests, and the `AGENT_docs/` guides are the reference for exact API contracts. The notebook does not need to show every feature. When a backend change affects the flow, update the notebook so that it shows the new flow.
 - Keep the masked-media protocol media-neutral and use its fixed `stego/` PNG and WAV adapters for file I/O.
 - Preserve protocol version 3 and its documented verification verdicts. The active Flask routes accept only protocol version 3; do not present older masked-media or `STG1` files as interoperable.
 - Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in the existing three test modules unless the repository adopts a different layout.
