@@ -21,7 +21,7 @@ This record lists work that still needs a team decision, demonstration, or imple
 ### Demonstration and assessment work
 
 - The team must show both image and audio workflows live, display or play recovered payloads, and explain why receiver-private-key verification replaces the old shared-secret and original-cover inputs.
-- The demonstration must show a file moving from party A to party B, for example by email. The notebook does not simulate this transfer.
+- The notebook simulates a file moving from Party A to Party B through separate folders. Party A uses its sender private key and B's receiver public key; Party B verifies the copied image and audio files using B's private key and A's public key. The live email transfer remains a demo-day task.
 - Each member must explain their own technical contribution and answer questions about it. This individual criterion remains each member's responsibility.
 - The team must choose and explain an innovation for FR13. Receiver-gated location confidentiality and encrypted typed payloads are available, but the team must choose the innovation it will present.
 - The team must prepare an honest reflection on technical limits, ethics, originality, and AI use. The team must write and sign this reflection.
