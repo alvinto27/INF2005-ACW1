@@ -36,7 +36,9 @@ from stego import (
     seal_to_public_key,
     write_lsb_bits,
 )
+from stego.constants import MEDIA_ID_SIZE
 from stego.media import _PNG_MAX_DECODED_BYTES
+from stego.packet import serialized_record_length
 from stego.storage import DISK_SPACE_RESERVE_BYTES
 from stego.sources import (
     _convert_audio,
@@ -305,6 +307,7 @@ class WebApplicationTests(unittest.TestCase):
         payload: tuple[bytes, str] | None = None,
         payload_mime: str = "",
         payload_name: str = "",
+        start_unit: int = 2048,
     ) -> object:
         """Post one valid encoding request and return its Flask response."""
         data: dict[str, object] = {
@@ -322,7 +325,7 @@ class WebApplicationTests(unittest.TestCase):
             "sender": "Test User",
             "secret_message": message,
             "metadata": "project=verification;sequence=1",
-            "start_unit": "2048",
+            "start_unit": str(start_unit),
             "lsb_bits": str(lsb_bits),
         }
         if payload is not None:
@@ -339,6 +342,31 @@ class WebApplicationTests(unittest.TestCase):
             any(path.name.startswith(".stego-staging-") for path in self.output_dir.iterdir())
         )
         return response
+
+    def capacity_request(
+        self,
+        cover: bytes,
+        filename: str,
+        message: str | None = "authenticated message",
+        file_description: tuple[int, str, str] | None = None,
+    ) -> object:
+        """Post one valid capacity request with the encode metadata claims."""
+        data: dict[str, object] = {
+            "cover": (io.BytesIO(cover), filename),
+            "team_id": "P1-4",
+            "sender": "Test User",
+            "metadata": "project=verification;sequence=1",
+        }
+        if file_description is None:
+            if message is not None:
+                data["secret_message"] = message
+        else:
+            data["payload_size"] = str(file_description[0])
+            data["payload_filename"] = file_description[1]
+            data["payload_type"] = file_description[2]
+        return self.client.post(
+            "/capacity", data=data, content_type="multipart/form-data"
+        )
 
     def download_stego(self, encoded: dict[str, object]) -> bytes:
         """Fetch the carrier bytes from the API's download URL."""
@@ -455,6 +483,199 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIn(b"coverMeta.textContent = isVideo", app_js.data)
         self.assertNotIn(b"coverMeta.innerHTML", app_js.data)
         app_js.close()
+
+    def test_capacity_png_finds_latest_start_for_one_and_eight_lsb(self) -> None:
+        """The reported boundary agrees with successful and failed encodes."""
+        cover = sample_png()
+        message = "capacity boundary proof"
+        response = self.capacity_request(cover, "cover.png", message=message)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        result = response.get_json()
+        self.assertEqual(result["media_type"], "image")
+        self.assertEqual(result["source_format"], "png")
+        self.assertEqual(result["total_units"], 96 * 96 * 3)
+        self.assertEqual(result["payload_bytes"], len(message.encode("utf-8")))
+        self.assertEqual(result["bootstrap_span"], bootstrap_span(self.receiver_public))
+        self.assertEqual(len(result["lsb_results"]), 8)
+        self.assertEqual(
+            [item["lsb_bits"] for item in result["lsb_results"]], list(range(1, 9))
+        )
+        for lsb_bits in (1, 8):
+            with self.subTest(lsb_bits=lsb_bits):
+                item = next(
+                    entry for entry in result["lsb_results"]
+                    if entry["lsb_bits"] == lsb_bits
+                )
+                minimum_capacity = self.encode(
+                    cover,
+                    "cover.png",
+                    lsb_bits=lsb_bits,
+                    message=message,
+                    start_unit=result["bootstrap_span"],
+                )
+                self.assertEqual(minimum_capacity.status_code, 200)
+                self.assertEqual(
+                    item["max_payload_bytes_at_min_start"],
+                    minimum_capacity.get_json()["capacity_bytes"],
+                )
+                latest_start = item["max_start_unit"]
+                self.assertIsInstance(latest_start, int)
+                encoded = self.encode(
+                    cover,
+                    "cover.png",
+                    lsb_bits=lsb_bits,
+                    message=message,
+                    start_unit=latest_start,
+                )
+                self.assertEqual(encoded.status_code, 200, encoded.get_data(as_text=True))
+                too_late = self.encode(
+                    cover,
+                    "cover.png",
+                    lsb_bits=lsb_bits,
+                    message=message,
+                    start_unit=latest_start + 1,
+                )
+                self.assertEqual(too_late.status_code, 400)
+                self.assertIn("user payload exceeds capacity", too_late.get_json()["error"])
+
+    def test_capacity_reports_wav_units_and_eight_lsb_results(self) -> None:
+        """WAV capacity uses the adapter's interleaved sample-unit count."""
+        response = self.capacity_request(sample_wav(), "cover.wav")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        result = response.get_json()
+        self.assertEqual(result["media_type"], "audio")
+        self.assertEqual(result["source_format"], "wav")
+        self.assertEqual(result["total_units"], 8000)
+        self.assertEqual(len(result["lsb_results"]), 8)
+        self.assertTrue(
+            all(
+                isinstance(item["max_payload_bytes_at_min_start"], int)
+                for item in result["lsb_results"]
+            )
+        )
+
+    def test_capacity_oversized_payload_has_no_fitting_start(self) -> None:
+        """A payload larger than the cover has no valid start for any LSB count."""
+        response = self.capacity_request(
+            sample_png(),
+            "cover.png",
+            message=None,
+            file_description=(10_000_000, "large.bin", "application/octet-stream"),
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        result = response.get_json()
+        self.assertEqual(result["payload_bytes"], 10_000_000)
+        self.assertTrue(
+            all(item["max_start_unit"] is None for item in result["lsb_results"])
+        )
+
+    def test_capacity_file_description_uses_encode_metadata_overhead(self) -> None:
+        """A described file's record overhead matches the encode metadata claim."""
+        cover = sample_png()
+        payload = b"typed file payload"
+        capacity_response = self.capacity_request(
+            cover,
+            "cover.png",
+            message=None,
+            file_description=(len(payload), "note.txt", "text/plain"),
+        )
+        self.assertEqual(
+            capacity_response.status_code,
+            200,
+            capacity_response.get_data(as_text=True),
+        )
+        encoded_response = self.encode(
+            cover, "cover.png", payload=(payload, "note.txt")
+        )
+        self.assertEqual(encoded_response.status_code, 200, encoded_response.get_data(as_text=True))
+        encoded = encoded_response.get_json()
+        metadata_bytes = encoded["payload"]["metadata"].encode("utf-8")
+        self.assertEqual(
+            capacity_response.get_json()["record_overhead"],
+            serialized_record_length(MEDIA_ID_SIZE, 0, len(metadata_bytes)),
+        )
+        self.assertEqual(capacity_response.get_json()["payload_bytes"], len(payload))
+
+    def test_capacity_unsupported_cover_uses_encode_error(self) -> None:
+        """Unsupported cover content returns the same HTTP 400 message as encode."""
+        cover = sample_cmyk_jpeg()
+        encoded = self.encode(cover, "cover.jpg")
+        capacity = self.capacity_request(cover, "cover.jpg")
+        self.assertEqual(encoded.status_code, 400)
+        self.assertEqual(capacity.status_code, 400)
+        self.assertEqual(capacity.get_json()["error"], encoded.get_json()["error"])
+
+    def test_capacity_leaves_no_temporary_or_output_files(self) -> None:
+        """Converted snapshots and carrier copies are removed after the request."""
+        response = self.capacity_request(sample_jpeg(), "cover.jpg")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(list(self.work_dir.iterdir()), [])
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(list(self.payload_dir.iterdir()), [])
+
+    def test_capacity_video_reports_decoded_carrier_units(self) -> None:
+        """The video route counts decoded carrier units without writing output."""
+        response = self.capacity_request(sample_mp4_with_video(), "clip.mp4")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        result = response.get_json()
+        self.assertEqual(result["media_type"], "video")
+        self.assertEqual(result["source_format"], "mp4")
+        self.assertGreater(result["total_units"], 0)
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(list(self.payload_dir.iterdir()), [])
+
+    def test_capacity_rejects_duplicate_message_fields(self) -> None:
+        """Duplicate payload descriptions use the standard form-field error."""
+        data = MultiDict(
+            [
+                ("cover", (io.BytesIO(sample_png()), "cover.png")),
+                ("team_id", "P1-4"),
+                ("sender", "Test User"),
+                ("secret_message", "first"),
+                ("secret_message", "second"),
+            ]
+        )
+        response = self.client.post(
+            "/capacity", data=data, content_type="multipart/form-data"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"], "provide exactly one value: secret_message"
+        )
+
+    def test_capacity_request_guard_rejects_upload_before_body_parsing(self) -> None:
+        """The shared free-space guard applies to capacity multipart bodies."""
+        with patch("stego.storage.shutil.disk_usage") as disk_usage:
+            disk_usage.return_value.free = DISK_SPACE_RESERVE_BYTES + 10
+            response = self.client.post(
+                "/capacity",
+                data={"cover": (io.BytesIO(b"x" * 1024), "cover.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.get_json()["error"],
+            "upload is larger than the free disk space allows",
+        )
+        disk_usage.assert_called_once_with(self.work_dir)
+
+    def test_capacity_cover_copy_space_failure_returns_413(self) -> None:
+        """Refuse the route's cover copy when it would use the disk reserve."""
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + 1),
+            ),
+        ):
+            response = self.capacity_request(sample_png(), "cover.png")
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.get_json()["error"],
+            "insufficient free disk space for the uploaded file",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(list(self.work_dir.iterdir()), [])
 
     def test_16bit_png_cover_works_through_web_routes(self) -> None:
         """The web routes encode and verify a native 16-bit PNG cover."""
@@ -1730,11 +1951,12 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(list(self.output_dir.iterdir()), [])
 
     def test_request_without_content_length_returns_411_before_disk_check(self) -> None:
-        """Refuse encode and decode requests without parsing their bodies."""
+        """Refuse upload routes without parsing bodies or checking disk space."""
         with patch("stego.storage.shutil.disk_usage") as disk_usage:
             for path, expected_verdict in (
                 ("/encode", None),
                 ("/decode", "Cannot Verify"),
+                ("/capacity", None),
             ):
                 response = self.client.open(
                     path,

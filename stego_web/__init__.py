@@ -46,7 +46,11 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.before_request
     def check_upload_disk_space() -> tuple[Response, int] | None:
         """Require request length and keep the shared free-space reserve."""
-        if request.method != "POST" or request.endpoint not in {"web.encode", "web.decode"}:
+        if request.method != "POST" or request.endpoint not in {
+            "web.encode",
+            "web.decode",
+            "web.capacity",
+        }:
             return None
         content_length = request.content_length
         if content_length is None:

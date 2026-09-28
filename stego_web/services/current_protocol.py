@@ -16,6 +16,7 @@ from stego import (
     PayloadFileRecord,
     PayloadRecord,
     VerificationResult,
+    VideoCarrier,
     encode_png_from_payload_path,
     encode_video_from_payload_path,
     encode_wav_from_payload_path,
@@ -26,9 +27,12 @@ from stego import (
     verify_video_to_payload_path,
     verify_wav_to_payload_path,
 )
+from stego.bootstrap import rsa_2048_bootstrap_span
+from stego.constants import MEDIA_ID_SIZE
+from stego.core import _plan_layout_with_span
 from stego.crypto import validate_rsa_private_key, validate_rsa_public_key
-from stego.sources import detect_source_family, open_audio_source, open_image_source
 from stego.packet import serialized_record_length
+from stego.sources import detect_source_family, open_audio_source, open_image_source
 
 
 _METADATA_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}\Z")
@@ -235,6 +239,112 @@ class CurrentProtocolService:
         except Exception:
             output_path.unlink(missing_ok=True)
             raise
+
+    def capacity(
+        self,
+        carrier_path: Path,
+        payload_size: int,
+        payload_mime: str,
+        payload_name: str,
+        team_id: str,
+        sender: str,
+        extra_metadata: str,
+        detected_source: tuple[str, str, str] | None = None,
+    ) -> dict[str, object]:
+        """Report payload fit using the same layout checks as encode."""
+        media_type, _, source_format = detected_source or self.detect_carrier(
+            carrier_path
+        )
+        metadata = self._build_metadata(
+            team_id,
+            sender,
+            payload_mime,
+            payload_name,
+            extra_metadata,
+        )
+        span = rsa_2048_bootstrap_span()
+        if media_type == "image":
+            with open_image_source(carrier_path, carrier_path.parent) as source:
+                total_units = source.total_units
+        elif media_type == "audio":
+            with open_audio_source(carrier_path, carrier_path.parent) as source:
+                total_units = source.total_units
+        else:
+            source = VideoCarrier(carrier_path)
+            try:
+                total_units = source.total_units
+            finally:
+                source.close()
+
+        record_overhead = serialized_record_length(
+            MEDIA_ID_SIZE, 0, len(metadata)
+        )
+        lsb_results: list[dict[str, int | None]] = []
+        for lsb_count in range(1, 9):
+            def fits(start_unit: int) -> bool:
+                try:
+                    _plan_layout_with_span(
+                        total_units,
+                        span,
+                        start_unit,
+                        lsb_count,
+                        MEDIA_ID_SIZE,
+                        payload_size,
+                        metadata,
+                    )
+                except ValueError:
+                    return False
+                return True
+
+            try:
+                maximum_payload = max_user_payload_length(
+                    total_units,
+                    span,
+                    span,
+                    lsb_count,
+                    record_overhead,
+                )
+                _plan_layout_with_span(
+                    total_units,
+                    span,
+                    span,
+                    lsb_count,
+                    MEDIA_ID_SIZE,
+                    maximum_payload,
+                    metadata,
+                )
+            except ValueError:
+                maximum_payload = None
+
+            latest_start: int | None = None
+            if fits(span):
+                low = span
+                high = total_units
+                latest_start = span
+                while low <= high:
+                    candidate = (low + high) // 2
+                    if fits(candidate):
+                        latest_start = candidate
+                        low = candidate + 1
+                    else:
+                        high = candidate - 1
+            lsb_results.append(
+                {
+                    "lsb_bits": lsb_count,
+                    "max_start_unit": latest_start,
+                    "max_payload_bytes_at_min_start": maximum_payload,
+                }
+            )
+
+        return {
+            "media_type": media_type,
+            "source_format": source_format,
+            "total_units": total_units,
+            "bootstrap_span": span,
+            "record_overhead": record_overhead,
+            "payload_bytes": payload_size,
+            "lsb_results": lsb_results,
+        }
 
     def verify(
         self,

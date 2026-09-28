@@ -69,6 +69,31 @@ Allowed, but not advised. A WAV file larger than 2 GiB can fail to open in some 
 
 The adapter calls `open_image_source()` or `open_audio_source()`, then passes the yielded `carrier_source` to the PNG or WAV file API. Those APIs accept `carrier_source`; the video file API does not, so it constructs one `VideoCarrier` for validation, counting, and its bounded read passes. Video encode writes a lossless FFV1 + PCM Matroska output named `stego.mkv`; its source is always reported as converted. The library has a 512 Gi carrier-unit cap, 256 MiB canonical frame-byte cap, 1280 GiB (1.25 TiB) output cap, and 3 GiB free-space reserve (plus payload size for payload-file encoding). The response contains `source_converted`, container-based `source_format`, output `file_size`, and a `stego_url`, file details, sender public key, record summary, capacity, geometry, and preserved-bit measurements; it does not contain stego bytes or private keys. `GET /download/<id>.<ext>` checks the token and extension before serving the file. MKV is served as an attachment because browsers do not play the FFV1 Matroska output inline.
 
+## Capacity request
+
+`POST /capacity` estimates whether a described payload fits a cover. It accepts these multipart fields:
+
+- `cover`: one supported image, audio, or video source;
+- `team_id` and `sender`: one value each;
+- `metadata`: optional additional metadata; and
+- exactly one payload description: `secret_message`, or all three file-description fields `payload_size`, `payload_filename`, and `payload_type`.
+
+`payload_size` must be an integer of at least 1. `payload_filename` and `payload_type` are the selected browser file's `File.name` and `File.type`; an empty type is allowed, but the field must be present. The file itself is not uploaded. Message size uses its UTF-8 byte length. Duplicate values are rejected.
+
+A successful JSON response includes `media_type`, `source_format`, `total_units`, `bootstrap_span`, `record_overhead`, and `payload_bytes`. `lsb_results` contains one result for each LSB count from 1 through 8. Each result has `lsb_bits`, `max_start_unit`, and `max_payload_bytes_at_min_start`. `max_start_unit` is the latest legal start that fits the supplied payload, or `null` if it cannot fit. The maximum payload value is measured at the earliest legal start, the bootstrap span, or is `null` if even an empty record cannot fit. Capacity uses the same metadata builder and layout checks as encode, including the configured RSA-2048 bootstrap span and the real media-ID length. Image and audio counts use their canonical adapters; video counts use decoded carrier units.
+
+The route stores no output carrier or payload. It removes the uploaded cover copy and any converted source snapshot when the request ends.
+
+| Condition | HTTP status | Body |
+| --- | --- | --- |
+| The estimate succeeds | 200 | JSON with `ok`, protocol version, carrier details, and capacity results |
+| A required value is missing, duplicated, invalid, or the cover is unsupported or unreadable | 400 | JSON with `ok: false` and `error` |
+| The request has no `Content-Length` header | 411 | JSON with `ok: false` and `error` |
+| The request exceeds a configured size limit or a disk-space guard refuses the upload copy | 413 | JSON error |
+| A storage or read failure occurs | 500 | Generic JSON error; the server logs the exception |
+
+A capacity result is an estimate, not an encode result. The client supplies the file size, and the cover can change after the request. `/encode` remains authoritative: it performs key checks, creates the payload record, and writes and validates the encoded carrier.
+
 ## Decode request
 
 `POST /decode` requires four multipart fields:
@@ -165,7 +190,7 @@ The `POST /encode` status rules are:
 
 Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the image decoded-byte cap, converted PCM size limit, unsupported video pixel formats, more than two audio channels in converted sources, unsupported lossless audio sample depths, and extra video/audio/subtitle/data streams. Strict PCM WAV carriers accept any positive channel count. Video backend messages are returned for carrier-unit, frame-byte, free-space, and output-size limit failures. The source converter turns RGB PNG `tRNS` colour-key transparency into RGBA alpha. The strict PNG adapter still refuses that input when it is used directly. Unsupported or unreadable files return HTTP 400. `/decode` accepts PNG, PCM WAV, and Matroska video. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
 
-The default `MAX_CONTENT_LENGTH` is `None`; deployments and tests can configure a fixed request cap. Before Flask reads an encode/decode body, it requires `Content-Length`; a missing header returns 411. It compares the declared length with free space in `STEGO_WORK_DIR` minus the shared 3 GiB reserve. An upload that does not fit returns 413 with `upload is larger than the free disk space allows`. Werkzeug's multipart file streams, both route request directories (`inf2005-encode-*` and `inf2005-stego-*`), and converted source snapshots use `STEGO_WORK_DIR`. The default is `instance/work`, on the same filesystem as outputs; do not use `/tmp`, which is a tmpfs RAM disk on this host. Key files have a 64 KiB limit. Other uploads have no fixed application size cap by default, but the free-space guard, configured `MAX_CONTENT_LENGTH`, and backend limits still apply. Backend video limits are:
+The default `MAX_CONTENT_LENGTH` is `None`; deployments and tests can configure a fixed request cap. Before Flask reads an encode, decode, or capacity body, it requires `Content-Length`; a missing header returns 411. It compares the declared length with free space in `STEGO_WORK_DIR` minus the shared 3 GiB reserve. An upload that does not fit returns 413 with `upload is larger than the free disk space allows`. Werkzeug's multipart file streams, route request directories (`inf2005-encode-*`, `inf2005-capacity-*`, and `inf2005-stego-*`), and converted source snapshots use `STEGO_WORK_DIR`. The default is `instance/work`, on the same filesystem as outputs; do not use `/tmp`, which is a tmpfs RAM disk on this host. Key files have a 64 KiB limit. Other uploads have no fixed application size cap by default, but the free-space guard, configured `MAX_CONTENT_LENGTH`, and backend limits still apply. Backend video limits are:
 
 | Limit | Value | Refusal |
 | --- | ---: | --- |

@@ -16,6 +16,7 @@ from .constants import (
     BOOTSTRAP_PREFIX_FORMAT,
     PROTOCOL_FIELD_WIDTH,
     PROTOCOL_VERSION,
+    RSA_KEY_SIZE,
     SESSION_KEY_SIZE,
 )
 
@@ -31,13 +32,25 @@ class BootstrapFields:
     aead_nonce: bytes
 
 
+def _bootstrap_span_for_key_size(key_size: int) -> int:
+    """Return the one-LSB span for an RSA modulus size in bits."""
+    if type(key_size) is not int or key_size < 1:
+        raise ValueError("key_size must be a positive integer")
+    envelope_bytes = (key_size + 7) // 8
+    return envelope_bytes * 8
+
+
+def rsa_2048_bootstrap_span() -> int:
+    """Return the protocol span for its configured RSA-2048 bootstrap."""
+    return _bootstrap_span_for_key_size(RSA_KEY_SIZE)
+
+
 def bootstrap_span(key: rsa.RSAPublicKey | rsa.RSAPrivateKey) -> int:
     """Return the serialised envelope size in carrier units at one LSB."""
     if not isinstance(key, (rsa.RSAPublicKey, rsa.RSAPrivateKey)):
         raise TypeError("key must be an RSA public or private key")
     # RSA-OAEP ciphertext length equals modulus length, so RSA envelope and key sizes coincide; span is envelope-defined.
-    envelope_bytes = (key.key_size + 7) // 8
-    return envelope_bytes * 8
+    return _bootstrap_span_for_key_size(key.key_size)
 
 
 def _validate_bootstrap_fields(fields: BootstrapFields) -> BootstrapFields:

@@ -334,13 +334,37 @@ class _StagingSession:
         self._closed = True
 
 
-def _plan_layout(total_units: int, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, media_id: str, user_payload_size: int, metadata: bytes) -> EmbeddingLayout:
-    """Check capacity and return the packet geometry before any carrier data is read.
+def _plan_layout(
+    total_units: int,
+    receiver_public_key: rsa.RSAPublicKey,
+    start_unit: int,
+    lsb_count: int,
+    media_id: str,
+    user_payload_size: int,
+    metadata: bytes,
+) -> EmbeddingLayout:
+    """Check capacity and return packet geometry before reading carrier data."""
+    return _plan_layout_with_span(
+        total_units,
+        bootstrap_span(receiver_public_key),
+        start_unit,
+        lsb_count,
+        len(media_id.encode("utf-8")),
+        user_payload_size,
+        metadata,
+    )
 
-    The record length does not depend on the media hash value, because the hash
-    has a fixed size, so the whole geometry is known before the first pass.
-    """
-    span = bootstrap_span(receiver_public_key)
+
+def _plan_layout_with_span(
+    total_units: int,
+    span: int,
+    start_unit: int,
+    lsb_count: int,
+    media_id_length: int,
+    user_payload_size: int,
+    metadata: bytes,
+) -> EmbeddingLayout:
+    """Apply the encoder's capacity and geometry checks for a known bootstrap span."""
     minimum_record_length = serialized_record_length(MEDIA_ID_SIZE, 0, 0)
     minimum_units = minimum_carrier_units(span, lsb_count, minimum_record_length)
     if total_units < minimum_units:
@@ -354,9 +378,7 @@ def _plan_layout(total_units: int, receiver_public_key: rsa.RSAPublicKey, start_
             f"start_unit {start_unit} is below the reserved bootstrap region; "
             f"lowest legal start_unit is {span}"
         )
-    record_overhead = serialized_record_length(
-        len(media_id.encode("utf-8")), 0, len(metadata)
-    )
+    record_overhead = serialized_record_length(media_id_length, 0, len(metadata))
     maximum_user_payload = max_user_payload_length(
         total_units, start_unit, span, lsb_count, record_overhead
     )
@@ -367,7 +389,7 @@ def _plan_layout(total_units: int, receiver_public_key: rsa.RSAPublicKey, start_
             f"start_unit={start_unit}, lsb_count={lsb_count}"
         )
     record_length = serialized_record_length(
-        len(media_id.encode("utf-8")), user_payload_size, len(metadata)
+        media_id_length, user_payload_size, len(metadata)
     )
     return build_embedding_layout(
         total_units, start_unit, lsb_count, record_length + GCM_TAG_SIZE, span
