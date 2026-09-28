@@ -121,7 +121,7 @@ h1 span { color: #fff; }
 .step-track li { position: relative; display: grid; justify-items: center; gap: 6px; color: #5a6880; font: 10px var(--mono); }
 .step-track li::before { position: absolute; top: 13px; left: -50%; right: 50%; height: 1px; background: #ced8eb; content: ""; }
 .step-track li:first-child::before { display: none; }
-.step-track li span { position: relative; display: grid; place-items: center; width: 27px; height: 27px; border: 1px solid #c4cfe3; border-radius: 50%; background: #f8faff; }
+.step-track li span { position: relative; z-index: 1; display: grid; place-items: center; width: 27px; height: 27px; border: 1px solid #c4cfe3; border-radius: 50%; background: #f8faff; }
 .step-track li.is-active { color: #244dbc; }
 .step-track li.is-active span { color: #fff; border-color: #345edb; background: #345edb; box-shadow: 0 0 0 4px #345edb15; }
 .step-track li.is-complete span { border-color: #4166c0; color: #244da6; background: #e2eaff; font-size: 0; }
