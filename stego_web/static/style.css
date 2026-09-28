@@ -116,8 +116,8 @@ h1 span { color: #fff; }
 .wizard-heading h2 { margin-bottom: 0; font: 400 25px/1.2 var(--display); letter-spacing: -.045em; }
 .step-count { flex-shrink: 0; padding: 5px 8px; background: #eaf0fc; color: #47618c; font: 10px var(--mono); }
 .progress { height: 3px; margin-top: 24px; background: #e0e6f0; }
-.progress span { display: block; width: 14.285%; height: 100%; background: #3b66e7; transition: width .25s; }
-.step-track { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); margin: 18px -7px 0; padding: 0; list-style: none; }
+.progress span { display: block; width: 16.667%; height: 100%; background: #3b66e7; transition: width .25s; }
+.step-track { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 18px -7px 0; padding: 0; list-style: none; }
 .step-track li { position: relative; display: grid; justify-items: center; gap: 6px; color: #5a6880; font: 10px var(--mono); }
 .step-track li::before { position: absolute; top: 13px; left: -50%; right: 50%; height: 1px; background: #ced8eb; content: ""; }
 .step-track li:first-child::before { display: none; }
@@ -170,7 +170,6 @@ button.secondary:hover:not(:disabled), button.back:hover:not(:disabled) { backgr
 .process-box strong, .lsb-insight strong { font-size: 13px; font-weight: 500; }
 .process-box small, .lsb-insight small { font-size: 12px; }
 .spinner { width: 22px; height: 22px; flex-shrink: 0; border: 2px solid #b8c8e8; border-top-color: #3b64cb; border-radius: 50%; }
-.is-busy .spinner { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .operation-status { display: flex; align-items: center; gap: 10px; min-height: 24px; }
 .operation-status.is-loading::before, button.is-loading::after { width: 17px; height: 17px; flex-shrink: 0; border: 2px solid #a7b9df; border-top-color: #234eb9; border-radius: 50%; animation: spin .8s linear infinite; content: ""; }

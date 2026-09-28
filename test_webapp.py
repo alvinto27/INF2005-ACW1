@@ -401,6 +401,14 @@ class WebApplicationTests(unittest.TestCase):
         """Check that no payload or sidecar was stored after failure."""
         self.assertEqual(list(self.payload_dir.iterdir()), [])
 
+    def test_index_has_six_encode_steps_without_integrity(self) -> None:
+        """The encode page has six markers and no placeholder integrity step."""
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.count(b'data-step-marker="'), 6)
+        self.assertNotIn(b"<small>Integrity</small>", response.data)
+        self.assertIn(b'aria-valuemax="6"', response.data)
+
     def test_index_uses_current_protocol_inputs_and_retains_layout(self) -> None:
         """Encode and verify have separate pages with the current inputs."""
         response = self.client.get("/")

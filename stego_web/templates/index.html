@@ -98,16 +98,15 @@
       <noscript><p class="noscript-notice">Enable JavaScript to use the encoding wizard and verification tools.</p></noscript>
       <div class="workspace-grid">
     <section class="wizard-shell" aria-labelledby="encode-title">
-      <div class="wizard-heading"><div><p class="eyebrow">01 / ENCODE</p><h2 id="encode-title" tabindex="-1">Create protected media</h2></div><span id="step-count" class="step-count" aria-live="polite">Step 1 of 7</span></div>
-      <div class="progress" role="progressbar" aria-label="Encoding progress" aria-valuemin="1" aria-valuemax="7" aria-valuenow="1"><span id="progress-bar"></span></div>
+      <div class="wizard-heading"><div><p class="eyebrow">01 / ENCODE</p><h2 id="encode-title" tabindex="-1">Create protected media</h2></div><span id="step-count" class="step-count" aria-live="polite">Step 1 of 6</span></div>
+      <div class="progress" role="progressbar" aria-label="Encoding progress" aria-valuemin="1" aria-valuemax="6" aria-valuenow="1"><span id="progress-bar"></span></div>
       <ol class="step-track" aria-label="Encoding steps">
         <li class="is-active" data-step-marker="0"><span>1</span><small>Input</small></li>
         <li data-step-marker="1"><span>2</span><small>Sender</small></li>
         <li data-step-marker="2"><span>3</span><small>Receiver</small></li>
         <li data-step-marker="3"><span>4</span><small>Layout</small></li>
-        <li data-step-marker="4"><span>5</span><small>Integrity</small></li>
-        <li data-step-marker="5"><span>6</span><small>Protect</small></li>
-        <li data-step-marker="6"><span>7</span><small>Export</small></li>
+        <li data-step-marker="4"><span>5</span><small>Protect</small></li>
+        <li data-step-marker="5"><span>6</span><small>Export</small></li>
       </ol>
       <form id="encode-form" enctype="multipart/form-data" novalidate>
         <section class="wizard-card is-active" data-step="0" aria-labelledby="step-1-title">
@@ -142,17 +141,12 @@
           <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Validate layout <span>-&gt;</span></button></div>
         </section>
         <section class="wizard-card" data-step="4" aria-labelledby="step-5-title" hidden>
-          <span class="step-kicker">05 / FULL-MEDIA INTEGRITY</span><h3 id="step-5-title">Hash all preserved media bytes</h3><p class="hint">The protocol masks the bits it writes, then hashes RGB units, RGBA alpha, and every declared PCM sample byte with the chosen geometry.</p>
-          <div class="process-box"><span class="spinner" aria-hidden="true"></span><div><strong id="hash-status">Ready to calculate</strong><small id="hash-detail">The authoritative SHA-256 value is created during encoding.</small></div></div>
-          <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Initialize integrity <span>-&gt;</span></button></div>
-        </section>
-        <section class="wizard-card" data-step="5" aria-labelledby="step-6-title" hidden>
-          <span class="step-kicker">06 / ENCRYPT, SIGN AND EMBED</span><h3 id="step-6-title">Protect the complete record</h3><p class="hint">AES-256-GCM encrypts the payload and metadata, RSA-PSS authenticates the encrypted record and layout, and RSA-OAEP protects the receiver bootstrap.</p>
+          <span class="step-kicker">05 / ENCRYPT, SIGN AND EMBED</span><h3 id="step-5-title">Protect the complete record</h3><p class="hint">AES-256-GCM encrypts the payload and metadata, RSA-PSS authenticates the encrypted record and layout, and RSA-OAEP protects the receiver bootstrap. Before encryption and signing, the server hashes preserved media bytes (RGB units, RGBA alpha, and declared PCM sample bytes) with the chosen geometry.</p>
           <div class="process-box"><span class="spinner" aria-hidden="true"></span><div><strong>Ready for local processing</strong><small>No original cover or location secret will be required by the receiver.</small></div></div>
           <div id="encode-result" class="result" aria-live="polite"></div><div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="submit" class="primary">Encrypt, sign and export <span>-&gt;</span></button></div>
         </section>
-        <section class="wizard-card success-card" data-step="6" aria-labelledby="success-title" hidden>
-          <div class="success-mark">OK</div><span class="step-kicker">07 / OUTPUT</span><h3 id="success-title">Your stego object is ready</h3><p class="hint" id="success-summary">The encrypted signed payload was embedded successfully.</p>
+        <section class="wizard-card success-card" data-step="5" aria-labelledby="step-6-title" hidden>
+          <div class="success-mark">OK</div><span class="step-kicker">06 / OUTPUT</span><h3 id="step-6-title">Your stego object is ready</h3><p class="hint" id="success-summary">The encrypted signed payload was embedded successfully.</p>
           <div class="comparison"><figure><figcaption>Original cover</figcaption><div id="cover-preview" class="preview">Awaiting file</div></figure><figure><figcaption>Stego output</figcaption><div id="stego-preview" class="preview">Awaiting encode</div></figure></div>
           <div id="download-links" class="download-links"></div><button id="start-over" type="button" class="secondary">Encode another file</button>
         </section>

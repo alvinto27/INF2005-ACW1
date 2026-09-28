@@ -1,6 +1,9 @@
 /* Encoding wizard for the receiver-gated protocol. Processing remains server-side. */
 const encodeForm = document.querySelector('#encode-form');
 const cards = [...document.querySelectorAll('.wizard-card')];
+const submitButton = encodeForm.querySelector('button[type="submit"]');
+const protectStepIndex = cards.findIndex(card => card.contains(submitButton));
+const exportStepIndex = cards.findIndex(card => card.matches('.success-card'));
 const stepMarkers = [...document.querySelectorAll('[data-step-marker]')];
 const progress = document.querySelector('.progress');
 const progressBar = document.querySelector('#progress-bar');
@@ -125,21 +128,6 @@ function validCurrentCard() {
 
 document.querySelectorAll('.next').forEach(button => button.addEventListener('click', async () => {
   if (transitionPending || button.disabled || !validCurrentCard()) return;
-  if (currentStep === 4) {
-    const card = cards[4];
-    const status = document.querySelector('#hash-status');
-    const detail = document.querySelector('#hash-detail');
-    button.disabled = true;
-    card.classList.add('is-busy');
-    status.textContent = 'Preparing integrity context...';
-    detail.textContent = 'The server will bind the layout and all declared media sample bytes during encoding.';
-    await new Promise(resolve => setTimeout(resolve, 450));
-    status.textContent = 'Integrity inputs ready';
-    detail.textContent = 'The full media SHA-256 hash will be encrypted inside the signed record.';
-    card.classList.remove('is-busy');
-    button.disabled = false;
-    motion.pulse(card.querySelector('.process-box'));
-  }
   await showStep(currentStep + 1);
 }));
 
@@ -325,8 +313,8 @@ document.querySelectorAll('.generate-keys').forEach(button => button.addEventLis
 encodeForm.addEventListener('submit', async event => {
   event.preventDefault();
   const resultBox = document.querySelector('#encode-result');
-  const button = encodeForm.querySelector("[type='submit']");
-  if (button.disabled || transitionPending || currentStep !== 5) return;
+  const button = submitButton;
+  if (button.disabled || transitionPending || currentStep !== protectStepIndex) return;
   const body = new FormData(encodeForm);
   const controls = [...encodeForm.querySelectorAll('input, textarea, button')];
   const disabledBefore = controls.map(control => control.disabled);
@@ -367,7 +355,7 @@ encodeForm.addEventListener('submit', async event => {
       downloadLink(textUrl(data.sender_public_key_pem), 'sender-public-key.pem', 'Download sender public key'),
     );
     resultBox.textContent = '';
-    await showStep(6);
+    await showStep(exportStepIndex);
   } catch (error) {
     resultBox.className = 'result verdict-error'; resultBox.textContent = `Could not create protected media: ${error.message}`;
     motion.pulse(resultBox);

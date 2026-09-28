@@ -21,8 +21,10 @@ verification verdict. They are inline decorative SVGs with scroll-triggered
 motion; they require no image downloads or WebGL. Reduced-motion users see them
 without animation.
 
-The encode page has seven steps: Input, Sender, Receiver, Layout, Integrity,
-Protect, and Export. Step 4 currently uses the manual `start_unit` control.
+The encode page has six steps: Input, Sender, Receiver, Layout, Protect, and
+Export. Step 4 uses the manual `start_unit` control. In Protect, the server hashes
+preserved RGB units, RGBA alpha, and declared PCM sample bytes with the chosen
+geometry before encryption and signing.
 Three.js carrier-map assets exist, but the template does not load them and the
 map is not part of the active page. A separate `/verify` page handles
 receiver-side verification. See [Three.js carrier map](#threejs-carrier-map) for
@@ -215,7 +217,7 @@ under `stego_web/static/vendor/three/`. `VERSION.txt` records version 0.180.0
 MIT `LICENSE`.
 
 `index.html` does not load these map assets, and the template does not contain
-the controls that the map module expects. The active seven-step wizard uses the
+the controls that the map module expects. The active six-step wizard uses the
 manual `start_unit` field in Step 4. Therefore, the Three.js map,
 click-to-select behavior, footprint overlays, hover inspector, and difference
 view are not active GUI features. The source files describe an intended map;
