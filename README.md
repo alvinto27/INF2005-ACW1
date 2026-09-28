@@ -41,11 +41,11 @@ python scripts/check-docs.py
 ```
 
 CI runs these commands on Python 3.12, 3.13, and 3.14. It also runs the
-dependency-free browser-request boundary test; run it locally if Node is
-available:
+dependency-free browser-request and capacity-helper tests; run them locally if
+Node is available:
 
 ```sh
-node --test scripts/test-api-js.cjs
+node --test scripts/test-api-js.cjs scripts/test-capacity-js.cjs
 ```
 
 The optional demonstration notebook additionally needs:

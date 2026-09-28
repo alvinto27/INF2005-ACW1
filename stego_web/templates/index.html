@@ -117,6 +117,7 @@
           <label>Payload file<input id="payload-file" name="payload_file" type="file"></label>
           <div class="field-grid"><label class="generated-claim">Payload MIME claim<input id="payload-mime" name="payload_mime" readonly aria-readonly="true" placeholder="Generated automatically"></label><label class="generated-claim">Payload filename claim<input id="payload-name" name="payload_name" readonly aria-readonly="true" placeholder="Generated automatically"></label></div><p class="hint claim-hint">Generated automatically from the payload.</p>
           <label>Additional authenticated metadata<textarea name="metadata" rows="2" placeholder="Optional key=value entries, e.g. project=INF2005;case=demo"></textarea></label>
+          <div id="capacity-status" class="result operation-status" role="status" aria-live="polite" aria-atomic="true"></div>
           <div class="wizard-actions"><span></span><button type="button" class="next">Validate input <span>-&gt;</span></button></div>
         </section>
         <section class="wizard-card" data-step="1" aria-labelledby="step-2-title" hidden>
@@ -138,6 +139,7 @@
           <label>Packet start unit<input id="start-unit" name="start_unit" type="number" min="2048" step="1" value="2048" required></label>
           <label class="range-label"><span class="range-heading">Least Significant Bits <output id="encode-lsb-output">1</output></span><input id="encode-lsb" type="range" name="lsb_bits" min="1" max="8" value="1"><span class="range-scale"><span>Subtle</span><span>Maximum capacity</span></span></label>
           <div class="lsb-insight"><span class="insight-dot" aria-hidden="true"></span><div><strong id="lsb-impact">Lowest visual impact</strong><small id="lsb-guidance">Best first choice when the cover has enough capacity.</small></div></div>
+          <div id="layout-capacity-status" class="result operation-status" role="status" aria-live="polite" aria-atomic="true"></div>
           <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Validate layout <span>-&gt;</span></button></div>
         </section>
         <section class="wizard-card" data-step="4" aria-labelledby="step-5-title" hidden>
@@ -161,6 +163,7 @@
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.15/dist/gsap.min.js" defer></script>
   <script src="{{ url_for('static', filename='motion.js') }}" defer></script>
   <script src="{{ url_for('static', filename='api.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='capacity.js') }}" defer></script>
   <script src="{{ url_for('static', filename='feature-motion.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   <script src="{{ url_for('static', filename='navigation.js') }}" defer></script>

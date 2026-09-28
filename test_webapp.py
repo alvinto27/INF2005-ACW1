@@ -437,6 +437,17 @@ class WebApplicationTests(unittest.TestCase):
         self.assertNotIn(b"<small>Integrity</small>", response.data)
         self.assertIn(b'aria-valuemax="6"', response.data)
 
+    def test_index_loads_capacity_statuses_and_script_before_app(self) -> None:
+        """The accessible capacity statuses exist and helpers load before the wizard."""
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="capacity-status"', response.data)
+        self.assertIn(b'id="layout-capacity-status"', response.data)
+        self.assertIn(b'role="status" aria-live="polite"', response.data)
+        capacity_script = response.data.index(b"/static/capacity.js")
+        app_script = response.data.index(b"/static/app.js")
+        self.assertLess(capacity_script, app_script)
+
     def test_index_uses_current_protocol_inputs_and_retains_layout(self) -> None:
         """Encode and verify have separate pages with the current inputs."""
         response = self.client.get("/")
@@ -567,6 +578,57 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(result["payload_bytes"], 10_000_000)
         self.assertTrue(
             all(item["max_start_unit"] is None for item in result["lsb_results"])
+        )
+
+    def test_capacity_empty_file_type_matches_encode_mimetype_claim(self) -> None:
+        """The browser's octet-stream fallback produces the encode file claim."""
+        cover = sample_png()
+        payload = b"untyped browser file"
+        capacity_response = self.capacity_request(
+            cover,
+            "cover.png",
+            message=None,
+            file_description=(len(payload), "opaque.bin", "application/octet-stream"),
+        )
+        encode_response = self.client.post(
+            "/encode",
+            data={
+                "cover": (io.BytesIO(cover), "cover.png"),
+                "sender_private_key": (
+                    io.BytesIO(self.sender_private_pem),
+                    "sender-private.pem",
+                ),
+                "sender_key_password": PASSWORD,
+                "receiver_public_key": (
+                    io.BytesIO(self.receiver_public_pem),
+                    "receiver-public.pem",
+                ),
+                "team_id": "P1-4",
+                "sender": "Test User",
+                "secret_message": "",
+                "metadata": "project=verification;sequence=1",
+                "start_unit": "2048",
+                "lsb_bits": "1",
+                "payload_file": (
+                    io.BytesIO(payload),
+                    "opaque.bin",
+                    "application/octet-stream",
+                ),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(
+            capacity_response.status_code,
+            200,
+            capacity_response.get_data(as_text=True),
+        )
+        self.assertEqual(encode_response.status_code, 200, encode_response.get_data(as_text=True))
+        encoded_payload = encode_response.get_json()["payload"]
+        self.assertEqual(encoded_payload["mime"], "application/octet-stream")
+        metadata = encoded_payload["metadata"].encode("utf-8")
+        self.assertEqual(
+            capacity_response.get_json()["record_overhead"],
+            serialized_record_length(MEDIA_ID_SIZE, 0, len(metadata)),
         )
 
     def test_capacity_file_description_uses_encode_metadata_overhead(self) -> None:

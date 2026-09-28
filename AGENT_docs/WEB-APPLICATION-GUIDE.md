@@ -84,6 +84,10 @@ A successful JSON response includes `media_type`, `source_format`, `total_units`
 
 The route stores no output carrier or payload. It removes the uploaded cover copy and any converted source snapshot when the request ends.
 
+### Early capacity check in the wizard
+
+When the user leaves Input, the browser sends one capacity request with the cover and the payload description, not the payload bytes. It keeps the result while these inputs stay unchanged. The Layout step checks start-unit and LSB changes in the browser, blocks starts that do not fit, and suggests a fitting LSB or start. `/encode` remains the final authority.
+
 | Condition | HTTP status | Body |
 | --- | --- | --- |
 | The estimate succeeds | 200 | JSON with `ok`, protocol version, carrier details, and capacity results |

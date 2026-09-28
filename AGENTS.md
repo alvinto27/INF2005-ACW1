@@ -21,13 +21,14 @@ python -m pip install -r requirements.txt
 # Optional: install only when you need to run the demonstration notebook.
 python -m pip install -r requirements-notebook.txt
 python -m unittest -v
+node --test scripts/test-api-js.cjs scripts/test-capacity-js.cjs
 python3 scripts/check-docs.py
 bash scripts/install-hooks.sh
 ```
 
 ## State
 
-- This repository has no package build configuration. CI runs the Python tests, dependency-free Node request-boundary tests, and documentation check on Python 3.12, 3.13, and 3.14 through [.github/workflows/tests.yml](.github/workflows/tests.yml).
+- This repository has no package build configuration. CI runs the Python tests, dependency-free Node request-boundary and capacity-helper tests, and documentation check on Python 3.12, 3.13, and 3.14 through [.github/workflows/tests.yml](.github/workflows/tests.yml).
 - The `stego/` package requires Python 3.12+ and uses PyAV, `cryptography`, and NumPy. Pillow is only for tests and the demonstration notebook.
 - The active Flask routes use the `stego/` protocol through `stego_web/services/current_protocol.py`; the earlier `STG1` implementation and its web services have been removed.
 - `test_stego.py`, `test_video.py`, and `test_webapp.py` are the active test modules.

@@ -22,7 +22,17 @@ const payloadMime = document.querySelector('#payload-mime');
 const payloadName = document.querySelector('#payload-name');
 const motion = window.StegoMotion;
 const api = window.StegoApi;
+const capacityHelpers = window.StegoCapacity;
+const capacityStatus = document.querySelector('#capacity-status');
+const layoutStatus = document.querySelector('#layout-capacity-status');
+const layoutStart = document.querySelector('#start-unit');
+const layoutStepIndex = cards.findIndex(card => card.contains(layoutStart));
+const inputNextButton = cards[0].querySelector('.next');
 let currentStep = 0;
+let capacityResult = null;
+let capacitySnapshot = null;
+let capacityRequestVersion = 0;
+let capacityRequestInFlight = false;
 let transitionPending = false;
 let coverObjectUrl = null;
 const downloadObjectUrls = new Set();
@@ -48,6 +58,26 @@ function validEncodeResponse(data) {
       || !Number.isFinite(data.preserved_ratio) || data.preserved_ratio < 0 || data.preserved_ratio > 1
       || !Number.isFinite(data.file_size) || data.file_size < 0) throw api.malformed();
   return api.localUrl(data.stego_url, '/download/');
+}
+
+function validCapacityResponse(data) {
+  const resultsAreValid = Array.isArray(data.lsb_results)
+    && data.lsb_results.length === 8
+    && data.lsb_results.every((entry, index) => entry && entry.lsb_bits === index + 1
+      && (entry.max_start_unit === null
+        || (Number.isSafeInteger(entry.max_start_unit) && entry.max_start_unit >= 0))
+      && (entry.max_payload_bytes_at_min_start === null
+        || (Number.isSafeInteger(entry.max_payload_bytes_at_min_start)
+          && entry.max_payload_bytes_at_min_start >= 0)));
+  if (data.ok !== true || data.protocol_version !== 3
+      || !['image', 'audio', 'video'].includes(data.media_type)
+      || typeof data.source_format !== 'string'
+      || !Number.isSafeInteger(data.total_units) || data.total_units < 0
+      || !Number.isSafeInteger(data.bootstrap_span) || data.bootstrap_span < 1
+      || !Number.isSafeInteger(data.record_overhead) || data.record_overhead < 0
+      || !Number.isSafeInteger(data.payload_bytes) || data.payload_bytes < 1
+      || !resultsAreValid) throw api.malformed();
+  return data;
 }
 
 function activateStep(step) {
@@ -92,6 +122,7 @@ async function showStep(nextStep, {initial = false} = {}) {
     console.error('Could not animate the wizard step', error);
     activateStep(targetStep);
   } finally { transitionPending = false; }
+  if (targetStep === layoutStepIndex) updateLayoutFeedback();
   if (!initial) {
     const heading = next.querySelector('h3');
     heading.setAttribute('tabindex', '-1');
@@ -126,8 +157,176 @@ function validCurrentCard() {
   return true;
 }
 
+function capacityInputSnapshot() {
+  return {
+    cover: coverInput.files[0] || null,
+    teamId: encodeForm.querySelector('[name="team_id"]').value,
+    sender: encodeForm.querySelector('[name="sender"]').value,
+    metadata: encodeForm.querySelector('[name="metadata"]').value,
+    message: secretMessage.value,
+    payloadFile: payloadFile.files[0] || null,
+  };
+}
+
+function sameCapacitySnapshot(first, second) {
+  return first.cover === second.cover
+    && first.teamId === second.teamId
+    && first.sender === second.sender
+    && first.metadata === second.metadata
+    && first.message === second.message
+    && first.payloadFile === second.payloadFile;
+}
+
+function invalidateCapacity() {
+  capacityRequestVersion += 1;
+  capacityResult = null;
+  capacitySnapshot = null;
+  layoutStart.setCustomValidity('');
+  layoutStatus.textContent = '';
+  if (!capacityRequestInFlight) {
+    capacityStatus.className = 'result';
+    capacityStatus.textContent = '';
+  }
+}
+
+function isVideoCover(file) {
+  return Boolean(file && (
+    file.type.startsWith('video/') || /\.(mp4|mov|mkv|webm|avi)$/i.test(file.name)
+  ));
+}
+
+function capacityRequestBody(snapshot) {
+  const body = new FormData();
+  body.set('cover', snapshot.cover);
+  body.set('team_id', snapshot.teamId);
+  body.set('sender', snapshot.sender);
+  body.set('metadata', snapshot.metadata);
+  if (snapshot.payloadFile) {
+    body.set('payload_size', String(snapshot.payloadFile.size));
+    body.set('payload_filename', snapshot.payloadFile.name);
+    body.set('payload_type', snapshot.payloadFile.type || 'application/octet-stream');
+  } else {
+    body.set('secret_message', snapshot.message);
+  }
+  return body;
+}
+
+function reportNoCapacity(data) {
+  const largestAtEightLsb = data.lsb_results[7].max_payload_bytes_at_min_start;
+  let message = `The payload does not fit this cover even at 8 LSB. Payload size: ${formatBytes(data.payload_bytes)}.`;
+  message += largestAtEightLsb === null
+    ? ' This cover is too small for any payload.'
+    : ` Largest payload at 8 LSB: ${formatBytes(largestAtEightLsb)}.`;
+  capacityStatus.className = 'result verdict-error';
+  capacityStatus.textContent = message;
+  motion.pulse(capacityStatus);
+}
+
+function updateLayoutFeedback() {
+  if (!capacityResult) {
+    layoutStart.setCustomValidity('');
+    layoutStatus.className = 'result operation-status';
+    layoutStatus.textContent = 'Complete the Input capacity check to see layout guidance.';
+    return;
+  }
+  const start = Number(layoutStart.value);
+  const lsbBits = Number(lsb.value);
+  const result = capacityHelpers.evaluateLayout(
+    start,
+    capacityResult.bootstrap_span,
+    lsbBits,
+    capacityResult.lsb_results,
+  );
+  if (result.fits) {
+    layoutStart.setCustomValidity('');
+    layoutStatus.className = 'result operation-status';
+    layoutStatus.textContent = `Fits. Latest legal start for LSB ${lsbBits}: ${result.latestStartUnit.toLocaleString()}.`;
+    return;
+  }
+
+  let suggestion;
+  if (result.suggestion?.type === 'lsb') {
+    const suggestedEntry = capacityResult.lsb_results[result.suggestion.lsbBits - 1];
+    suggestion = `Try LSB ${result.suggestion.lsbBits}; its latest legal start is ${suggestedEntry.max_start_unit.toLocaleString()}.`;
+  } else if (result.suggestion?.type === 'start') {
+    suggestion = `At LSB ${lsbBits}, try the latest fitting start: ${result.suggestion.startUnit.toLocaleString()}.`;
+  } else if (!result.fitsAnywhere) {
+    suggestion = 'No start fits this payload at any LSB; choose a larger cover or a smaller payload.';
+  } else {
+    suggestion = `No start fits at LSB ${lsbBits}; choose a larger cover or a smaller payload.`;
+  }
+  const message = `Does not fit. ${suggestion}`;
+  layoutStart.setCustomValidity(message);
+  layoutStatus.className = 'result verdict-error';
+  layoutStatus.textContent = message;
+}
+
+async function checkCapacityAndContinue() {
+  const snapshot = capacityInputSnapshot();
+  let data = capacityResult && capacitySnapshot
+      && sameCapacitySnapshot(snapshot, capacitySnapshot)
+    ? capacityResult : null;
+  if (!data) {
+    const requestVersion = ++capacityRequestVersion;
+    const wasDisabled = inputNextButton.disabled;
+    capacityRequestInFlight = true;
+    inputNextButton.disabled = true;
+    inputNextButton.classList.add('is-loading');
+    inputNextButton.setAttribute('aria-busy', 'true');
+    capacityStatus.className = 'result operation-status is-loading';
+    capacityStatus.textContent = 'Checking capacity…';
+    try {
+      data = validCapacityResponse(await api.post(
+        '/capacity',
+        capacityRequestBody(snapshot),
+        isVideoCover(snapshot.cover) ? 5 * 60 * 1000 : 60 * 1000,
+      ));
+      if (requestVersion !== capacityRequestVersion
+          || !sameCapacitySnapshot(snapshot, capacityInputSnapshot())) return;
+      capacityResult = data;
+      capacitySnapshot = snapshot;
+      capacityStatus.className = 'result operation-status';
+      capacityStatus.textContent = '';
+      updateLayoutFeedback();
+    } catch (error) {
+      if (requestVersion === capacityRequestVersion
+          && sameCapacitySnapshot(snapshot, capacityInputSnapshot())) {
+        capacityStatus.className = 'result verdict-error';
+        capacityStatus.textContent = `Capacity check failed: ${error.message}`;
+        motion.pulse(capacityStatus);
+      }
+      return;
+    } finally {
+      const isCurrent = requestVersion === capacityRequestVersion
+        && sameCapacitySnapshot(snapshot, capacityInputSnapshot());
+      capacityRequestInFlight = false;
+      inputNextButton.disabled = wasDisabled;
+      inputNextButton.classList.remove('is-loading');
+      inputNextButton.removeAttribute('aria-busy');
+      if (!isCurrent) {
+        capacityStatus.className = 'result operation-status';
+        capacityStatus.textContent = 'Inputs changed while checking. Select Validate input to check again.';
+      }
+    }
+  }
+
+  if (!data || currentStep !== 0
+      || !sameCapacitySnapshot(snapshot, capacityInputSnapshot())) return;
+  if (data.lsb_results.every(entry => entry.max_start_unit === null)) {
+    reportNoCapacity(data);
+    return;
+  }
+  capacityStatus.className = 'result operation-status';
+  capacityStatus.textContent = '';
+  await showStep(currentStep + 1);
+}
+
 document.querySelectorAll('.next').forEach(button => button.addEventListener('click', async () => {
   if (transitionPending || button.disabled || !validCurrentCard()) return;
+  if (currentStep === 0) {
+    await checkCapacityAndContinue();
+    return;
+  }
   await showStep(currentStep + 1);
 }));
 
@@ -143,6 +342,7 @@ function formatBytes(bytes) {
 }
 
 function handleCoverFile(file) {
+  invalidateCapacity();
   if (coverObjectUrl) { URL.revokeObjectURL(coverObjectUrl); coverObjectUrl = null; }
   if (!file) {
     coverInput.setCustomValidity('');
@@ -233,13 +433,17 @@ function updatePayloadClaims() {
 }
 
 payloadFile.addEventListener('change', () => {
+  invalidateCapacity();
   secretMessage.setCustomValidity('');
   updatePayloadClaims();
 });
 secretMessage.addEventListener('input', () => {
+  invalidateCapacity();
   secretMessage.setCustomValidity('');
   updatePayloadClaims();
 });
+encodeForm.querySelectorAll('[name="team_id"], [name="sender"], [name="metadata"]')
+  .forEach(field => field.addEventListener('input', invalidateCapacity));
 
 const lsb = document.querySelector('#encode-lsb');
 const lsbDescriptions = [
@@ -260,7 +464,11 @@ function updateLsb() {
   lsb.style.setProperty('--range-progress', `${((value - 1) / 7) * 100}%`);
   lsb.setAttribute('aria-valuetext', `${value} least significant bit${value === 1 ? '' : 's'}: ${lsbDescriptions[value - 1][0]}`);
 }
-lsb.addEventListener('input', updateLsb);
+lsb.addEventListener('input', () => {
+  updateLsb();
+  updateLayoutFeedback();
+});
+layoutStart.addEventListener('input', updateLayoutFeedback);
 
 document.querySelectorAll('.generate-keys').forEach(button => button.addEventListener('click', async () => {
   if (button.disabled) return;
@@ -323,9 +531,7 @@ encodeForm.addEventListener('submit', async event => {
   button.classList.add('is-loading');
   resultBox.className = 'result operation-status is-loading';
   const coverFile = coverInput.files[0];
-  const isVideo = Boolean(coverFile && (
-    coverFile.type.startsWith('video/') || /\.(mp4|mov|mkv|webm|avi)$/i.test(coverFile.name)
-  ));
+  const isVideo = isVideoCover(coverFile);
   resultBox.textContent = isVideo
     ? 'Processing video; this can take a while...'
     : 'Hashing, encrypting, signing, and embedding payload...';
@@ -368,6 +574,7 @@ encodeForm.addEventListener('submit', async event => {
 
 document.querySelector('#start-over').addEventListener('click', async () => {
   if (transitionPending) return;
+  invalidateCapacity();
   for (const result of document.querySelectorAll('.generate-keys + .result')) {
     keyRequestVersions.set(result, (keyRequestVersions.get(result) || 0) + 1);
     releaseDownloadLinks(result);
@@ -383,6 +590,7 @@ document.querySelector('#start-over').addEventListener('click', async () => {
   downloads.replaceChildren();
   document.querySelector('#start-unit').value = '2048';
   updateLsb();
+  updateLayoutFeedback();
   await showStep(0);
 });
 
@@ -428,6 +636,7 @@ function downloadLink(url, filename, label) {
 }
 
 updateLsb();
+updateLayoutFeedback();
 showStep(0, {initial: true});
 window.addEventListener('pagehide', () => {
   if (coverObjectUrl) URL.revokeObjectURL(coverObjectUrl);
