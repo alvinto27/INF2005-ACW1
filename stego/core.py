@@ -961,6 +961,20 @@ def _decode_carrier_source(
     context.preserved_ratio = (
         context.preserved_bits / total_bits if total_bits else 0.0
     )
+    if session.file_backed:
+        try:
+            _check_free_space(
+                session.directory,
+                3 * layout.ciphertext_length,
+                DISK_SPACE_RESERVE_BYTES,
+                "insufficient free disk space to verify this carrier",
+            )
+        except ValueError:
+            return _failure_result(
+                "Cannot Verify",
+                "insufficient free disk space to verify this carrier",
+                context,
+            )
     ciphertext = session.new_store("ciphertext")
     signature_buffer = bytearray()
     signing_hasher = hashes.Hash(hashes.SHA256())

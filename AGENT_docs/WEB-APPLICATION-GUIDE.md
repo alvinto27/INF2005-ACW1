@@ -92,6 +92,8 @@ The route uses these HTTP status codes:
 | Verification completes with any other verdict | 200 | Full report; callers must read the verdict |
 | The upload exceeds a configured `MAX_CONTENT_LENGTH` or the free-space guard | 413 | JSON error |
 
+Too little free space for file-backed decode staging returns HTTP 200 with verdict `Cannot Verify`; no recovered payload is published. The check runs before the ciphertext staging file is created and accounts for three ciphertext lengths plus the shared reserve.
+
 A readable version 2 bootstrap returns `Cannot Verify` with detail `unsupported bootstrap version`; the decoder does not retry with an older format.
 
 Verification reads the bootstrap, validates recovered fields and bounds, reads the packet at that location, checks padding, verifies RSA-PSS before decryption, opens AES-GCM, parses the record, and checks the v3 media hash last. It reads one bootstrap and does not search for alternative packets. Cryptographic and integrity decisions remain in `stego/core.py`; Flask validates inputs and serializes the result.

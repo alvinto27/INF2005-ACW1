@@ -37,6 +37,7 @@ from stego import (
     write_lsb_bits,
 )
 from stego.media import _PNG_MAX_DECODED_BYTES
+from stego.storage import DISK_SPACE_RESERVE_BYTES
 from stego.sources import (
     _convert_audio,
     _convert_image,
@@ -874,6 +875,24 @@ class WebApplicationTests(unittest.TestCase):
                 report = self.decode(encoded.get_json(), "stego.png").get_json()
                 self.assertEqual(report["verdict"], "Authentic")
                 self.assertEqual(report["lsb_bits"], lsb_bits)
+
+    def test_decode_staging_space_failure_returns_cannot_verify(self) -> None:
+        """The route keeps low decode-staging space as an HTTP 200 verdict."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        stego_bytes = self.download_stego(encoded)
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + 1),
+            ),
+        ):
+            response = self.decode_bytes(stego_bytes, "stego.png")
+        self.assertEqual(response.status_code, 200)
+        report = response.get_json()
+        self.assertEqual(report["verdict"], "Cannot Verify")
+        self.assertIn("insufficient free disk space", report["message"])
+        self.assert_no_recovered_payloads()
 
     def test_bad_verify_key_returns_cannot_verify_report(self) -> None:
         """An unreadable key remains a Cannot Verify report with file size."""

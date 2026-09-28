@@ -129,6 +129,8 @@ Verification stages ciphertext and decrypted plaintext privately. It checks the 
 
 The staging session owns all memory and file resources. Exit it on success, every verdict, ordinary exceptions, and `KeyboardInterrupt`. Clear bytearray stores; close open files; remove the staging directory. A failed verification must not create or replace the requested output. On success, atomically move only the payload-only file to the output path. A prior output file remains unchanged on failure.
 
+Before the file-backed verifier creates its ciphertext staging file, it checks free space on the staging directory's filesystem. The check requires `3 × ciphertext_length + DISK_SPACE_RESERVE_BYTES`, covering the simultaneous ciphertext, plaintext, and authenticated-payload staging files. A failed check returns `Cannot Verify`; the memory-only verifier does not run this disk check.
+
 A power loss or `SIGKILL` can leave plaintext staging files. Stop the server and manually remove `.stego-staging-*` directories after a crash. Staging files are not served by the web routes. Temporary disk use grows with encrypted and staged plaintext payload size. Same-size payload input changes during an encode read are not prevented by size checks.
 
 ## 9. Memory claim

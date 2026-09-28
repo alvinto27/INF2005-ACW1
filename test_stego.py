@@ -1124,6 +1124,42 @@ class TestStorageChecks(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "^low$"):
                 _check_free_space(Path("unused"), bound, DISK_SPACE_RESERVE_BYTES, "low")
 
+    def test_file_backed_decode_checks_three_ciphertext_stores(self) -> None:
+        """Require reserve plus three ciphertext lengths before file staging."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.png"
+            encoded_path = directory / "encoded.png"
+            Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8)).save(source_path)
+            layout, _ = encode_png(
+                source_path, encoded_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"disk-space check", b"",
+            )
+            required_bytes = 3 * layout.ciphertext_length
+            accepted_output = directory / "accepted.bin"
+            refused_output = directory / "refused.bin"
+            with patch("stego.storage.shutil.disk_usage") as disk_usage:
+                disk_usage.return_value.free = (
+                    DISK_SPACE_RESERVE_BYTES + required_bytes
+                )
+                accepted = verify_png_to_payload_path(
+                    encoded_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, accepted_output
+                )
+            self.assertEqual(accepted.verdict, "Authentic", accepted.detail)
+            self.assertTrue(accepted_output.exists())
+
+            with patch("stego.storage.shutil.disk_usage") as disk_usage:
+                disk_usage.return_value.free = (
+                    DISK_SPACE_RESERVE_BYTES + required_bytes - 1
+                )
+                refused = verify_png_to_payload_path(
+                    encoded_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, refused_output
+                )
+            self.assertEqual(refused.verdict, "Cannot Verify")
+            self.assertIn("insufficient free disk space", refused.detail)
+            self.assertFalse(refused_output.exists())
+            self.assertEqual(list(directory.glob(".stego-staging-*")), [])
+
     def test_png_output_preflight_counts_staging_and_final_png(self) -> None:
         """Refuse output unless two PNG bounds and the reserve fit."""
         with TemporaryDirectory() as directory_name:
