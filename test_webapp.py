@@ -876,6 +876,104 @@ class WebApplicationTests(unittest.TestCase):
                 self.assertEqual(report["verdict"], "Authentic")
                 self.assertEqual(report["lsb_bits"], lsb_bits)
 
+    def test_encode_message_cover_copy_space_failure_returns_413(self) -> None:
+        """Refuse the carrier copy when it would use the disk reserve."""
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + 1),
+            ),
+        ):
+            response = self.encode(sample_png(), "cover.png", message="message")
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.get_json()["error"],
+            "insufficient free disk space for the uploaded file",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(list(self.work_dir.iterdir()), [])
+
+    def test_encode_payload_file_copy_space_failure_returns_413(self) -> None:
+        """Refuse the payload-file copy before copying the cover upload."""
+        cover = sample_png()
+        payload = b"x" * (len(cover) + 1024)
+        call_count = 0
+
+        def disk_usage(_path: str | bytes | os.PathLike[str]) -> SimpleNamespace:
+            nonlocal call_count
+            call_count += 1
+            free = (
+                16 * 1024**3
+                if call_count == 1
+                else DISK_SPACE_RESERVE_BYTES + len(cover)
+            )
+            return SimpleNamespace(free=free)
+
+        with patch("stego.storage.shutil.disk_usage", side_effect=disk_usage):
+            response = self.encode(
+                cover, "cover.png", message="", payload=(payload, "payload.bin")
+            )
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.get_json()["error"],
+            "insufficient free disk space for the uploaded file",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(list(self.work_dir.iterdir()), [])
+
+    def test_decode_stego_copy_space_failure_returns_413(self) -> None:
+        """Refuse the stego upload copy and leave no recovered files."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        stego_bytes = self.download_stego(encoded)
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + 1),
+            ),
+        ):
+            response = self.decode_bytes(stego_bytes, "stego.png")
+        self.assertEqual(response.status_code, 413)
+        report = response.get_json()
+        self.assertEqual(report["verdict"], "Cannot Verify")
+        self.assertEqual(
+            report["error"],
+            "insufficient free disk space for the uploaded file",
+        )
+        self.assert_no_recovered_payloads()
+        self.assertEqual(list(self.work_dir.iterdir()), [])
+
+    def test_decode_upload_copy_check_exact_disk_space_boundary(self) -> None:
+        """Accept exact copy space and refuse the same upload one byte below."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        stego_bytes = self.download_stego(encoded)
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + len(stego_bytes)),
+                SimpleNamespace(free=16 * 1024**3),
+            ),
+        ):
+            accepted = self.decode_bytes(stego_bytes, "stego.png")
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.get_json()["verdict"], "Authentic")
+        for path in self.payload_dir.iterdir():
+            path.unlink()
+
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + len(stego_bytes) - 1),
+            ),
+        ):
+            refused = self.decode_bytes(stego_bytes, "stego.png")
+        self.assertEqual(refused.status_code, 413)
+        self.assertEqual(refused.get_json()["verdict"], "Cannot Verify")
+        self.assert_no_recovered_payloads()
+
     def test_decode_staging_space_failure_returns_cannot_verify(self) -> None:
         """The route keeps low decode-staging space as an HTTP 200 verdict."""
         encoded = self.encode(sample_png(), "cover.png").get_json()
@@ -883,6 +981,7 @@ class WebApplicationTests(unittest.TestCase):
         with patch(
             "stego.storage.shutil.disk_usage",
             side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
                 SimpleNamespace(free=16 * 1024**3),
                 SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + 1),
             ),

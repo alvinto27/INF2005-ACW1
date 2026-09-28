@@ -90,7 +90,7 @@ The route uses these HTTP status codes:
 | All fields are present, but the service cannot use them: the carrier is unsupported or unreadable, the sender public key cannot be read, or the receiver private key cannot be opened with the password | 200 | Full report with verdict `Cannot Verify` |
 | The receiver private key cannot open the bootstrap | 422 | Full report with verdict `Payload Missing` |
 | Verification completes with any other verdict | 200 | Full report; callers must read the verdict |
-| The upload exceeds a configured `MAX_CONTENT_LENGTH` or the free-space guard | 413 | JSON error |
+| The upload exceeds a configured `MAX_CONTENT_LENGTH`, fails the request free-space guard, or fails the per-upload free-space check before a route copies it | 413 | JSON error |
 
 Too little free space for file-backed decode staging returns HTTP 200 with verdict `Cannot Verify`; no recovered payload is published. The check runs before the ciphertext staging file is created and accounts for three ciphertext lengths plus the shared reserve.
 
@@ -158,7 +158,7 @@ The `POST /encode` status rules are:
 | --- | --- | --- |
 | The request has no `Content-Length` header | 411 | JSON `error` |
 | Missing or duplicate fields/files, unsupported or unreadable source, source conversion refusal, invalid or oversized key files, or layout/capacity failure | 400 | JSON `error`; known source failures keep the library message |
-| Upload exceeds a configured request limit or the free-space guard | 413 | JSON error |
+| Upload exceeds a configured request limit, fails the request free-space guard, or fails the per-upload free-space check before a route copies it | 413 | JSON error |
 | Storage or unexpected server failure | 500 | Generic JSON error without filesystem details; server logs the exception |
 
 Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the image decoded-byte cap, converted PCM size limit, unsupported video pixel formats, more than two audio channels in converted sources, unsupported lossless audio sample depths, and extra video/audio/subtitle/data streams. Strict PCM WAV carriers accept any positive channel count. Video backend messages are returned for carrier-unit, frame-byte, free-space, and output-size limit failures. The source converter turns RGB PNG `tRNS` colour-key transparency into RGBA alpha. The strict PNG adapter still refuses that input when it is used directly. Unsupported or unreadable files return HTTP 400. `/decode` accepts PNG, PCM WAV, and Matroska video. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.

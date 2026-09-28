@@ -19,6 +19,7 @@ from flask import (
 from werkzeug.datastructures import FileStorage
 
 from stego import PROTOCOL_VERSION
+from stego.storage import DISK_SPACE_RESERVE_BYTES, _check_free_space
 
 from .services.current_protocol import (
     CurrentProtocolService,
@@ -36,6 +37,10 @@ _DOWNLOAD_TYPES = {
     "wav": "audio/wav",
     "mkv": "video/x-matroska",
 }
+
+
+class InsufficientDiskSpace(ValueError):
+    """Raised when a route upload copy would use the reserved disk space."""
 
 
 @web.get("/")
@@ -125,6 +130,10 @@ def encode() -> Response | tuple[Response, int]:
                 "media-exported",
             ],
         )
+    except InsufficientDiskSpace as error:
+        if output_path is not None:
+            output_path.unlink(missing_ok=True)
+        return _error(str(error), 413)
     except ValueError as error:
         if output_path is not None:
             output_path.unlink(missing_ok=True)
@@ -207,6 +216,10 @@ def decode() -> Response | tuple[Response, int]:
                 ),
                 _required_form_value("receiver_key_password"),
             )
+    except InsufficientDiskSpace as error:
+        if payload_output_path is not None:
+            payload_output_path.unlink(missing_ok=True)
+        return _error(str(error), 413, "Cannot Verify")
     except ValueError as error:
         if payload_output_path is not None:
             payload_output_path.unlink(missing_ok=True)
@@ -325,10 +338,30 @@ def _new_payload_path(output_dir: Path) -> Path:
     raise OSError("could not allocate a recovered payload ID")
 
 
+def _save_upload(upload: FileStorage, destination: Path) -> None:
+    """Check free space, then copy one spooled upload to its route destination."""
+    stream = upload.stream
+    position = stream.tell()
+    stream.seek(0, 2)
+    size = stream.tell()
+    stream.seek(position)
+    message = "insufficient free disk space for the uploaded file"
+    try:
+        _check_free_space(
+            destination.parent,
+            size,
+            DISK_SPACE_RESERVE_BYTES,
+            message,
+        )
+    except ValueError as error:
+        raise InsufficientDiskSpace(message) from error
+    upload.save(destination)
+
+
 def _save_carrier_upload(name: str, destination: Path) -> None:
     """Save a required carrier upload to disk and reject an empty file."""
     upload = _single_upload(name)
-    upload.save(destination)
+    _save_upload(upload, destination)
     if destination.stat().st_size == 0:
         raise ValueError(f"uploaded file is empty: {name}")
 
@@ -410,7 +443,7 @@ def _payload_input(directory: Path) -> tuple[Path, str, str]:
         raise ValueError("a payload file or secret message is required")
     payload_path = directory / "payload.upload"
     if has_upload:
-        upload.save(payload_path)
+        _save_upload(upload, payload_path)
         if payload_path.stat().st_size == 0:
             raise ValueError("payload file is empty")
         payload_mime, payload_name = infer_payload_claim(
