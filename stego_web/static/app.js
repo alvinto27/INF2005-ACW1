@@ -527,7 +527,6 @@ document.querySelectorAll('.generate-keys').forEach(button => button.addEventLis
     const resultNodes = [
       downloadLink(textUrl(data.private_key_pem), `${role}-private-key.pem`, `Download ${role} private key`),
       downloadLink(textUrl(data.public_key_pem), `${role}-public-key.pem`, `Download ${role} public key`),
-      document.createTextNode(` Keep the ${role} private key confidential.`),
     ];
     if (!password.value) {
       const warning = document.createElement('p');
