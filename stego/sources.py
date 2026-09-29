@@ -135,8 +135,6 @@ def detect_source_family(
     """Return the allowlisted source family and detected format."""
     source_path = Path(os.fsdecode(fspath(path)))
     source_suffix = Path(original_name or source_path.name).suffix.lower()
-    if source_suffix == ".tga":
-        raise ValueError("TGA images are not supported")
     with source_path.open("rb") as source:
         signature = source.read(64)
     brands = _iso_bmff_brands(source_path)
@@ -246,11 +244,19 @@ def detect_source_family(
             SOURCE_ALLOWLIST["video"]["mp4_brands"]
         ).intersection(brands):
             raise ValueError(_SOURCE_DECODE_ERROR) from error
+        if source_suffix == ".tga":
+            raise ValueError("TGA images are not supported") from error
         raise ValueError(accepted_source_message()) from error
     except (OSError, TypeError) as error:
+        if source_suffix == ".tga":
+            raise ValueError("TGA images are not supported") from error
         raise ValueError(accepted_source_message()) from error
-    except ValueError:
+    except ValueError as error:
+        if source_suffix == ".tga" and str(error) == accepted_source_message():
+            raise ValueError("TGA images are not supported") from error
         raise
+    if source_suffix == ".tga":
+        raise ValueError("TGA images are not supported")
     raise ValueError(accepted_source_message())
 
 

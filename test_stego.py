@@ -1303,6 +1303,12 @@ class TestSourceConverters(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "^PPM images are not supported$"):
                 detect_source_family(ppm_path)
 
+            png_path = directory / "real.png"
+            Image.new("RGB", (2, 2), (1, 2, 3)).save(png_path)
+            fake_tga_path = directory / "fake.tga"
+            fake_tga_path.write_bytes(png_path.read_bytes())
+            self.assertEqual(detect_source_family(fake_tga_path), ("image", "png"))
+
             tga_path = directory / "image.tga"
             Image.new("RGB", (2, 2), (1, 2, 3)).save(tga_path)
             with self.assertRaisesRegex(ValueError, "^TGA images are not supported$"):
