@@ -261,6 +261,15 @@ def private_pem(private_key: rsa.RSAPrivateKey) -> bytes:
     )
 
 
+def unencrypted_private_pem(private_key: rsa.RSAPrivateKey) -> bytes:
+    """Serialize a test private key without encryption."""
+    return private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+
+
 def public_pem(public_key: rsa.RSAPublicKey) -> bytes:
     """Serialize a test public key."""
     return public_key.public_bytes(
@@ -308,15 +317,21 @@ class WebApplicationTests(unittest.TestCase):
         payload_mime: str = "",
         payload_name: str = "",
         start_unit: int = 2048,
+        sender_private_key_pem: bytes | None = None,
+        sender_key_password: str = PASSWORD,
     ) -> object:
         """Post one valid encoding request and return its Flask response."""
         data: dict[str, object] = {
             "cover": (io.BytesIO(cover), filename),
             "sender_private_key": (
-                io.BytesIO(self.sender_private_pem),
+                io.BytesIO(
+                    self.sender_private_pem
+                    if sender_private_key_pem is None
+                    else sender_private_key_pem
+                ),
                 "sender-private.pem",
             ),
-            "sender_key_password": PASSWORD,
+            "sender_key_password": sender_key_password,
             "receiver_public_key": (
                 io.BytesIO(self.receiver_public_pem),
                 "receiver-public.pem",
@@ -382,10 +397,15 @@ class WebApplicationTests(unittest.TestCase):
         filename: str,
         sender_public: bytes | None = None,
         receiver_private: bytes | None = None,
+        receiver_key_password: str = PASSWORD,
     ) -> object:
         """Download one encoded file, then post it for verification."""
         return self.decode_bytes(
-            self.download_stego(encoded), filename, sender_public, receiver_private
+            self.download_stego(encoded),
+            filename,
+            sender_public,
+            receiver_private,
+            receiver_key_password,
         )
 
     def decode_bytes(
@@ -394,6 +414,7 @@ class WebApplicationTests(unittest.TestCase):
         filename: str,
         sender_public: bytes | None = None,
         receiver_private: bytes | None = None,
+        receiver_key_password: str = PASSWORD,
     ) -> object:
         """Post carrier bytes with independently selectable verification keys."""
         response = self.client.post(
@@ -405,10 +426,14 @@ class WebApplicationTests(unittest.TestCase):
                     "sender-public.pem",
                 ),
                 "receiver_private_key": (
-                    io.BytesIO(receiver_private or self.receiver_private_pem),
+                    io.BytesIO(
+                        self.receiver_private_pem
+                        if receiver_private is None
+                        else receiver_private
+                    ),
                     "receiver-private.pem",
                 ),
-                "receiver_key_password": PASSWORD,
+                "receiver_key_password": receiver_key_password,
             },
             content_type="multipart/form-data",
         )
@@ -1748,6 +1773,200 @@ class WebApplicationTests(unittest.TestCase):
                 self.assertEqual(body["role"], role)
                 self.assertIn("BEGIN ENCRYPTED PRIVATE KEY", body["private_key_pem"])
                 self.assertIn("BEGIN PUBLIC KEY", body["public_key_pem"])
+
+    def test_key_generation_without_password_returns_unencrypted_pkcs8(self) -> None:
+        """An omitted key password generates a plain PKCS#8 private PEM."""
+        response = self.client.post("/keys/generate", data={"role": "sender"})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        private_pem_text = response.get_json()["private_key_pem"]
+        self.assertTrue(private_pem_text.startswith("-----BEGIN PRIVATE KEY-----"))
+        self.assertNotIn("ENCRYPTED", private_pem_text)
+
+    def test_key_generation_keeps_nonempty_password_whitespace(self) -> None:
+        """A non-empty password is used exactly as entered, without stripping."""
+        password = " 123456 "
+        response = self.client.post(
+            "/keys/generate", data={"role": "sender", "key_password": password}
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        generated_pem = response.get_json()["private_key_pem"].encode("ascii")
+        loaded = CurrentProtocolService()._load_private_key(
+            generated_pem, password, "sender private key"
+        )
+        self.assertEqual(loaded.key_size, 2048)
+
+    def test_key_generation_rejects_duplicate_optional_password(self) -> None:
+        """Optional key-password fields still reject duplicate values."""
+        response = self.client.post(
+            "/keys/generate",
+            data=MultiDict(
+                [
+                    ("role", "sender"),
+                    ("key_password", "first-password"),
+                    ("key_password", "second-password"),
+                ]
+            ),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"], "provide exactly one value: key_password"
+        )
+
+    def test_key_password_fields_are_optional_with_eight_character_minimum(self) -> None:
+        """Each key-password input allows empty text but keeps minlength eight."""
+        pages = (
+            (
+                self.client.get("/").data,
+                (b'name="sender_key_password"', b'id="receiver-setup-password"'),
+            ),
+            (
+                self.client.get("/verify").data,
+                (b'name="receiver_key_password"',),
+            ),
+        )
+        for page, markers in pages:
+            lowered_page = page.lower()
+            self.assertIn(b"optional", lowered_page)
+            self.assertIn(b"leave empty for an unencrypted key", lowered_page)
+            for marker in markers:
+                marker_index = page.index(marker)
+                input_start = page.rfind(b"<input", 0, marker_index)
+                input_end = page.index(b">", marker_index)
+                input_markup = page[input_start : input_end + 1]
+                self.assertIn(b'minlength="8"', input_markup)
+                self.assertNotIn(b" required", input_markup)
+
+    def test_unencrypted_sender_and_receiver_keys_round_trip_with_empty_passwords(self) -> None:
+        """Protocol v3 encodes and verifies with unencrypted RSA private keys."""
+        sender_pem = unencrypted_private_pem(self.sender_private)
+        receiver_pem = unencrypted_private_pem(self.receiver_private)
+        encoded_response = self.encode(
+            sample_png(),
+            "cover.png",
+            message="unencrypted demo key round trip",
+            sender_private_key_pem=sender_pem,
+            sender_key_password="",
+        )
+        self.assertEqual(
+            encoded_response.status_code,
+            200,
+            encoded_response.get_data(as_text=True),
+        )
+        decoded = self.decode(
+            encoded_response.get_json(),
+            "stego.png",
+            receiver_private=receiver_pem,
+            receiver_key_password="",
+        )
+        self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
+        self.assertEqual(decoded.get_json()["verdict"], "Authentic")
+
+    def test_encrypted_sender_key_with_empty_password_returns_400(self) -> None:
+        """The encode route tells users to enter a password for encrypted keys."""
+        response = self.encode(
+            sample_png(), "cover.png", sender_key_password=""
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "sender private key is encrypted; enter its password",
+        )
+
+    def test_encrypted_receiver_key_with_empty_password_reports_cannot_verify(self) -> None:
+        """The encrypted-key mismatch returns the normal Cannot Verify report."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        response = self.decode(encoded, "stego.png", receiver_key_password="")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assertEqual(
+            response.get_json()["message"],
+            "receiver private key is encrypted; enter its password",
+        )
+        self.assert_no_recovered_payloads()
+
+    def test_wrong_sender_password_keeps_existing_error_message(self) -> None:
+        """An incorrect sender password keeps the established error text."""
+        response = self.encode(
+            sample_png(), "cover.png", sender_key_password="wrong-password"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "sender private key could not be loaded with that password",
+        )
+
+    def test_wrong_receiver_password_keeps_existing_report_message(self) -> None:
+        """An incorrect receiver password keeps the Cannot Verify report."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        response = self.decode(
+            encoded, "stego.png", receiver_key_password="wrong-password"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assertEqual(
+            response.get_json()["message"],
+            "receiver private key could not be loaded with that password",
+        )
+
+    def test_unencrypted_sender_key_with_password_returns_400(self) -> None:
+        """The encode route rejects a password for an unencrypted sender key."""
+        response = self.encode(
+            sample_png(),
+            "cover.png",
+            sender_private_key_pem=unencrypted_private_pem(self.sender_private),
+            sender_key_password=PASSWORD,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "sender private key is not encrypted; leave the password empty",
+        )
+
+    def test_unencrypted_receiver_key_with_password_reports_cannot_verify(self) -> None:
+        """A password for an unencrypted key returns Cannot Verify normally."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        response = self.decode(
+            encoded,
+            "stego.png",
+            receiver_private=unencrypted_private_pem(self.receiver_private),
+            receiver_key_password=PASSWORD,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assertEqual(
+            response.get_json()["message"],
+            "receiver private key is not encrypted; leave the password empty",
+        )
+        self.assert_no_recovered_payloads()
+
+    def test_seven_character_password_is_rejected_for_generation_encode_and_decode(self) -> None:
+        """Non-empty passwords still need at least eight characters."""
+        generated = self.client.post(
+            "/keys/generate", data={"role": "sender", "key_password": "1234567"}
+        )
+        self.assertEqual(generated.status_code, 400)
+        self.assertEqual(
+            generated.get_json()["error"],
+            "key password must contain at least 8 characters",
+        )
+        encoded = self.encode(
+            sample_png(), "cover.png", sender_key_password="1234567"
+        )
+        self.assertEqual(encoded.status_code, 400)
+        self.assertEqual(
+            encoded.get_json()["error"],
+            "key password must contain at least 8 characters",
+        )
+        valid_encoded = self.encode(sample_png(), "cover.png").get_json()
+        decoded = self.decode(
+            valid_encoded, "stego.png", receiver_key_password="1234567"
+        )
+        self.assertEqual(decoded.status_code, 200)
+        self.assertEqual(decoded.get_json()["verdict"], "Cannot Verify")
+        self.assertEqual(
+            decoded.get_json()["message"],
+            "key password must contain at least 8 characters",
+        )
 
     def test_obsolete_or_ambiguous_inputs_are_rejected(self) -> None:
         """The route requires current keys, valid layout, and exactly one payload."""

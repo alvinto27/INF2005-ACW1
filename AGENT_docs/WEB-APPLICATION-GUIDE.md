@@ -59,7 +59,9 @@ not prove that server-side processing stopped.
 
 ## Encode request
 
-`POST /encode` accepts a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or a video container with one real video stream and zero or one audio stream. It also accepts either a message or payload file, required `team_id` and `sender` values, optional additional metadata, the sender private key and password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them. Each sender or receiver key file can be up to 64 KiB.
+`POST /encode` accepts a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or a video container with one real video stream and zero or one audio stream. It also accepts either a message or payload file, required `team_id` and `sender` values, optional additional metadata, the sender private key and optional password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them. Each sender or receiver key file can be up to 64 KiB.
+
+The password is optional. Leave it empty for an unencrypted private key. A non-empty password must contain at least 8 characters and is used exactly as entered. Unencrypted private keys are for demos only: anyone with the file can use the key.
 
 Flask saves each request's uploads and working files under `STEGO_WORK_DIR`, defaulting to `instance/work`. This host uses `/tmp` as a RAM-backed filesystem, so multipart uploads and video snapshots must stay on the instance filesystem. The request deletes its temporary directory after success or failure. PyAV multipart file streams are also created in the work directory. The PNG encoder stages its intermediate `.stego-staging-*.png` beside the output and removes it after the write; this keeps it off `/tmp`. PNG and RIFF/WAVE use the fast signature path. For other sources, the service inspects PyAV streams and uses `detect_source_family()` to select an adapter. Strict PNG and PCM WAV carriers bypass conversion and keep their current ancillary data. Key PEMs remain byte inputs.
 
@@ -100,12 +102,14 @@ A capacity result is an estimate, not an encode result. The client supplies the 
 
 ## Decode request
 
-`POST /decode` requires four multipart fields:
+`POST /decode` requires three multipart fields and accepts one optional password field:
 
 - `stego`: one 8-bit or 16-bit RGB/RGBA PNG, uncompressed PCM WAV, or an EBML Matroska video carrier (`.mkv`);
 - `sender_public_key`: the trusted sender RSA-2048 public PEM;
-- `receiver_private_key`: the intended receiver's encrypted RSA-2048 private PEM; and
-- `receiver_key_password`: the password for that private key.
+- `receiver_private_key`: the intended receiver's RSA-2048 private PEM, encrypted or unencrypted; and
+- `receiver_key_password`: optional; leave it empty for an unencrypted private key.
+
+A non-empty password must contain at least 8 characters and is used exactly as entered. Unencrypted private keys are for demos only: anyone with the file can use the key.
 
 The sender public key and receiver private key files can each be up to 64 KiB.
 
@@ -118,7 +122,7 @@ The route uses these HTTP status codes:
 | The request has no `Content-Length` header | 411 | JSON error with verdict `Cannot Verify` |
 | A required upload or form field is missing or empty, or the upload cannot be saved | 400 | `ok`, `error`, and verdict `Cannot Verify`; no report fields |
 | A key file exceeds 64 KiB | 400 | JSON error with verdict `Cannot Verify` |
-| All fields are present, but the service cannot use them: the carrier is unsupported or unreadable, the sender public key cannot be read, or the receiver private key cannot be opened with the password | 200 | Full report with verdict `Cannot Verify` |
+| All fields are present, but the service cannot use them: the carrier is unsupported or unreadable, the sender public key cannot be read, the receiver private key cannot be opened with the given password, or the password does not match the receiver key's encryption state | 200 | Full report with verdict `Cannot Verify`; password/encryption mismatches include a clear message |
 | The receiver private key cannot open the bootstrap | 422 | Full report with verdict `Payload Missing` |
 | Verification completes with any other verdict | 200 | Full report; callers must read the verdict |
 | The upload exceeds a configured `MAX_CONTENT_LENGTH`, fails the request free-space guard, or fails the per-upload free-space check before a route copies it | 413 | JSON error |
@@ -188,7 +192,7 @@ The `POST /encode` status rules are:
 | Condition | HTTP status | Body |
 | --- | --- | --- |
 | The request has no `Content-Length` header | 411 | JSON `error` |
-| Missing or duplicate fields/files, unsupported or unreadable source, source conversion refusal, invalid or oversized key files, or layout/capacity failure | 400 | JSON `error`; known source failures keep the library message |
+| Missing or duplicate fields/files, unsupported or unreadable source, source conversion refusal, invalid or oversized key files, key/password encryption mismatch, short non-empty password, or layout/capacity failure | 400 | JSON `error`; known source failures keep the library message |
 | Upload exceeds a configured request limit, fails the request free-space guard, or fails the per-upload free-space check before a route copies it | 413 | JSON error |
 | Storage or unexpected server failure | 500 | Generic JSON error without filesystem details; server logs the exception |
 
@@ -208,7 +212,7 @@ Image and audio output checks run before the output write. The PNG check uses tw
 
 The optional fixed request cap and the upload free-space guard return 413. `create_app(test_config)` can override the work directory and request cap. `TemporaryDirectory` removes request files and source snapshots on normal success or failure; there is no stale-directory sweeper. Encoded carriers and recovered payloads remain in their output directories until users delete them. Private `.stego-staging-*` directories are removed on normal exits. Power loss or `SIGKILL` can leave request or unauthenticated plaintext staging; stop the server and remove these directories manually after a crash. See [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#cleanup-rule).
 
-`/keys/generate` is a local setup helper for sender or receiver keys. Deployment beyond trusted localhost still needs key storage and access controls, key rotation, transport protection, and auditing.
+`/keys/generate` is a local setup helper for sender or receiver keys. Its `key_password` field is optional; an empty value returns an unencrypted private key. A non-empty password must have at least 8 characters. The browser warns that an unencrypted private key is for demos only because anyone with the file can use it. Deployment beyond trusted localhost still needs key storage and access controls, key rotation, transport protection, and auditing.
 
 ## Requirement coverage
 

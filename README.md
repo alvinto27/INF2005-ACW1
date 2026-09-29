@@ -79,7 +79,7 @@ Encoding requires:
 
 1. a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or video source with one video stream and zero or one audio stream; the output is lossless PNG, WAV, or FFV1/PCM Matroska (`.mkv`);
 2. either a UTF-8 message or one arbitrary payload file, plus required team ID and sender values; its MIME and filename claims are generated automatically from the selected input and are read-only in the browser; the server ignores submitted claim overrides;
-3. an encrypted sender RSA private key and its password;
+3. a sender RSA private key; its password is optional. Leave it empty for an unencrypted key. Unencrypted keys are for demos only;
 4. the intended receiver's RSA public key;
 5. a packet start unit at or after the 2,048-unit RSA-2048 bootstrap span; and
 6. an LSB count from 1 through 8.
@@ -92,7 +92,8 @@ record, embeds the receiver bootstrap and packet, and returns the stego media pl
 the sender public key. Payload bytes are processed in bounded chunks.
 
 Verification accepts the received PNG, WAV, or Matroska video stego file, the
-trusted sender public key, and the intended receiver private key and password.
+trusted sender public key, and the intended receiver private key. Its password is
+optional; leave it empty for an unencrypted key. Unencrypted keys are for demos only.
 The receiver bootstrap recovers the start unit, LSB count, record length, and
 AES session material.
 The original cover and the previous shared start-location secret are not inputs.

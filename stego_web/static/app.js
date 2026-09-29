@@ -26,6 +26,7 @@ const capacityHelpers = window.StegoCapacity;
 const capacityStatus = document.querySelector('#capacity-status');
 const layoutStatus = document.querySelector('#layout-capacity-status');
 const layoutStart = document.querySelector('#start-unit');
+const senderKeyPassword = document.querySelector('#sender-key-password');
 const layoutStepIndex = cards.findIndex(card => card.contains(layoutStart));
 const inputNextButton = cards[0].querySelector('.next');
 let currentStep = 0;
@@ -140,6 +141,16 @@ function validCurrentCard() {
       return false;
     }
   }
+  if (currentStep === 1 && senderKeyPassword.value
+      && senderKeyPassword.value.length < senderKeyPassword.minLength) {
+    senderKeyPassword.setCustomValidity(
+      'Use at least 8 characters, or leave empty for an unencrypted key.',
+    );
+    senderKeyPassword.reportValidity();
+    motion.pulse(senderKeyPassword.closest('label'));
+    return false;
+  }
+  senderKeyPassword.setCustomValidity('');
   if (currentStep === 0) {
     const hasMessage = Boolean(secretMessage.value.trim());
     const hasFile = Boolean(payloadFile.files[0]);
@@ -469,14 +480,18 @@ lsb.addEventListener('input', () => {
   updateLayoutFeedback();
 });
 layoutStart.addEventListener('input', updateLayoutFeedback);
+document.querySelectorAll('input[type="password"][minlength]')
+  .forEach(password => password.addEventListener('input', () => password.setCustomValidity('')));
 
 document.querySelectorAll('.generate-keys').forEach(button => button.addEventListener('click', async () => {
   if (button.disabled) return;
   const role = button.dataset.role;
   const password = document.querySelector(`#${button.dataset.password}`);
   const resultBox = document.querySelector(`#${button.dataset.result}`);
-  if (!password.value || password.value.length < 8) {
-    password.setCustomValidity('Use at least 8 characters to encrypt the generated private key.');
+  if (password.value && password.value.length < 8) {
+    password.setCustomValidity(
+      'Use at least 8 characters, or leave empty for an unencrypted key.',
+    );
     password.reportValidity();
     return;
   }
@@ -497,18 +512,30 @@ document.querySelectorAll('.generate-keys').forEach(button => button.addEventLis
     const body = new FormData();
     body.set('role', role); body.set('key_password', password.value);
     const data = await api.post('/keys/generate', body, 60000);
+    const expectedPrivateKeyHeader = password.value
+      ? '-----BEGIN ENCRYPTED PRIVATE KEY-----'
+      : '-----BEGIN PRIVATE KEY-----';
+    const privateKeyHeader = typeof data.private_key_pem === 'string'
+      ? data.private_key_pem.split(/\r?\n/, 1)[0] : '';
     if (data.ok !== true || typeof data.private_key_pem !== 'string'
         || typeof data.public_key_pem !== 'string'
-        || !data.private_key_pem.includes('BEGIN ENCRYPTED PRIVATE KEY')
+        || privateKeyHeader !== expectedPrivateKeyHeader
         || !data.public_key_pem.includes('BEGIN PUBLIC KEY')) throw api.malformed();
     if (keyRequestVersions.get(resultBox) !== version) return;
     releaseDownloadLinks(resultBox);
     resultBox.className = 'result key-downloads';
-    resultBox.replaceChildren(
+    const resultNodes = [
       downloadLink(textUrl(data.private_key_pem), `${role}-private-key.pem`, `Download ${role} private key`),
       downloadLink(textUrl(data.public_key_pem), `${role}-public-key.pem`, `Download ${role} public key`),
       document.createTextNode(` Keep the ${role} private key confidential.`),
-    );
+    ];
+    if (!password.value) {
+      const warning = document.createElement('p');
+      warning.className = 'key-warning';
+      warning.textContent = 'This private key is not encrypted. Anyone with the file can use it. Use it for demos only.';
+      resultNodes.push(warning);
+    }
+    resultBox.replaceChildren(...resultNodes);
     motion.stagger(resultBox.children);
   } catch (error) {
     if (keyRequestVersions.get(resultBox) !== version) return;

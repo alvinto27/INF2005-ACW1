@@ -122,15 +122,15 @@
         </section>
         <section class="wizard-card" data-step="1" aria-labelledby="step-2-title" hidden>
           <span class="step-kicker">02 / SENDER AUTHENTICATION</span><h3 id="step-2-title">Load the sender signing key</h3><p class="hint">The sender private key creates the RSA-PSS signature. Its public half is exported with the stego file.</p>
-          <label>Sender encrypted private key (.pem)<input name="sender_private_key" type="file" accept=".pem,application/x-pem-file,text/plain" required></label>
-          <label>Sender private-key password<input id="sender-key-password" name="sender_key_password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label>
+          <label>Sender private key (.pem)<input name="sender_private_key" type="file" accept=".pem,application/x-pem-file,text/plain" required></label>
+          <label>Sender private-key password (optional)<input id="sender-key-password" name="sender_key_password" type="password" minlength="8" autocomplete="new-password" placeholder="Optional; leave empty for an unencrypted key"></label>
           <button type="button" class="secondary generate-keys" data-role="sender" data-password="sender-key-password" data-result="sender-key-result">Generate sender key pair</button><div id="sender-key-result" class="result" aria-live="polite"></div>
           <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Sender key ready <span>-&gt;</span></button></div>
         </section>
         <section class="wizard-card" data-step="2" aria-labelledby="step-3-title" hidden>
           <span class="step-kicker">03 / RECEIVER GATE</span><h3 id="step-3-title">Select the intended receiver</h3><p class="hint">The receiver public key encrypts the bootstrap. Only its matching private key can recover the packet location and AES session material.</p>
           <label>Receiver public key (.pem)<input name="receiver_public_key" type="file" accept=".pem,application/x-pem-file,text/plain" required></label>
-          <label>New receiver-key password (generation only)<input id="receiver-setup-password" type="password" minlength="8" autocomplete="new-password" placeholder="Needed only when generating a pair"></label>
+          <label>New receiver-key password (optional)<input id="receiver-setup-password" type="password" minlength="8" autocomplete="new-password" placeholder="Optional; leave empty for an unencrypted key"></label>
           <button type="button" class="secondary generate-keys" data-role="receiver" data-password="receiver-setup-password" data-result="receiver-key-result">Generate receiver key pair</button><div id="receiver-key-result" class="result" aria-live="polite"></div>
           <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Receiver key ready <span>-&gt;</span></button></div>
         </section>

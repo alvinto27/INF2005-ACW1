@@ -108,7 +108,7 @@ class WebEncodingResult:
 
 @dataclass(frozen=True)
 class GeneratedKeyPair:
-    """Hold an encrypted private PEM and its matching public PEM."""
+    """Hold a private PEM and its matching public PEM."""
 
     private_key_pem: bytes
     public_key_pem: bytes
@@ -118,14 +118,19 @@ class CurrentProtocolService:
     """Bridge uploaded files to the protocol version 3 file APIs."""
 
     def generate_key_pair(self, password: str) -> GeneratedKeyPair:
-        """Generate one RSA-2048 pair with a password-protected private key."""
+        """Generate an RSA-2048 pair with optional private-key encryption."""
         password_bytes = self._password_bytes(password)
+        encryption = (
+            serialization.NoEncryption()
+            if password_bytes is None
+            else serialization.BestAvailableEncryption(password_bytes)
+        )
         private_key, public_key = generate_rsa_keypair()
         return GeneratedKeyPair(
             private_key.private_bytes(
                 serialization.Encoding.PEM,
                 serialization.PrivateFormat.PKCS8,
-                serialization.BestAvailableEncryption(password_bytes),
+                encryption,
             ),
             self._public_key_pem(public_key),
         )
@@ -493,25 +498,67 @@ class CurrentProtocolService:
         }
 
     @staticmethod
-    def _password_bytes(password: str) -> bytes:
-        """Validate a web key password and encode it for cryptography."""
-        if not isinstance(password, str) or len(password) < 8:
+    def _password_bytes(password: str) -> bytes | None:
+        """Return None for an empty password; validate and encode any other value."""
+        if not isinstance(password, str):
+            raise ValueError("key password must be text")
+        if password == "":
+            return None
+        if len(password) < 8:
             raise ValueError("key password must contain at least 8 characters")
         return password.encode("utf-8")
 
     def _load_private_key(
         self, pem: bytes, password: str, label: str
     ) -> rsa.RSAPrivateKey:
-        """Load one encrypted RSA-2048 private key from uploaded PEM bytes."""
+        """Load an RSA-2048 PEM key and report password/encryption mismatches."""
         if not isinstance(pem, bytes):
             raise TypeError(f"{label} must be uploaded as bytes")
+        password_bytes = self._password_bytes(password)
         try:
             key = serialization.load_pem_private_key(
-                pem, password=self._password_bytes(password)
+                pem, password=password_bytes
             )
             return validate_rsa_private_key(key)
-        except (TypeError, ValueError, UnsupportedAlgorithm) as error:
+        except TypeError as error:
+            header, encrypted = self._private_key_pem_info(pem)
+            if password_bytes is None and encrypted:
+                raise ValueError(
+                    f"{label} is encrypted; enter its password"
+                ) from error
+            if password_bytes is not None and header in {
+                b"-----BEGIN PRIVATE KEY-----",
+                b"-----BEGIN RSA PRIVATE KEY-----",
+            } and not encrypted:
+                raise ValueError(
+                    f"{label} is not encrypted; leave the password empty"
+                ) from error
             raise ValueError(f"{label} could not be loaded with that password") from error
+        except (ValueError, UnsupportedAlgorithm) as error:
+            raise ValueError(f"{label} could not be loaded with that password") from error
+
+    @staticmethod
+    def _private_key_pem_info(pem: bytes) -> tuple[bytes, bool]:
+        """Return the PEM label and whether its headers mark it as encrypted."""
+        lines = pem.lstrip().splitlines()
+        if not lines:
+            return b"", False
+        header = lines[0].strip()
+        if header == b"-----BEGIN ENCRYPTED PRIVATE KEY-----":
+            return header, True
+        if header != b"-----BEGIN RSA PRIVATE KEY-----":
+            return header, False
+        for line in lines[1:4]:
+            if not line.strip():
+                break
+            name, separator, value = line.partition(b":")
+            if (
+                separator
+                and name.strip().lower() == b"proc-type"
+                and value.strip().lower() == b"4,encrypted"
+            ):
+                return header, True
+        return header, False
 
     @staticmethod
     def _load_public_key(pem: bytes, label: str) -> rsa.RSAPublicKey:

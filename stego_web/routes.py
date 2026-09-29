@@ -83,7 +83,7 @@ def encode() -> Response | tuple[Response, int]:
                 _required_upload(
                     "sender_private_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
                 ),
-                _required_form_value("sender_key_password"),
+                _optional_form_value("sender_key_password"),
                 _required_upload(
                     "receiver_public_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
                 ),
@@ -223,7 +223,7 @@ def generate_keys() -> Response | tuple[Response, int]:
         if role not in {"sender", "receiver", "key"}:
             raise ValueError("role must be sender or receiver")
         keys = protocol_service.generate_key_pair(
-            _required_form_value("key_password")
+            _optional_form_value("key_password")
         )
     except (TypeError, ValueError) as error:
         return _error(str(error), 400)
@@ -258,7 +258,7 @@ def decode() -> Response | tuple[Response, int]:
                 _required_upload(
                     "receiver_private_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
                 ),
-                _required_form_value("receiver_key_password"),
+                _optional_form_value("receiver_key_password"),
             )
     except InsufficientDiskSpace as error:
         if payload_output_path is not None:

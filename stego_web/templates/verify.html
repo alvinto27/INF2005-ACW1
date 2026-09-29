@@ -36,14 +36,14 @@
         <section class="verify-card" aria-labelledby="verify-form-title">
           <div class="verify-card-head"><span class="eyebrow">01 / DECODE AND VERIFY</span><span class="verify-card-mark" aria-hidden="true">V</span></div>
           <h2 id="verify-form-title">Decode and verify media</h2>
-          <p class="verify-form-lede">Upload the received file, the sender’s trusted public key, and your encrypted private key.</p>
+          <p class="verify-form-lede">Upload the received file, the sender’s trusted public key, and your private key. Its password is optional; leave it empty for an unencrypted key. Use unencrypted keys for demos only.</p>
           <form id="decode-form" enctype="multipart/form-data">
             <label>Received stego file<input id="decode-file" name="stego" type="file" accept=".png,.wav,.mkv,image/png,audio/wav,video/x-matroska" required></label>
             <div class="field-grid">
               <label>Sender public key (.pem)<input name="sender_public_key" type="file" accept=".pem,text/plain" required></label>
-              <label>Receiver encrypted private key (.pem)<input name="receiver_private_key" type="file" accept=".pem,text/plain" required></label>
+              <label>Receiver private key (.pem; encrypted or unencrypted)<input name="receiver_private_key" type="file" accept=".pem,text/plain" required></label>
             </div>
-            <label>Receiver private-key password<input name="receiver_key_password" type="password" minlength="8" required autocomplete="off"></label>
+            <label>Receiver private-key password (optional)<input name="receiver_key_password" type="password" minlength="8" placeholder="Optional; leave empty for an unencrypted key" autocomplete="off"></label>
             <p class="verify-form-note">No original cover, start location, or LSB count is needed. The receiver’s private key recovers them from the encrypted bootstrap.</p>
             <button type="submit" class="primary">Verify and decrypt payload <span aria-hidden="true">→</span></button>
           </form>

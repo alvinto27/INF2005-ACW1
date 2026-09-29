@@ -27,6 +27,8 @@
     return data;
   }
 
+  const receiverKeyPassword = form.elements.receiver_key_password;
+  receiverKeyPassword.addEventListener('input', () => receiverKeyPassword.setCustomValidity(''));
   form.addEventListener('input', () => { result.hidden = true; progress.textContent = ''; });
 
   function element(tag, text) {
@@ -152,6 +154,15 @@
 
   form.addEventListener('submit', async event => {
     event.preventDefault();
+    if (receiverKeyPassword.value
+        && receiverKeyPassword.value.length < receiverKeyPassword.minLength) {
+      receiverKeyPassword.setCustomValidity(
+        'Use at least 8 characters, or leave empty for an unencrypted key.',
+      );
+      receiverKeyPassword.reportValidity();
+      return;
+    }
+    receiverKeyPassword.setCustomValidity('');
     if (!form.reportValidity() || submit.disabled) return;
     const body = new FormData(form);
     const filename = form.elements.stego.files[0]?.name;
