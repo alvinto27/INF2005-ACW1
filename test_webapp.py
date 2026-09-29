@@ -41,10 +41,12 @@ from stego.media import _PNG_MAX_DECODED_BYTES
 from stego.packet import serialized_record_length
 from stego.storage import DISK_SPACE_RESERVE_BYTES
 from stego.sources import (
+    SOURCE_ALLOWLIST,
     _convert_audio,
     _convert_image,
     _decoded_audio_frames,
     _decoded_image_frames,
+    accepted_source_message,
 )
 from stego_web import create_app, routes
 from stego_web.services.current_protocol import (
@@ -176,6 +178,49 @@ def sample_mp4_with_video(audio_streams: int = 0) -> bytes:
                 for packet in stream.encode(None):
                     output.mux(packet)
         return path.read_bytes()
+
+
+def sample_audio_only_matroska_pcm24() -> bytes:
+    """Return a short audio-only 24-bit PCM Matroska source."""
+    with tempfile.TemporaryDirectory() as directory_name:
+        path = Path(directory_name) / "pcm24.mka"
+        with av.open(str(path), mode="w", format="matroska") as output:
+            stream = output.add_stream("pcm_s24le", rate=48_000)
+            stream.layout = "mono"
+            stream.codec_context.format = av.AudioFormat("s32")
+            frame = av.AudioFrame.from_ndarray(
+                np.zeros((1, 480), dtype=np.int32), format="s32", layout="mono"
+            )
+            frame.sample_rate = 48_000
+            frame.pts = 0
+            frame.time_base = Fraction(1, 48_000)
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                output.mux(packet)
+        return path.read_bytes()
+
+
+def sample_audio_only_webm_opus() -> bytes:
+    """Return a short audio-only WebM source encoded with Opus."""
+    with tempfile.TemporaryDirectory() as directory_name:
+        path = Path(directory_name) / "audio.webm"
+        with av.open(str(path), mode="w", format="webm") as output:
+            stream = output.add_stream("libopus", rate=48_000)
+            stream.layout = "mono"
+            stream.codec_context.format = av.AudioFormat("fltp")
+            frame = av.AudioFrame.from_ndarray(
+                np.zeros((1, 960), dtype=np.float32), format="fltp", layout="mono"
+            )
+            frame.sample_rate = 48_000
+            frame.pts = 0
+            frame.time_base = Fraction(1, 48_000)
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                output.mux(packet)
+        return path.read_bytes()
+
+
+def sample_jxl() -> bytes:
+    """Return a tiny real JPEG XL codestream generated with libjxl."""
+    return bytes.fromhex("ff0a181010090804010044004b188b15c249411e4004000000a80f0000")
 
 
 def sample_webm_with_video() -> bytes:
@@ -512,7 +557,12 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIn(b"Generated automatically from the payload", response.data)
         self.assertIn(b"Use a supported image, audio, or video file", response.data)
         self.assertIn(b"lossless PNG, WAV, or MKV", response.data)
-        self.assertIn(b"accept=\"image/*,audio/*,video/*,.png,.jpg,.jpeg,.webp,.avif,.bmp,.tif,.tiff,.gif,.wav,.mp3,.aac,.m4a,.flac,.ogg,.oga,.opus,.mp4,.mov,.mkv,.webm,.avi\" required", response.data)
+        expected_accept = ",".join(
+            extension
+            for family in SOURCE_ALLOWLIST.values()
+            for extension in family["extensions"]
+        )
+        self.assertIn(f'accept="{expected_accept}" required'.encode(), response.data)
         self.assertIn(b'href="/verify"', response.data)
         self.assertIn(b"PNG output", response.data)
         self.assertIn(b"WAV output", response.data)
@@ -731,6 +781,42 @@ class WebApplicationTests(unittest.TestCase):
         self.assertGreater(result["total_units"], 0)
         self.assertEqual(list(self.output_dir.iterdir()), [])
         self.assertEqual(list(self.payload_dir.iterdir()), [])
+
+    def test_capacity_and_encode_reject_jpeg_xl_with_specific_400(self) -> None:
+        """Reject JPEG XL at the source gate for both upload routes."""
+        cover = sample_jxl()
+        capacity = self.capacity_request(cover, "cover.jxl")
+        encoded = self.encode(cover, "cover.jxl")
+        for response in (capacity, encoded):
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(
+                response.get_json()["error"], "JPEG XL images are not supported"
+            )
+
+    def test_capacity_refuses_audio_only_matroska_and_webm(self) -> None:
+        """Return the explicit audio-only container refusal from capacity."""
+        for cover, filename in (
+            (sample_audio_only_matroska_pcm24(), "pcm24.mka"),
+            (sample_audio_only_webm_opus(), "audio.webm"),
+        ):
+            with self.subTest(filename=filename):
+                response = self.capacity_request(cover, filename)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.get_json()["error"],
+                    "audio-only Matroska/WebM sources are not supported",
+                )
+
+    def test_missing_video_decoder_is_a_400_for_capacity_and_encode(self) -> None:
+        """Map a missing video decoder to the source error, not HTTP 500."""
+        cover = sample_webm_with_video()
+        reason = "no decoder is available for this video stream"
+        with patch("stego.video._require_decoder_context", side_effect=ValueError(reason)):
+            capacity = self.capacity_request(cover, "clip.webm")
+            encoded = self.encode(cover, "clip.webm")
+        for response in (capacity, encoded):
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.get_json()["error"], reason)
 
     def test_capacity_rejects_duplicate_message_fields(self) -> None:
         """Duplicate payload descriptions use the standard form-field error."""
@@ -2103,7 +2189,7 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(
             response.get_json()["error"],
-            "unsupported or unreadable source; upload an image (PNG, JPEG, WebP, AVIF, BMP, TIFF, GIF) or audio (WAV, MP3, AAC/M4A, FLAC, ALAC, Ogg Vorbis/Opus) file",
+            accepted_source_message(),
         )
 
     def test_missing_and_empty_carrier_upload_errors_remain(self) -> None:

@@ -583,7 +583,7 @@ class CurrentProtocolService:
         carrier_path: Path, original_name: str | None = None
     ) -> tuple[str, str, str]:
         """Return carrier family, output extension, and uploaded source format."""
-        media_type, source_format = detect_source_family(carrier_path)
+        media_type, source_format = detect_source_family(carrier_path, original_name)
         suffix = Path(original_name or "").suffix.lower().lstrip(".")
         if source_format == "mov" and suffix in {
             "mp4", "mov", "m4a", "3gp", "3g2", "mj2"

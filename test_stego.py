@@ -1234,6 +1234,140 @@ class TestStorageChecks(unittest.TestCase):
 class TestSourceConverters(unittest.TestCase):
     """Check snapshot conversion, source rules, cleanup, and metadata handling."""
 
+    def _write_heif_brand_file(self, path: Path) -> None:
+        """Write a bounded ISO-BMFF ftyp header for an HEIF refusal test."""
+        path.write_bytes(
+            struct.pack(">I4s4sI4s4s", 24, b"ftyp", b"mif1", 0, b"heic", b"mif1")
+        )
+
+    def _write_audio_only_webm(self, path: Path) -> None:
+        """Write a short audio-only WebM using Opus."""
+        write_av_audio(
+            path, "libopus", "webm", "fltp",
+            np.zeros((1, 960), dtype=np.float32),
+        )
+
+    def test_allowlist_accepts_image_audio_and_video_families(self) -> None:
+        """Accept one real source from each public media family."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            image_path = directory / "cover.png"
+            Image.new("RGB", (8, 8)).save(image_path)
+            self.assertEqual(detect_source_family(image_path), ("image", "png"))
+
+            audio_path = directory / "sound.flac"
+            write_av_audio(
+                audio_path, "flac", "flac", "s16", np.zeros((1, 960), dtype=np.int16)
+            )
+            self.assertEqual(detect_source_family(audio_path), ("audio", "flac"))
+
+            video_path = directory / "clip.mkv"
+            self._write_video_then_audio(video_path)
+            family, _ = detect_source_family(video_path)
+            self.assertEqual(family, "video")
+
+    def test_avif_compatible_brand_is_accepted_with_mif1_major_brand(self) -> None:
+        """Treat AVIF as an image when avif is a compatible ISO-BMFF brand."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "mif1.avif"
+            self._write_avif(path, "yuv420p")
+            original = path.read_bytes()
+            old_size = int.from_bytes(original[:4], "big")
+            old_ftyp = original[:old_size]
+            compatible = [old_ftyp[offset:offset + 4] for offset in range(16, old_size, 4)]
+            if b"avif" not in compatible:
+                compatible.insert(0, b"avif")
+            new_size = 16 + 4 * len(compatible)
+            ftyp = (
+                struct.pack(">I4s4sI", new_size, b"ftyp", b"mif1", 0)
+                + b"".join(compatible)
+            )
+            path.write_bytes(ftyp + original[old_size:])
+            self.assertEqual(detect_source_family(path), ("image", "avif"))
+
+    def test_refuses_out_of_allowlist_source_families_with_specific_reasons(self) -> None:
+        """Reject unsupported still-image and audio formats before conversion."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            aiff_path = directory / "sample.aiff"
+            write_av_audio(
+                aiff_path, "pcm_s16be", "aiff", "s16",
+                np.zeros((1, 960), dtype=np.int16),
+            )
+            with self.assertRaisesRegex(ValueError, "^AIFF audio is not supported$"):
+                detect_source_family(aiff_path)
+
+            ppm_path = directory / "image.ppm"
+            ppm_path.write_bytes(b"P6\n2 2\n255\n" + bytes(12))
+            with self.assertRaisesRegex(ValueError, "^PPM images are not supported$"):
+                detect_source_family(ppm_path)
+
+            tga_path = directory / "image.tga"
+            Image.new("RGB", (2, 2), (1, 2, 3)).save(tga_path)
+            with self.assertRaisesRegex(ValueError, "^TGA images are not supported$"):
+                detect_source_family(tga_path)
+
+    def test_refuses_heif_jpeg_xl_and_audio_only_matroska_webm(self) -> None:
+        """Use explicit refusal reasons for unlisted image and audio containers."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            heif_path = directory / "sample.heic"
+            self._write_heif_brand_file(heif_path)
+            with self.assertRaisesRegex(ValueError, "^HEIC/HEIF images are not supported$"):
+                detect_source_family(heif_path)
+
+            jxl_path = directory / "sample.jxl"
+            jxl_path.write_bytes(bytes.fromhex(
+                "ff0a181010090804010044004b188b15c249411e4004000000a80f0000"
+            ))
+            with self.assertRaisesRegex(ValueError, "^JPEG XL images are not supported$"):
+                detect_source_family(jxl_path)
+            with self.assertRaisesRegex(
+                ValueError, "^no decoder is available for this video stream$"
+            ):
+                VideoCarrier(jxl_path)
+
+            matroska_path = directory / "pcm24.mka"
+            values24 = np.array([[0x123456, -0x123456, 0x7FFFFF]], dtype=np.int32)
+            write_av_audio(
+                matroska_path, "pcm_s24le", "matroska", "s32", values24 << 8
+            )
+            webm_path = directory / "audio.webm"
+            self._write_audio_only_webm(webm_path)
+            for path in (matroska_path, webm_path):
+                with self.subTest(path=path.name):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "^audio-only Matroska/WebM sources are not supported$",
+                    ):
+                        detect_source_family(path)
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "^audio-only Matroska/WebM sources are not supported$",
+                    ):
+                        with open_audio_source(path, directory):
+                            self.fail("audio-only Matroska/WebM must be refused")
+
+    def test_damaged_jpeg_reports_decode_failure_not_the_allowlist(self) -> None:
+        """Report an allowed JPEG decoder error without the format list."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "damaged.jpg"
+            Image.new("RGB", (16, 16)).save(path)
+            with (
+                patch(
+                    "stego.sources._decoded_image_frames",
+                    side_effect=av.error.InvalidDataError(0, "damaged JPEG"),
+                ),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "^could not decode the file; the file may be damaged$",
+                ),
+            ):
+                with open_image_source(path, directory):
+                    self.fail("a damaged JPEG must fail during decode")
+
     def test_image_snapshot_space_is_checked_before_frame_decode(self) -> None:
         """Refuse image conversion if two bounded PNG files do not fit."""
         with TemporaryDirectory() as directory_name:
@@ -1486,7 +1620,7 @@ class TestSourceConverters(unittest.TestCase):
                 )
             with patch("stego.sources._decoded_image_frames") as decode:
                 with self.assertRaisesRegex(
-                    ValueError, "image sample depth greater than 16 bits is not supported"
+                    ValueError, "EXR images are not supported"
                 ):
                     with open_image_source(exr_path, directory):
                         self.fail("floating-point EXR must be refused")
@@ -1782,7 +1916,6 @@ class TestSourceConverters(unittest.TestCase):
                 ("flac24.flac", "flac", "flac", "s32", values24 << 8, 3, values24),
                 ("alac16.m4a", "alac", "ipod", "s16p", values16, 2, values16),
                 ("alac24.m4a", "alac", "ipod", "s32p", values24 << 8, 3, values24),
-                ("pcm24.mka", "pcm_s24le", "matroska", "s32", values24 << 8, 3, values24),
             )
             for filename, codec, container_format, sample_format, values, width, expected in fixtures:
                 source_path = directory / filename
@@ -1831,9 +1964,11 @@ class TestSourceConverters(unittest.TestCase):
 
             multistream_path = directory / "two-audio.mka"
             self._write_two_audio_streams(multistream_path)
-            with self.assertRaisesRegex(ValueError, "exactly one audio stream"):
+            with self.assertRaisesRegex(
+                ValueError, "audio-only Matroska/WebM sources are not supported"
+            ):
                 with open_audio_source(multistream_path, directory):
-                    self.fail("two audio streams must be refused")
+                    self.fail("audio-only Matroska sources must be refused")
 
             cover_first_path = directory / "cover-first.mkv"
             self._write_cover_first_matroska(cover_first_path, values)
@@ -1869,9 +2004,11 @@ class TestSourceConverters(unittest.TestCase):
                 surround_path, "pcm_s16le", "matroska", "s16",
                 np.zeros((6, 480), dtype=np.int16), layout="5.1",
             )
-            with self.assertRaisesRegex(ValueError, "unsupported audio channel count"):
+            with self.assertRaisesRegex(
+                ValueError, "audio-only Matroska/WebM sources are not supported"
+            ):
                 with open_audio_source(surround_path, directory):
-                    self.fail("more than two channels must be refused")
+                    self.fail("audio-only Matroska sources must be refused")
 
     def test_audio_decode_once_cleanup_and_payload_wrapper(self) -> None:
         with TemporaryDirectory() as directory_name:

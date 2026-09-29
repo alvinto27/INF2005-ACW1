@@ -77,7 +77,7 @@ are the reference for exact API contracts.
 
 Encoding requires:
 
-1. a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or video source with one video stream and zero or one audio stream; the output is lossless PNG, WAV, or FFV1/PCM Matroska (`.mkv`);
+1. a still PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF image; WAV with a `pcm_*` codec; MP3; AAC ADTS; M4A with AAC or ALAC; FLAC; Ogg with Vorbis or Opus; or video in MP4/MOV, Matroska/WebM, or AVI with one decodable video stream and zero or one audio stream. Audio-only Matroska/WebM is refused. The output is lossless PNG, WAV, or FFV1/PCM Matroska (`.mkv`);
 2. either a UTF-8 message or one arbitrary payload file, plus required team ID and sender values; its MIME and filename claims are generated automatically from the selected input and are read-only in the browser; the server ignores submitted claim overrides;
 3. a sender RSA private key; its password is optional. Leave it empty for an unencrypted key. Unencrypted keys are for demos only;
 4. the intended receiver's RSA public key;
@@ -142,9 +142,9 @@ The public Python API includes `encode_png`, `verify_png`, `encode_wav`,
 `verify_video`. It also includes the source helpers `open_image_source`,
 `open_audio_source`, `detect_source_family`, `encode_image`, and `encode_audio`,
 plus their payload-file variants. The core provides PNG, WAV, and video
-payload-file encode and verify functions. Source converters accept still
-JPEG, PNG, WebP, GIF, TIFF, BMP, and AVIF images, and audio with exactly one
-mono or stereo audio stream. They create temporary canonical PNG/WAV carriers;
+payload-file encode and verify functions. Source converters accept only the
+listed still-image signatures and the fixed audio/video container and codec
+allowlist above. Converted audio has one or two channels. They create temporary canonical PNG/WAV carriers;
 strict PNG and PCM WAV inputs bypass conversion. Strict PCM WAV carriers accept
 any positive channel count. Converted snapshots are removed
 when the context or encode call ends. CMYK images are refused because a CMYK ICC

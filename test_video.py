@@ -598,6 +598,15 @@ class DecoderConfigurationTests(unittest.TestCase):
         self.assertEqual(stream.thread_count, 0)
         self.assertEqual(stream.thread_type, "AUTO")
 
+    def test_video_decode_failure_reports_possible_damage(self) -> None:
+        error = video.av.error.InvalidDataError(0, "damaged video")
+        with patch("stego.video.av.open", side_effect=error):
+            with self.assertRaisesRegex(
+                ValueError,
+                "^could not decode the file; the file may be damaged$",
+            ):
+                VideoCarrier("damaged.mp4")
+
 
 class VideoMediaCodeTests(unittest.TestCase):
     def test_code_three_packet_round_trip(self) -> None:

@@ -20,6 +20,7 @@ from werkzeug.datastructures import FileStorage
 
 from stego import PROTOCOL_VERSION
 from stego.storage import DISK_SPACE_RESERVE_BYTES, _check_free_space
+from stego.sources import source_accept_attribute
 
 from .services.current_protocol import (
     CurrentProtocolService,
@@ -45,8 +46,10 @@ class InsufficientDiskSpace(ValueError):
 
 @web.get("/")
 def index() -> str:
-    """Render the encoding workspace."""
-    return render_template("index.html")
+    """Render the encoding workspace with the current source allowlist."""
+    return render_template(
+        "index.html", source_accept=source_accept_attribute()
+    )
 
 
 @web.get("/verify")

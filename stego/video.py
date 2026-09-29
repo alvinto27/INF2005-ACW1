@@ -49,6 +49,14 @@ _VIDEO_DEPTHS = (8, 9, 10, 12, 14, 16)
 _VIDEO_ALPHA_DEPTHS = (8, 10, 12, 14, 16)
 
 
+def _require_decoder_context(stream: object, media_type: str) -> object:
+    """Return an input stream codec context or report a missing decoder."""
+    codec = stream.codec_context
+    if codec is None:
+        raise ValueError(f"no decoder is available for this {media_type} stream")
+    return codec
+
+
 def _check_video_output_resources(
     path: str | bytes | PathLike[str], additional_required_bytes: int = 0
 ) -> Path:
@@ -351,7 +359,10 @@ class VideoCarrier(CarrierSource):
         self._closed = False
         self._current_video_origin: Fraction | None = None
         self._output_reader = False
-        self._scan()
+        try:
+            self._scan()
+        except av.error.FFmpegError as error:
+            raise ValueError("could not decode the file; the file may be damaged") from error
 
     @property
     def path(self) -> str | bytes | PathLike[str]:
@@ -402,8 +413,10 @@ class VideoCarrier(CarrierSource):
             raise ValueError("unsupported additional stream")
         if len(videos) != 1:
             raise ValueError("video file must contain exactly one video stream")
+        _require_decoder_context(videos[0], "video")
         _configure_decoder(videos[0])
         if audios:
+            _require_decoder_context(audios[0], "audio")
             _configure_decoder(audios[0])
         return videos[0], audios[0] if audios else None
 

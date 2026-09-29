@@ -39,7 +39,7 @@ from .storage import (
     _check_free_space,
     _png_output_size_bound,
 )
-from .video import _audio_layout_identities
+from .video import _audio_layout_identities, _require_decoder_context
 
 
 # RIFF size is 36 + PCM data and must fit u32; round down to 8 bytes,
@@ -51,80 +51,207 @@ _PNG_SIG = b"\x89PNG\r\n\x1a\n"
 _PNG_CORE_CHUNKS = frozenset((b"IHDR", b"IDAT", b"IEND"))
 _PNG_COLOR_CHUNKS = frozenset((b"iCCP", b"cICP", b"sRGB", b"gAMA", b"cHRM", b"mDCV", b"cLLI"))
 _PNG_DROP_CHUNKS = frozenset((b"pHYs", b"eXIf", b"tEXt", b"zTXt", b"iTXt", b"sBIT"))
-_ACCEPTED_SOURCE_MESSAGE = (
-    "unsupported or unreadable source; upload an image (PNG, JPEG, WebP, AVIF, "
-    "BMP, TIFF, GIF) or audio (WAV, MP3, AAC/M4A, FLAC, ALAC, Ogg Vorbis/Opus) file"
-)
+SOURCE_ALLOWLIST = {
+    "image": {
+        "label": "PNG, JPEG, WebP, AVIF, BMP, TIFF, GIF",
+        "extensions": (".png", ".jpg", ".jpeg", ".webp", ".avif", ".bmp", ".tif", ".tiff", ".gif"),
+        "avif_brands": (b"avif", b"avis"),
+    },
+    "audio": {
+        "label": "WAV (PCM), MP3, AAC, M4A (AAC/ALAC), FLAC, Ogg (Vorbis/Opus)",
+        "extensions": (".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".oga", ".opus"),
+        "codecs": {
+            "wav": ("pcm_*",),
+            "mp3": ("mp3",),
+            "aac": ("aac",),
+            "m4a": ("aac", "alac"),
+            "flac": ("flac",),
+            "ogg": ("vorbis", "opus"),
+        },
+    },
+    "video": {
+        "label": "MP4/MOV, Matroska/WebM, AVI",
+        "extensions": (".mp4", ".mov", ".mkv", ".webm", ".avi"),
+        "containers": ("matroska", "webm", "avi"),
+        "mov_containers": ("mov", "mp4", "m4a", "3gp", "3g2", "mj2"),
+        "mp4_brands": (
+            b"isom", b"iso2", b"iso3", b"iso4", b"iso5", b"iso6",
+            b"mp41", b"mp42", b"avc1", b"dash", b"qt  ",
+        ),
+    },
+}
+_SOURCE_DECODE_ERROR = "could not decode the file; the file may be damaged"
+_AUDIO_ONLY_VIDEO_ERROR = "audio-only Matroska/WebM sources are not supported"
 
 
-def detect_source_family(path: str | bytes | PathLike[str]) -> tuple[str, str]:
-    """Return the source family and detected format for a supported source."""
+def accepted_source_message() -> str:
+    """Build the generic source refusal from the supported source families."""
+    return (
+        "unsupported source; upload an image (" + SOURCE_ALLOWLIST["image"]["label"]
+        + "), audio (" + SOURCE_ALLOWLIST["audio"]["label"]
+        + "), or video (" + SOURCE_ALLOWLIST["video"]["label"] + ") file"
+    )
+
+
+def source_accept_attribute() -> str:
+    """Build the browser cover picker extensions from the source allowlist."""
+    return ",".join(
+        extension
+        for family in SOURCE_ALLOWLIST.values()
+        for extension in family["extensions"]
+    )
+
+
+def _iso_bmff_brands(path: Path) -> tuple[bytes, ...]:
+    """Read the major and compatible brands from a bounded leading ftyp box."""
+    with path.open("rb") as source:
+        header = source.read(4096)
+    if len(header) < 16 or header[4:8] != b"ftyp":
+        return ()
+    box_size = int.from_bytes(header[:4], "big")
+    if box_size < 16 or box_size > len(header):
+        return ()
+    return (header[8:12], *(
+        header[offset:offset + 4]
+        for offset in range(16, box_size - 3, 4)
+        if header[offset:offset + 4]
+    ))
+
+
+def _specific_unsupported_reason(signature: bytes, brands: tuple[bytes, ...]) -> str | None:
+    """Return a useful refusal for known media families outside the allowlist."""
+    if signature.startswith((b"\x00\x00\x00\x0cjxl \r\n\x87\n", b"\xff\x0a")):
+        return "JPEG XL images are not supported"
+    if signature.startswith((b"\x00\x00\x00\x0cjP  \r\n\x87\n", b"\xff\x4f\xff\x51")):
+        return "JPEG 2000 images are not supported"
+    if {b"heic", b"heix", b"heif", b"hevc", b"hevx", b"mif1", b"msf1"}.intersection(brands) and not {b"avif", b"avis"}.intersection(brands):
+        return "HEIC/HEIF images are not supported"
+    return None
+
+
+def detect_source_family(
+    path: str | bytes | PathLike[str], original_name: str | None = None
+) -> tuple[str, str]:
+    """Return the allowlisted source family and detected format."""
     source_path = Path(os.fsdecode(fspath(path)))
+    source_suffix = Path(original_name or source_path.name).suffix.lower()
+    if source_suffix == ".tga":
+        raise ValueError("TGA images are not supported")
     with source_path.open("rb") as source:
-        signature = source.read(16)
+        signature = source.read(64)
+    brands = _iso_bmff_brands(source_path)
+    specific_reason = _specific_unsupported_reason(signature, brands)
+    if specific_reason is not None:
+        raise ValueError(specific_reason)
     if signature.startswith(_PNG_SIG):
         return "image", "png"
-    if len(signature) == 16 and signature[:4] == b"RIFF" and signature[8:12] == b"WAVE":
-        return "audio", "wav"
     if signature.startswith(b"\xff\xd8"):
-        image_signature_format = "jpeg"
-    elif signature.startswith((b"GIF87a", b"GIF89a")):
-        image_signature_format = "gif"
-    elif signature.startswith((b"II*\x00", b"MM\x00*")):
-        image_signature_format = "tiff"
-    elif signature.startswith(b"BM"):
-        image_signature_format = "bmp"
-    elif signature.startswith(b"\x76\x2f\x31\x01"):
-        image_signature_format = "exr"
-    elif signature[:4] == b"RIFF" and signature[8:12] == b"WEBP":
-        image_signature_format = "webp"
-    elif signature[4:8] == b"ftyp" and signature[8:12] in (b"avif", b"avis"):
-        image_signature_format = "avif"
-    else:
-        image_signature_format = ""
+        return "image", "jpeg"
+    if signature.startswith((b"GIF87a", b"GIF89a")):
+        return "image", "gif"
+    if signature.startswith((b"II*\x00", b"MM\x00*")):
+        return "image", "tiff"
+    if signature.startswith(b"BM"):
+        return "image", "bmp"
+    if signature[:4] == b"RIFF" and signature[8:12] == b"WEBP":
+        return "image", "webp"
+    if set(SOURCE_ALLOWLIST["image"]["avif_brands"]).intersection(brands):
+        return "image", "avif"
 
     try:
         with av.open(str(source_path), mode="r") as container:
+            primary_format = container.format.name.split(",")[0].strip().lower()
             video_streams = [stream for stream in container.streams if stream.type == "video"]
             audio_streams = [stream for stream in container.streams if stream.type == "audio"]
             real_video_streams = [
                 stream for stream in video_streams
                 if not (stream.disposition & av.stream.Disposition.attached_pic)
             ]
-            if audio_streams and real_video_streams:
-                return "video", container.format.name.split(",")[0].lower()
-            if audio_streams:
-                codec_name = audio_streams[0].codec_context.name.lower()
-                if codec_name.startswith("mp3"):
-                    source_format = "mp3"
-                elif codec_name == "flac":
-                    source_format = "flac"
-                elif codec_name == "alac":
-                    source_format = "alac"
-                elif codec_name == "vorbis":
-                    source_format = "ogg-vorbis"
-                elif codec_name == "opus":
-                    source_format = "ogg-opus"
-                elif codec_name == "aac":
-                    source_format = "m4a" if signature[4:8] == b"ftyp" else "aac"
-                else:
-                    source_format = codec_name
-                if signature.startswith(b"fLaC"):
-                    source_format = "flac"
-                elif signature.startswith(b"OggS"):
-                    source_format = "ogg-vorbis" if codec_name == "vorbis" else "ogg-opus"
-                return "audio", source_format
-            if image_signature_format and video_streams:
-                return "image", image_signature_format
+            if primary_format in {"matroska", "webm"} and not real_video_streams:
+                if audio_streams:
+                    raise ValueError(_AUDIO_ONLY_VIDEO_ERROR)
+                raise ValueError(accepted_source_message())
+            if signature[:4] == b"RIFF" and signature[8:12] == b"WAVE":
+                codec = _require_decoder_context(audio_streams[0], "audio") if audio_streams else None
+                wav_codecs = SOURCE_ALLOWLIST["audio"]["codecs"]["wav"]
+                if codec is None or not any(
+                    codec.name.lower().startswith(name.removesuffix("*"))
+                    for name in wav_codecs
+                ):
+                    raise ValueError("WAV sources must use a pcm_* audio codec")
+                return "audio", "wav"
             if real_video_streams:
-                return "video", container.format.name.split(",")[0].lower()
-    except (OSError, TypeError, av.error.FFmpegError) as error:
-        raise ValueError(_ACCEPTED_SOURCE_MESSAGE) from error
-    except ValueError as error:
-        raise ValueError(_ACCEPTED_SOURCE_MESSAGE) from error
-    if signature[:4] == b"RIFF" and signature[8:12] == b"WAVE":
-        return "audio", "wav"
-    raise ValueError(_ACCEPTED_SOURCE_MESSAGE)
+                if primary_format == "image2" or primary_format.endswith("_pipe"):
+                    if primary_format in {"j2k_pipe", "jpeg2000_pipe"}:
+                        raise ValueError("JPEG 2000 images are not supported")
+                    if primary_format in {"ppm_pipe", "pgm_pipe", "pbm_pipe"}:
+                        raise ValueError("PPM images are not supported")
+                    try:
+                        codec_context = _require_decoder_context(video_streams[0], "video")
+                    except ValueError:
+                        codec_name = ""
+                    else:
+                        codec_name = codec_context.name.lower()
+                    if codec_name in {"targa", "tga"}:
+                        raise ValueError("TGA images are not supported")
+                    if codec_name in {"exr", "openexr"}:
+                        raise ValueError("EXR images are not supported")
+                    if "jp2" in codec_name or "j2k" in codec_name or "jpeg2000" in codec_name:
+                        raise ValueError("JPEG 2000 images are not supported")
+                    if codec_name in {"ppm", "pgm", "pbm"}:
+                        raise ValueError("PPM images are not supported")
+                    raise ValueError(accepted_source_message())
+                video_containers = SOURCE_ALLOWLIST["video"]["containers"]
+                if primary_format in video_containers:
+                    return "video", primary_format
+                mov_containers = SOURCE_ALLOWLIST["video"]["mov_containers"]
+                mov_brands = SOURCE_ALLOWLIST["video"]["mp4_brands"]
+                if primary_format in mov_containers:
+                    if source_suffix in {".mp4", ".mov"} or set(mov_brands).intersection(brands):
+                        return "video", primary_format
+            if audio_streams and not real_video_streams:
+                codec = _require_decoder_context(audio_streams[0], "audio")
+                codec_name = codec.name.lower()
+                audio_codecs = SOURCE_ALLOWLIST["audio"]["codecs"]
+                if primary_format == "mp3" and any(codec_name.startswith(name) for name in audio_codecs["mp3"]):
+                    return "audio", "mp3"
+                if primary_format == "aac" and codec_name in audio_codecs["aac"]:
+                    return "audio", "aac"
+                if primary_format == "flac" and codec_name in audio_codecs["flac"]:
+                    return "audio", "flac"
+                if signature.startswith(b"OggS") and primary_format == "ogg" and codec_name in audio_codecs["ogg"]:
+                    return "audio", f"ogg-{codec_name}"
+                mov_containers = SOURCE_ALLOWLIST["video"]["mov_containers"]
+                if brands and primary_format in mov_containers and codec_name in audio_codecs["m4a"]:
+                    return "audio", "m4a"
+            if primary_format in {"aiff"}:
+                raise ValueError("AIFF audio is not supported")
+            if primary_format in {"asf"}:
+                raise ValueError("WMA audio is not supported")
+            if primary_format in {"image2", "tga"}:
+                raise ValueError("TGA images are not supported")
+            if primary_format in {"j2k_pipe", "jpeg2000_pipe"}:
+                raise ValueError("JPEG 2000 images are not supported")
+            if primary_format in {"ppm_pipe", "pgm_pipe", "pbm_pipe"}:
+                raise ValueError("PPM images are not supported")
+            if video_streams and not real_video_streams:
+                raise ValueError(accepted_source_message())
+    except av.error.FFmpegError as error:
+        allowed_extensions = {
+            extension
+            for family in SOURCE_ALLOWLIST.values()
+            for extension in family["extensions"]
+        }
+        if source_suffix in allowed_extensions or set(
+            SOURCE_ALLOWLIST["video"]["mp4_brands"]
+        ).intersection(brands):
+            raise ValueError(_SOURCE_DECODE_ERROR) from error
+        raise ValueError(accepted_source_message()) from error
+    except (OSError, TypeError) as error:
+        raise ValueError(accepted_source_message()) from error
+    except ValueError:
+        raise
+    raise ValueError(accepted_source_message())
 
 
 def _reject_cmyk(is_cmyk: bool) -> None:
@@ -498,16 +625,17 @@ def _write_png_frame(
         stream.height = frame.height
         stream.pix_fmt = pixel_format
         if not has_icc:
+            source_codec = _require_decoder_context(source_stream, "video")
             stream.codec_context.color_range = 2
             stream.codec_context.colorspace = 0
             stream.codec_context.color_primaries = (
-                source_stream.codec_context.color_primaries
-                if source_stream.codec_context.color_primaries in (1, 4, 5, 6, 7, 9, 10, 11, 12, 22)
+                source_codec.color_primaries
+                if source_codec.color_primaries in (1, 4, 5, 6, 7, 9, 10, 11, 12, 22)
                 else 1
             )
             stream.codec_context.color_trc = (
-                source_stream.codec_context.color_trc
-                if source_stream.codec_context.color_trc in (1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+                source_codec.color_trc
+                if source_codec.color_trc in (1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
                 else 13
             )
         for packet in (*stream.encode(frame), *stream.encode(None)):
@@ -582,16 +710,17 @@ def _set_color_parameters(
     stream: av.video.stream.VideoStream,
 ) -> av.filter.context.FilterContext:
     """Tag RGB output with FFmpeg's source primaries/transfer and RGB matrix."""
+    source_codec = _require_decoder_context(stream, "video")
     primaries = {
         1: "bt709", 4: "bt470m", 5: "bt470bg", 6: "smpte170m", 7: "smpte240m",
         9: "bt2020", 10: "smpte428", 11: "smpte431", 12: "smpte432", 22: "jedec-p22",
-    }.get(stream.codec_context.color_primaries, "bt709")
+    }.get(source_codec.color_primaries, "bt709")
     transfer = {
         1: "bt709", 4: "bt470m", 5: "bt470bg", 6: "smpte170m", 7: "smpte240m",
         8: "linear", 9: "log100", 10: "log316", 11: "iec61966-2-4", 12: "bt1361e",
         13: "iec61966-2-1", 14: "bt2020-10", 15: "bt2020-12", 16: "smpte2084",
         17: "smpte428", 18: "arib-std-b67",
-    }.get(stream.codec_context.color_trc, "iec61966-2-1")
+    }.get(source_codec.color_trc, "iec61966-2-1")
     tagged = graph.add(
         "setparams",
         f"range=full:colorspace=gbr:color_primaries={primaries}:color_trc={transfer}",
@@ -643,16 +772,9 @@ def _convert_image(path: Path, snapshot: Path) -> None:
     """Decode one supported image and write its single canonical PNG snapshot."""
     with path.open("rb") as source:
         signature = source.read(16)
-    is_supported = (
-        signature.startswith((
-            _PNG_SIG, b"\xff\xd8", b"GIF87a", b"GIF89a", b"II*\x00",
-            b"MM\x00*", b"BM", b"\x76\x2f\x31\x01",
-        ))
-        or (signature[:4] == b"RIFF" and signature[8:12] == b"WEBP")
-        or (signature[4:8] == b"ftyp" and signature[8:12] in (b"avif", b"avis"))
-    )
-    if not is_supported:
-        raise ValueError("unsupported image source format")
+    family, _ = detect_source_family(path)
+    if family != "image":
+        raise ValueError(accepted_source_message())
     png_header = _read_png_header(path)
     png_chunks: dict[bytes, bytes] | None = None
     with path.open("rb") as source:
@@ -712,7 +834,7 @@ def _convert_image(path: Path, snapshot: Path) -> None:
         if not video_streams:
             raise ValueError("image source has no video stream")
         stream = video_streams[0]
-        codec = stream.codec_context
+        codec = _require_decoder_context(stream, "video")
         width = codec.width
         height = codec.height
         if orientation in (5, 6, 7, 8):
@@ -875,7 +997,7 @@ def open_image_source(
         try:
             _convert_image(source_path, snapshot)
         except av.error.FFmpegError as error:
-            raise ValueError(_ACCEPTED_SOURCE_MESSAGE) from error
+            raise ValueError(_SOURCE_DECODE_ERROR) from error
         carrier = PngCarrier(snapshot)
         carrier._source_original_path = Path(os.path.realpath(source_path))
         yield carrier
@@ -906,7 +1028,7 @@ def _wav_format_code(path: Path) -> int | None:
 
 def _audio_integer_width(stream: av.audio.stream.AudioStream) -> int | None:
     """Return lossless integer source depth from codec name or codec extradata."""
-    codec = stream.codec_context
+    codec = _require_decoder_context(stream, "audio")
     name = codec.name.lower()
     if name.startswith("pcm_"):
         match = re.search(r"(?:s|u)(8|16|24|32)(?:be|le|_planar|$)", name)
@@ -977,7 +1099,7 @@ def _convert_audio(path: Path, snapshot: Path) -> None:
         if len(streams) != 1:
             raise ValueError("audio source must contain exactly one audio stream")
         stream = streams[0]
-        codec = stream.codec_context
+        codec = _require_decoder_context(stream, "audio")
         rate = codec.sample_rate
         if rate is None or rate < 1:
             raise ValueError("invalid audio sample rate")
@@ -1062,6 +1184,7 @@ def open_audio_source(
 ) -> Iterator[WavCarrier]:
     """Yield a strict PCM WAV carrier or a converted PCM WAV snapshot."""
     source_path = Path(os.fsdecode(fspath(path)))
+    detect_source_family(source_path)
     format_code = _wav_format_code(source_path)
     if format_code == 1:
         carrier = WavCarrier(path)
@@ -1085,7 +1208,7 @@ def open_audio_source(
         try:
             _convert_audio(source_path, snapshot)
         except av.error.FFmpegError as error:
-            raise ValueError(_ACCEPTED_SOURCE_MESSAGE) from error
+            raise ValueError(_SOURCE_DECODE_ERROR) from error
         carrier = WavCarrier(snapshot)
         carrier._source_original_path = Path(os.path.realpath(source_path))
         yield carrier
