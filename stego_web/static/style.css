@@ -159,9 +159,11 @@ button.secondary:hover:not(:disabled), button.back:hover:not(:disabled) { backgr
 .drop-zone input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); border: 0; }
 .drop-zone strong { max-width: 100%; overflow-wrap: anywhere; font-weight: 500; font-size: 14px; }
 .drop-zone small { max-width: 330px; font-size: 11px; font-weight: 400; }
-.drop-icon { display: grid; place-items: center; width: 34px; height: 34px; color: #3761c9; border: 1px solid #bbcdf1; border-radius: 4px; font-size: 23px; font-weight: 400; }
-.drop-zone.has-file .drop-icon { font-size: 0; color: var(--success); }
-.drop-zone.has-file .drop-icon::after { content: "✓"; font-size: 20px; }
+.drop-icon { display: grid; place-items: center; width: 34px; height: 34px; color: #3761c9; border: 1px solid #bbcdf1; border-radius: 4px; font-size: 23px; font-weight: 400; line-height: 1; }
+.drop-icon svg { display: block; }
+.drop-zone.has-file .drop-icon { color: var(--success); }
+.drop-zone.has-file .drop-icon svg { display: none; }
+.drop-zone.has-file .drop-icon::after { content: "✓"; font-size: 20px; line-height: 1; }
 .file-meta { max-width: 100%; color: #586784; font: 9px/1.7 var(--mono); overflow-wrap: anywhere; }
 .wizard-actions { display: flex; justify-content: space-between; gap: 12px; margin-top: 25px; padding-top: 20px; border-top: 1px solid #e1e6f0; }
 .wizard-actions button { min-width: 100px; }
