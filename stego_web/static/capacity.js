@@ -8,6 +8,23 @@
       && startUnit <= maxStartUnit;
   }
 
+  function startRange(bootstrapSpan, lsbBits, lsbResults) {
+    if (!Number.isSafeInteger(bootstrapSpan) || bootstrapSpan < 0
+        || !Number.isSafeInteger(lsbBits) || lsbBits < 1 || lsbBits > 8
+        || !Array.isArray(lsbResults)) return null;
+    const entry = lsbResults.find(result => result && result.lsb_bits === lsbBits);
+    if (!entry || !Number.isSafeInteger(entry.max_start_unit)
+        || entry.max_start_unit < bootstrapSpan) return null;
+    return {min: bootstrapSpan, max: entry.max_start_unit};
+  }
+
+  function clampStart(start, range) {
+    if (!Number.isSafeInteger(start) || !range
+        || !Number.isSafeInteger(range.min) || !Number.isSafeInteger(range.max)
+        || range.min < 0 || range.max < range.min) return null;
+    return Math.min(range.max, Math.max(range.min, start));
+  }
+
   function findLsbSuggestion(startUnit, bootstrapSpan, lsbResults) {
     if (!Number.isSafeInteger(startUnit)
         || !Number.isSafeInteger(bootstrapSpan)
@@ -44,5 +61,11 @@
     };
   }
 
-  window.StegoCapacity = Object.freeze({evaluateLayout, findLsbSuggestion, fitsAtStart});
+  window.StegoCapacity = Object.freeze({
+    clampStart,
+    evaluateLayout,
+    findLsbSuggestion,
+    fitsAtStart,
+    startRange,
+  });
 })();

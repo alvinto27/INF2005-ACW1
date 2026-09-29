@@ -170,8 +170,10 @@ button.secondary:hover:not(:disabled), button.back:hover:not(:disabled) { backgr
 .process-box strong, .lsb-insight strong { font-size: 13px; font-weight: 500; }
 .process-box small, .lsb-insight small { font-size: 12px; }
 .spinner { width: 22px; height: 22px; flex-shrink: 0; border: 2px solid #b8c8e8; border-top-color: #3b64cb; border-radius: 50%; }
+.spinner.is-spinning { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .operation-status { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+.result.operation-status { display: flex; align-items: center; }
 .operation-status.is-loading::before, button.is-loading::after { width: 17px; height: 17px; flex-shrink: 0; border: 2px solid #a7b9df; border-top-color: #234eb9; border-radius: 50%; animation: spin .8s linear infinite; content: ""; }
 button.is-loading { color: transparent; }
 button.is-loading::after { position: absolute; top: calc(50% - 9px); left: calc(50% - 9px); border-color: #ffffff60; border-top-color: #fff; }

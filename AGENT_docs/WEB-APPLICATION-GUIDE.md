@@ -22,9 +22,12 @@ motion; they require no image downloads or WebGL. Reduced-motion users see them
 without animation.
 
 The encode page has six steps: Input, Sender, Receiver, Layout, Protect, and
-Export. Step 4 uses the manual `start_unit` control. In Protect, the server hashes
-preserved RGB units, RGBA alpha, and declared PCM sample bytes with the chosen
-geometry before encryption and signing.
+Export. Step 4 uses the capacity result to set a start-unit slider for the
+selected LSB count. A number box stays in sync for exact values and sends
+`start_unit`. The slider range runs from the bootstrap span to the latest legal
+start that fits. In Protect, the server hashes preserved RGB units, RGBA alpha,
+and declared PCM sample bytes with the chosen geometry before encryption and
+signing.
 Three.js carrier-map assets exist, but the template does not load them and the
 map is not part of the active page. A separate `/verify` page handles
 receiver-side verification. See [Three.js carrier map](#threejs-carrier-map) for
@@ -88,7 +91,7 @@ The route stores no output carrier or payload. It removes the uploaded cover cop
 
 ### Early capacity check in the wizard
 
-When the user leaves Input, the browser sends one capacity request with the cover and the payload description, not the payload bytes. It keeps the result while these inputs stay unchanged. The Layout step checks start-unit and LSB changes in the browser, blocks starts that do not fit, and suggests a fitting LSB or start. `/encode` remains the final authority.
+When the user leaves Input, the browser sends one capacity request with the cover and the payload description, not the payload bytes. It keeps the result while these inputs stay unchanged. On Layout, the LSB slider comes first. The result sets the start-unit slider's minimum to the bootstrap span and its maximum to the latest legal start for that LSB. The number box stays in sync and supports exact values when the slider is coarse. The page hides the status line when the selected start fits. If an LSB change makes the start too large, the page moves it and shows `Start moved to <n>, the latest start that fits at LSB <k>.` If no start fits at the selected LSB, it disables both start controls and suggests the smallest LSB that fits with `Does not fit at LSB <k>. Try LSB <m>.` `/encode` remains the final authority.
 
 | Condition | HTTP status | Body |
 | --- | --- | --- |

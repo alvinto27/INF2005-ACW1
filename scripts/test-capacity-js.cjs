@@ -11,7 +11,7 @@ const source = readFileSync(
 );
 const window = {};
 vm.runInNewContext(source, {window}, {filename: 'capacity.js'});
-const {evaluateLayout, fitsAtStart} = window.StegoCapacity;
+const {clampStart, evaluateLayout, fitsAtStart, startRange} = window.StegoCapacity;
 
 const results = [
   {lsb_bits: 1, max_start_unit: 20, max_payload_bytes_at_min_start: 10},
@@ -23,6 +23,27 @@ const results = [
   {lsb_bits: 7, max_start_unit: 140, max_payload_bytes_at_min_start: 70},
   {lsb_bits: 8, max_start_unit: 160, max_payload_bytes_at_min_start: 80},
 ];
+
+test('returns the legal start range for a fitting LSB', () => {
+  assert.deepEqual({...startRange(10, 2, results)}, {min: 10, max: 40});
+});
+
+test('returns null when an LSB has no fitting start', () => {
+  const nonFitting = results.map(entry => ({...entry, max_start_unit: null}));
+  assert.equal(startRange(10, 1, nonFitting), null);
+});
+
+test('clamps a start above the range to its maximum', () => {
+  assert.equal(clampStart(99, {min: 10, max: 20}), 20);
+});
+
+test('clamps a start below the range to its minimum', () => {
+  assert.equal(clampStart(3, {min: 10, max: 20}), 10);
+});
+
+test('keeps a start inside the range unchanged', () => {
+  assert.equal(clampStart(15, {min: 10, max: 20}), 15);
+});
 
 test('fits at the latest legal start unit', () => {
   assert.equal(fitsAtStart(20, 10, 20), true);

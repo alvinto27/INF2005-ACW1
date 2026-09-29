@@ -136,15 +136,16 @@
         </section>
         <section class="wizard-card" data-step="3" aria-labelledby="step-4-title" hidden>
           <span class="step-kicker">04 / EMBEDDING GEOMETRY</span><h3 id="step-4-title">Choose the protected layout</h3><p class="hint">Units 0-2047 hold the RSA-2048 bootstrap. Choose a packet start at or after unit 2048; the receiver recovers both values automatically.</p>
-          <label>Packet start unit<input id="start-unit" name="start_unit" type="number" min="2048" step="1" value="2048" required></label>
           <label class="range-label"><span class="range-heading">Least Significant Bits <output id="encode-lsb-output">1</output></span><input id="encode-lsb" type="range" name="lsb_bits" min="1" max="8" value="1"><span class="range-scale"><span>Subtle</span><span>Maximum capacity</span></span></label>
           <div class="lsb-insight"><span class="insight-dot" aria-hidden="true"></span><div><strong id="lsb-impact">Lowest visual impact</strong><small id="lsb-guidance">Best first choice when the cover has enough capacity.</small></div></div>
-          <div id="layout-capacity-status" class="result operation-status" role="status" aria-live="polite" aria-atomic="true"></div>
+          <label class="range-label" id="start-unit-range-label" hidden>Packet start unit slider<input id="start-unit-range" type="range" min="2048" max="2048" value="2048" step="1" aria-describedby="start-unit-range-limits" disabled><span id="start-unit-range-limits" class="range-scale"><span id="start-unit-range-min">2,048</span><span id="start-unit-range-max">2,048</span></span></label>
+          <label>Packet start unit<input id="start-unit" name="start_unit" type="number" min="2048" step="1" value="2048" required></label>
+          <div id="layout-capacity-status" class="result key-warning" role="status" aria-live="polite" aria-atomic="true" hidden></div>
           <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Validate layout <span>-&gt;</span></button></div>
         </section>
         <section class="wizard-card" data-step="4" aria-labelledby="step-5-title" hidden>
           <span class="step-kicker">05 / ENCRYPT, SIGN AND EMBED</span><h3 id="step-5-title">Protect the complete record</h3><p class="hint">AES-256-GCM encrypts the payload and metadata, RSA-PSS authenticates the encrypted record and layout, and RSA-OAEP protects the receiver bootstrap. Before encryption and signing, the server hashes preserved media bytes (RGB units, RGBA alpha, and declared PCM sample bytes) with the chosen geometry.</p>
-          <div class="process-box"><span class="spinner" aria-hidden="true"></span><div><strong>Ready for local processing</strong><small>No original cover or location secret will be required by the receiver.</small></div></div>
+          <div class="process-box" role="status" aria-live="polite"><span id="encode-process-indicator" class="insight-dot" aria-hidden="true"></span><div><strong id="encode-process-title">Ready for local processing</strong><small id="encode-process-detail">No original cover or location secret will be required by the receiver.</small></div></div>
           <div id="encode-result" class="result" aria-live="polite"></div><div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="submit" class="primary">Encrypt, sign and export <span>-&gt;</span></button></div>
         </section>
         <section class="wizard-card success-card" data-step="5" aria-labelledby="step-6-title" hidden>

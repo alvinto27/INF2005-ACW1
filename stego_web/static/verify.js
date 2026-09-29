@@ -51,6 +51,19 @@
     return value === true ? yes : value === false ? no : 'Not checked';
   }
 
+  function noPreviewMessage(fileName, mime) {
+    const basename = typeof fileName === 'string'
+      ? fileName.replace(/\\/g, '/').split('/').pop() : '';
+    const dot = basename.lastIndexOf('.');
+    const extension = dot > 0 ? basename.slice(dot + 1).trim() : '';
+    const mediaType = typeof mime === 'string' ? mime.split(';', 1)[0].trim() : '';
+    const subtype = mediaType.includes('/') ? mediaType.slice(mediaType.indexOf('/') + 1) : '';
+    const type = (extension || subtype).trim().toUpperCase();
+    return type
+      ? `No preview available for ${type} files.`
+      : 'No preview available for this file type.';
+  }
+
   function payloadSection(payload) {
     const section = document.createElement('section');
     section.className = 'decoded-payload';
@@ -66,8 +79,12 @@
       section.append(element('p', 'The authenticated MIME claim does not match the recovered bytes. The payload is available for download but will not be rendered.'));
       return section;
     }
-    if (payload.preview_allowed !== true || !previewMimes.has(mime)) {
+    if (payload.preview_allowed !== true) {
       section.append(element('p', `Preview is disabled for ${mime}; download the authenticated bytes to inspect them safely.`));
+      return section;
+    }
+    if (!previewMimes.has(mime)) {
+      section.append(element('p', `${noPreviewMessage(payload.download_name, mime)} Download the authenticated bytes to inspect them safely.`));
       return section;
     }
     if (mime === 'text/plain') {

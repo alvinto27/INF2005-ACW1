@@ -473,6 +473,27 @@ class WebApplicationTests(unittest.TestCase):
         app_script = response.data.index(b"/static/app.js")
         self.assertLess(capacity_script, app_script)
 
+    def test_layout_start_slider_is_labelled_and_not_submitted(self) -> None:
+        """LSB precedes the accessible range control; only the number is submitted."""
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        data = response.data
+        lsb_index = data.index(b'id="encode-lsb"')
+        range_index = data.index(b'id="start-unit-range"')
+        number_index = data.index(b'<input id="start-unit"')
+        self.assertLess(lsb_index, range_index)
+        self.assertLess(range_index, number_index)
+        self.assertIn(b"Packet start unit slider", data)
+        range_start = data.rfind(b"<input", 0, range_index)
+        range_end = data.index(b">", range_index)
+        range_markup = data[range_start : range_end + 1]
+        self.assertIn(b'type="range"', range_markup)
+        self.assertNotIn(b"name=", range_markup)
+        number_end = data.index(b">", number_index)
+        number_markup = data[number_index : number_end + 1]
+        self.assertIn(b'type="number"', number_markup)
+        self.assertIn(b'name="start_unit"', number_markup)
+
     def test_index_uses_current_protocol_inputs_and_retains_layout(self) -> None:
         """Encode and verify have separate pages with the current inputs."""
         response = self.client.get("/")

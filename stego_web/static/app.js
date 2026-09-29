@@ -26,6 +26,13 @@ const capacityHelpers = window.StegoCapacity;
 const capacityStatus = document.querySelector('#capacity-status');
 const layoutStatus = document.querySelector('#layout-capacity-status');
 const layoutStart = document.querySelector('#start-unit');
+const layoutStartRangeLabel = document.querySelector('#start-unit-range-label');
+const layoutStartRange = document.querySelector('#start-unit-range');
+const layoutStartRangeMin = document.querySelector('#start-unit-range-min');
+const layoutStartRangeMax = document.querySelector('#start-unit-range-max');
+const encodeProcessIndicator = document.querySelector('#encode-process-indicator');
+const encodeProcessTitle = document.querySelector('#encode-process-title');
+const encodeProcessDetail = document.querySelector('#encode-process-detail');
 const senderKeyPassword = document.querySelector('#sender-key-password');
 const layoutStepIndex = cards.findIndex(card => card.contains(layoutStart));
 const inputNextButton = cards[0].querySelector('.next');
@@ -141,6 +148,9 @@ function validCurrentCard() {
       return false;
     }
   }
+  if (currentStep === layoutStepIndex && capacityResult && layoutStart.disabled) {
+    return false;
+  }
   if (currentStep === 1 && senderKeyPassword.value
       && senderKeyPassword.value.length < senderKeyPassword.minLength) {
     senderKeyPassword.setCustomValidity(
@@ -198,6 +208,7 @@ function invalidateCapacity() {
     capacityStatus.className = 'result';
     capacityStatus.textContent = '';
   }
+  updateLayoutFeedback();
 }
 
 function isVideoCover(file) {
@@ -233,25 +244,121 @@ function reportNoCapacity(data) {
   motion.pulse(capacityStatus);
 }
 
-function updateLayoutFeedback() {
+function hideLayoutStatus() {
+  layoutStatus.hidden = true;
+  layoutStatus.className = 'result key-warning';
+  layoutStatus.textContent = '';
+}
+
+function showLayoutNotice(message) {
+  layoutStatus.hidden = false;
+  layoutStatus.className = 'result key-warning';
+  layoutStatus.textContent = message;
+}
+
+function setStartRangeValue(value, range) {
+  const clamped = capacityHelpers.clampStart(value, range);
+  layoutStartRange.value = String(clamped);
+  const progress = range.max === range.min
+    ? 0 : ((clamped - range.min) / (range.max - range.min)) * 100;
+  layoutStartRange.style.setProperty('--range-progress', `${progress}%`);
+  layoutStartRange.setAttribute(
+    'aria-valuetext',
+    `Start unit ${clamped.toLocaleString()} of ${range.min.toLocaleString()} to ${range.max.toLocaleString()}`,
+  );
+}
+
+function updateLayoutFeedback({lsbChanged = false} = {}) {
   if (!capacityResult) {
     layoutStart.setCustomValidity('');
-    layoutStatus.className = 'result operation-status';
-    layoutStatus.textContent = 'Complete the Input capacity check to see layout guidance.';
+    layoutStart.disabled = false;
+    layoutStart.removeAttribute('max');
+    layoutStartRangeLabel.hidden = true;
+    layoutStartRange.disabled = true;
+    const minimum = Number(layoutStart.min) || 2048;
+    layoutStartRange.min = String(minimum);
+    layoutStartRange.max = String(minimum);
+    layoutStartRange.value = String(minimum);
+    layoutStartRange.style.setProperty('--range-progress', '0%');
+    layoutStartRangeMin.textContent = minimum.toLocaleString();
+    layoutStartRangeMax.textContent = '—';
+    hideLayoutStatus();
     return;
   }
-  const start = Number(layoutStart.value);
+
+  const bootstrapSpan = capacityResult.bootstrap_span;
   const lsbBits = Number(lsb.value);
+  const range = capacityHelpers.startRange(
+    bootstrapSpan, lsbBits, capacityResult.lsb_results,
+  );
+  layoutStartRangeLabel.hidden = false;
+  layoutStart.min = String(bootstrapSpan);
+  layoutStartRange.min = String(bootstrapSpan);
+  layoutStartRangeMin.textContent = bootstrapSpan.toLocaleString();
+
+  if (!range) {
+    layoutStart.disabled = true;
+    layoutStartRange.disabled = true;
+    layoutStart.max = String(bootstrapSpan);
+    layoutStartRange.max = String(bootstrapSpan);
+    setStartRangeValue(bootstrapSpan, {min: bootstrapSpan, max: bootstrapSpan});
+    layoutStartRangeMax.textContent = 'No fit';
+    layoutStart.setCustomValidity('');
+    const suggestedLsb = capacityHelpers.findLsbSuggestion(
+      bootstrapSpan, bootstrapSpan, capacityResult.lsb_results,
+    );
+    const message = suggestedLsb === null
+      ? `Does not fit at LSB ${lsbBits}. Try a larger cover or a smaller payload.`
+      : `Does not fit at LSB ${lsbBits}. Try LSB ${suggestedLsb}.`;
+    showLayoutNotice(message);
+    return;
+  }
+
+  layoutStart.disabled = false;
+  layoutStartRange.disabled = false;
+  layoutStart.max = String(range.max);
+  layoutStartRange.max = String(range.max);
+  layoutStartRangeMax.textContent = range.max.toLocaleString();
+  let start = layoutStart.valueAsNumber;
+  let movedNotice = null;
+  if (lsbChanged && Number.isSafeInteger(start) && start > range.max) {
+    start = range.max;
+    layoutStart.value = String(start);
+    movedNotice = `Start moved to ${range.max.toLocaleString()}, the latest start that fits at LSB ${lsbBits}.`;
+  }
+  setStartRangeValue(Number.isSafeInteger(start) ? start : range.min, range);
+  if (movedNotice) {
+    layoutStart.setCustomValidity('');
+    showLayoutNotice(movedNotice);
+    return;
+  }
+  if (layoutStart.value === '') {
+    layoutStart.setCustomValidity('');
+    hideLayoutStatus();
+    return;
+  }
+  if (!Number.isSafeInteger(start)) {
+    const message = 'Enter a whole-number packet start.';
+    layoutStart.setCustomValidity(message);
+    showLayoutNotice(message);
+    return;
+  }
+  if (start < range.min) {
+    const message = `Start must be at least ${range.min.toLocaleString()}.`;
+    layoutStart.setCustomValidity(message);
+    showLayoutNotice(message);
+    return;
+  }
+
   const result = capacityHelpers.evaluateLayout(
     start,
-    capacityResult.bootstrap_span,
+    bootstrapSpan,
     lsbBits,
     capacityResult.lsb_results,
   );
   if (result.fits) {
     layoutStart.setCustomValidity('');
-    layoutStatus.className = 'result operation-status';
-    layoutStatus.textContent = `Fits. Latest legal start for LSB ${lsbBits}: ${result.latestStartUnit.toLocaleString()}.`;
+    hideLayoutStatus();
     return;
   }
 
@@ -268,8 +375,7 @@ function updateLayoutFeedback() {
   }
   const message = `Does not fit. ${suggestion}`;
   layoutStart.setCustomValidity(message);
-  layoutStatus.className = 'result verdict-error';
-  layoutStatus.textContent = message;
+  showLayoutNotice(message);
 }
 
 async function checkCapacityAndContinue() {
@@ -381,7 +487,7 @@ function handleCoverFile(file) {
     ? VIDEO_COVER_WARNING
     : `${formatBytes(file.size)} - ${file.type || 'type detected by server'}`;
   coverObjectUrl = URL.createObjectURL(file);
-  renderMedia(document.querySelector('#cover-preview'), coverObjectUrl, previewMime, true);
+  renderMedia(document.querySelector('#cover-preview'), coverObjectUrl, previewMime, file.name, true);
   motion.pulse(coverDrop);
 }
 
@@ -477,9 +583,18 @@ function updateLsb() {
 }
 lsb.addEventListener('input', () => {
   updateLsb();
+  updateLayoutFeedback({lsbChanged: true});
+});
+layoutStartRange.addEventListener('input', () => {
+  if (!capacityResult) return;
+  const range = capacityHelpers.startRange(
+    capacityResult.bootstrap_span, Number(lsb.value), capacityResult.lsb_results,
+  );
+  if (!range) return;
+  layoutStart.value = layoutStartRange.value;
   updateLayoutFeedback();
 });
-layoutStart.addEventListener('input', updateLayoutFeedback);
+layoutStart.addEventListener('input', () => updateLayoutFeedback());
 document.querySelectorAll('input[type="password"][minlength]')
   .forEach(password => password.addEventListener('input', () => password.setCustomValidity('')));
 
@@ -544,6 +659,16 @@ document.querySelectorAll('.generate-keys').forEach(button => button.addEventLis
   } finally { button.disabled = false; password.disabled = passwordWasDisabled; }
 }));
 
+function setEncodeProcessState(processing, isVideo = false) {
+  encodeProcessIndicator.className = processing ? 'spinner is-spinning' : 'insight-dot';
+  encodeProcessTitle.textContent = processing
+    ? (isVideo ? 'Processing video; this can take a while...' : 'Encrypting, signing and embedding…')
+    : 'Ready for local processing';
+  encodeProcessDetail.textContent = processing
+    ? 'Please wait while the server creates the stego media.'
+    : 'No original cover or location secret will be required by the receiver.';
+}
+
 encodeForm.addEventListener('submit', async event => {
   event.preventDefault();
   const resultBox = document.querySelector('#encode-result');
@@ -555,16 +680,15 @@ encodeForm.addEventListener('submit', async event => {
   controls.forEach(control => { control.disabled = true; });
   encodeForm.setAttribute('aria-busy', 'true');
   button.classList.add('is-loading');
-  resultBox.className = 'result operation-status is-loading';
   const coverFile = coverInput.files[0];
   const isVideo = isVideoCover(coverFile);
-  resultBox.textContent = isVideo
-    ? 'Processing video; this can take a while...'
-    : 'Hashing, encrypting, signing, and embedding payload...';
+  setEncodeProcessState(true, isVideo);
+  resultBox.className = 'result';
+  resultBox.textContent = '';
   try {
     const data = await api.post('/encode', body, isVideo ? 60 * 60 * 1000 : 5 * 60 * 1000);
     const stegoUrl = validEncodeResponse(data);
-    renderMedia(document.querySelector('#stego-preview'), stegoUrl, data.mime_type);
+    renderMedia(document.querySelector('#stego-preview'), stegoUrl, data.mime_type, data.filename);
     const preserved = (data.preserved_ratio * 100).toFixed(4);
     const formatLabels = {
       jpeg: 'JPEG', webp: 'WebP', avif: 'AVIF', bmp: 'BMP', tiff: 'TIFF', gif: 'GIF',
@@ -595,6 +719,7 @@ encodeForm.addEventListener('submit', async event => {
     controls.forEach((control, index) => { control.disabled = disabledBefore[index]; });
     encodeForm.removeAttribute('aria-busy');
     button.classList.remove('is-loading');
+    setEncodeProcessState(false);
   }
 });
 
@@ -620,22 +745,35 @@ document.querySelector('#start-over').addEventListener('click', async () => {
   await showStep(0);
 });
 
-function renderMedia(container, url, mime, checkVideoSupport = false) {
+function noPreviewMessage(fileName, mime) {
+  const basename = typeof fileName === 'string'
+    ? fileName.replace(/\\/g, '/').split('/').pop() : '';
+  const dot = basename.lastIndexOf('.');
+  const extension = dot > 0 ? basename.slice(dot + 1).trim() : '';
+  const mediaType = typeof mime === 'string' ? mime.split(';', 1)[0].trim() : '';
+  const subtype = mediaType.includes('/') ? mediaType.slice(mediaType.indexOf('/') + 1) : '';
+  const type = (extension || subtype).trim().toUpperCase();
+  return type
+    ? `No preview available for ${type} files.`
+    : 'No preview available for this file type.';
+}
+
+function renderMedia(container, url, mime, fileName = '', checkVideoSupport = false) {
   if (typeof mime !== 'string' || !/^(image|audio|video)\//.test(mime)) {
-    container.textContent = 'No preview for this format.';
+    container.textContent = noPreviewMessage(fileName, mime);
     return;
   }
   if (mime.startsWith('video/')) {
     const probe = document.createElement('video');
     if (mime === 'video/x-matroska' || (checkVideoSupport && !probe.canPlayType(mime))) {
-      container.textContent = 'No preview for this format.';
+      container.textContent = noPreviewMessage(fileName, mime);
       return;
     }
     probe.src = url;
     probe.controls = true;
     probe.setAttribute('aria-label', 'Video preview');
     probe.addEventListener('error', () => {
-      if (container.contains(probe)) container.textContent = 'No preview for this format.';
+      if (container.contains(probe)) container.textContent = noPreviewMessage(fileName, mime);
     }, {once: true});
     container.replaceChildren(probe);
     return;
