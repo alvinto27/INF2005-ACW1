@@ -118,21 +118,21 @@
           <div class="field-grid"><label class="generated-claim">Payload MIME claim<input id="payload-mime" name="payload_mime" readonly aria-readonly="true" placeholder="Generated automatically"></label><label class="generated-claim">Payload filename claim<input id="payload-name" name="payload_name" readonly aria-readonly="true" placeholder="Generated automatically"></label></div><p class="hint claim-hint">Generated automatically from the payload.</p>
           <label>Additional authenticated metadata<textarea name="metadata" rows="2" placeholder="Optional key=value entries, e.g. project=INF2005;case=demo"></textarea></label>
           <div id="capacity-status" class="result operation-status" role="status" aria-live="polite" aria-atomic="true"></div>
-          <div class="wizard-actions"><span></span><button type="button" class="next">Validate input <span>-&gt;</span></button></div>
+          <div class="wizard-actions"><span></span><button type="button" class="next">Validate input</button></div>
         </section>
         <section class="wizard-card" data-step="1" aria-labelledby="step-2-title" hidden>
           <span class="step-kicker">02 / SENDER AUTHENTICATION</span><h3 id="step-2-title">Load the sender signing key</h3><p class="hint">The sender private key creates the RSA-PSS signature. Its public half is exported with the stego file.</p>
           <label>Sender private key (.pem)<input name="sender_private_key" type="file" accept=".pem,application/x-pem-file,text/plain" required></label>
           <label>Sender private-key password (optional)<input id="sender-key-password" name="sender_key_password" type="password" minlength="8" autocomplete="new-password" placeholder="Optional; leave empty for an unencrypted key"></label>
           <button type="button" class="secondary generate-keys" data-role="sender" data-password="sender-key-password" data-result="sender-key-result">Generate sender key pair</button><div id="sender-key-result" class="result" aria-live="polite"></div>
-          <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Sender key ready <span>-&gt;</span></button></div>
+          <div class="wizard-actions"><button type="button" class="back">Back</button><button type="button" class="next">Sender key ready</button></div>
         </section>
         <section class="wizard-card" data-step="2" aria-labelledby="step-3-title" hidden>
           <span class="step-kicker">03 / RECEIVER GATE</span><h3 id="step-3-title">Select the intended receiver</h3><p class="hint">The receiver public key encrypts the bootstrap. Only its matching private key can recover the packet location and AES session material.</p>
           <label>Receiver public key (.pem)<input name="receiver_public_key" type="file" accept=".pem,application/x-pem-file,text/plain" required></label>
           <label>New receiver-key password (optional)<input id="receiver-setup-password" type="password" minlength="8" autocomplete="new-password" placeholder="Optional; leave empty for an unencrypted key"></label>
           <button type="button" class="secondary generate-keys" data-role="receiver" data-password="receiver-setup-password" data-result="receiver-key-result">Generate receiver key pair</button><div id="receiver-key-result" class="result" aria-live="polite"></div>
-          <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Receiver key ready <span>-&gt;</span></button></div>
+          <div class="wizard-actions"><button type="button" class="back">Back</button><button type="button" class="next">Receiver key ready</button></div>
         </section>
         <section class="wizard-card" data-step="3" aria-labelledby="step-4-title" hidden>
           <span class="step-kicker">04 / EMBEDDING GEOMETRY</span><h3 id="step-4-title">Choose the protected layout</h3><p class="hint">Units 0-2047 hold the RSA-2048 bootstrap. Choose a packet start at or after unit 2048; the receiver recovers both values automatically.</p>
@@ -141,12 +141,12 @@
           <label class="range-label" id="start-unit-range-label" hidden>Packet start unit slider<input id="start-unit-range" type="range" min="2048" max="2048" value="2048" step="1" aria-describedby="start-unit-range-limits" disabled><span id="start-unit-range-limits" class="range-scale"><span id="start-unit-range-min">2,048</span><span id="start-unit-range-max">2,048</span></span></label>
           <label>Packet start unit<input id="start-unit" name="start_unit" type="number" min="2048" step="1" value="2048" required></label>
           <div id="layout-capacity-status" class="result key-warning" role="status" aria-live="polite" aria-atomic="true" hidden></div>
-          <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Validate layout <span>-&gt;</span></button></div>
+          <div class="wizard-actions"><button type="button" class="back">Back</button><button type="button" class="next">Validate layout</button></div>
         </section>
         <section class="wizard-card" data-step="4" aria-labelledby="step-5-title" hidden>
           <span class="step-kicker">05 / ENCRYPT, SIGN AND EMBED</span><h3 id="step-5-title">Protect the complete record</h3><p class="hint">AES-256-GCM encrypts the payload and metadata, RSA-PSS authenticates the encrypted record and layout, and RSA-OAEP protects the receiver bootstrap. Before encryption and signing, the server hashes preserved media bytes (RGB units, RGBA alpha, and declared PCM sample bytes) with the chosen geometry.</p>
           <div class="process-box" role="status" aria-live="polite"><span id="encode-process-indicator" class="insight-dot" aria-hidden="true"></span><div><strong id="encode-process-title">Ready for local processing</strong><small id="encode-process-detail">No original cover or location secret will be required by the receiver.</small></div></div>
-          <div id="encode-result" class="result" aria-live="polite"></div><div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="submit" class="primary">Encrypt, sign and export <span>-&gt;</span></button></div>
+          <div id="encode-result" class="result" aria-live="polite"></div><div class="wizard-actions"><button type="button" class="back">Back</button><button type="submit" class="primary">Encrypt, sign and export</button></div>
         </section>
         <section class="wizard-card success-card" data-step="5" aria-labelledby="step-6-title" hidden>
           <div class="success-mark">OK</div><span class="step-kicker">06 / OUTPUT</span><h3 id="step-6-title">Your stego object is ready</h3><p class="hint" id="success-summary">The encrypted signed payload was embedded successfully.</p>
