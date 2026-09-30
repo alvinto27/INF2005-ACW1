@@ -494,6 +494,13 @@ class CarrierEncoding:
         self._next_unit = chunk_end
         return result
 
+    def preview_chunk(self, chunk_start: int, units: np.ndarray) -> np.ndarray:
+        """Apply the embedded transforms without changing pass state or hashes."""
+        units = _validate_carrier_units(units)
+        chunk_start = _validate_non_negative_integer(chunk_start, "chunk_start")
+        result = self._bootstrap_transform(chunk_start, units)
+        return self._packet_transform(chunk_start, result)
+
     def update_fixed_bytes(self, chunk_start: int, units: np.ndarray, fixed_bytes: bytes) -> None:
         """Hash fixed bytes paired with the current original carrier chunk."""
         chunk_start = _validate_non_negative_integer(chunk_start, "chunk_start")
@@ -602,7 +609,10 @@ def _rewrite_checked(
     try:
         _check_file_carrier_output_space(source, path)
         source.rewrite_to_path(
-            path, encoding.embed_chunk, encoding.update_fixed_bytes
+            path,
+            encoding.embed_chunk,
+            encoding.update_fixed_bytes,
+            preview_transform=encoding.preview_chunk,
         )
         if source.requires_output_check:
             output_source = source.open_rewritten_output(path)

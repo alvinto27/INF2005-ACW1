@@ -561,6 +561,8 @@ class PngCarrier(CarrierSource):
         output_path: str | bytes | PathLike[str],
         transform: Callable[[int, np.ndarray], np.ndarray],
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
+        *,
+        preview_transform: Callable[[int, np.ndarray], np.ndarray] | None = None,
     ) -> None:
         """Write transformed RGB units into one PyAV frame, preserving fixed values."""
         height, width, _ = self._shape
@@ -828,6 +830,8 @@ class WavCarrier(CarrierSource):
         output_path: str | bytes | PathLike[str],
         transform: Callable[[int, np.ndarray], np.ndarray],
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
+        *,
+        preview_transform: Callable[[int, np.ndarray], np.ndarray] | None = None,
     ) -> None:
         """Copy the WAV byte for byte and change only the declared sample LSBs.
 

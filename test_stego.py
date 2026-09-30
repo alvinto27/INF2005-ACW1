@@ -3332,7 +3332,9 @@ class TestMaskedStego(unittest.TestCase):
             output_path = directory / "output.png"
             Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8), mode="RGB").save(input_path)
 
-            def write_partial_then_fail(self: PngCarrier, path: Path, *args: object) -> None:
+            def write_partial_then_fail(
+                self: PngCarrier, path: Path, *args: object, **kwargs: object
+            ) -> None:
                 Path(path).write_bytes(b"\x89PNG partial")
                 raise OSError("disk full")
 

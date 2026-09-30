@@ -219,6 +219,17 @@ class CarrierSource(ABC):
         """Open a rewritten carrier for optional read-back validation."""
         raise NotImplementedError("this carrier does not support output checks")
 
+    def rewrite_to_path(
+        self,
+        path: str | bytes | PathLike[str],
+        transform: Callable[[int, np.ndarray], np.ndarray],
+        fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
+        *,
+        preview_transform: Callable[[int, np.ndarray], np.ndarray] | None = None,
+    ) -> None:
+        """Write transformed units; media backends implement their own output format."""
+        raise NotImplementedError("this carrier does not support rewriting")
+
     @abstractmethod
     def read_units(self, start_unit: int, count: int) -> np.ndarray:
         """Return ``count`` units starting at ``start_unit``.
