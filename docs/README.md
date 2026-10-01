@@ -1,6 +1,6 @@
 # Documentation
 
-This folder contains the project guides, technical history, and assignment brief. Use the guides to understand the design, run the application, and review its limits.
+These guides help teammates and markers understand the application, its design, and its limits. This folder also contains the project history, assignment brief, and a short code map.
 
 ## Guides
 
@@ -11,7 +11,7 @@ This folder contains the project guides, technical history, and assignment brief
 - [Known limitations](known-limitations.md) — supported sources and protocol limits.
 - [Protocol history](history/protocol-history.md) and [repository history](history/repository-history.md) — design decisions and project changes.
 - [Presentation](../presentation/README.md) — technical-design slides.
-- [Assignment brief](assignment/INF2005-ACW1-spec_v5-f2f.md) — readable transcription of the supplied specification.
+- [Assignment brief](assignment/INF2005-ACW1-spec_v5-f2f.md) — readable transcription of the supplied specification; the [original PDF](assignment/INF2005-ACW1-spec_v5-f2f.pdf) is also available.
 
 ## Code map
 

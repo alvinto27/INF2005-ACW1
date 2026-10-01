@@ -1,22 +1,8 @@
 # INF2005-ACW1
 
-This project is a localhost Flask application for encrypting, signing, embedding,
-decoding, and verifying payloads with protocol version 3 from the `stego`
-package. The primary carriers are 8-bit or 16-bit RGB/RGBA PNG and uncompressed
-PCM WAV. The library and Flask web app also support a video carrier. The web app
-accepts common image and audio sources and rewrites video covers to lossless
-FFV1/PCM Matroska (`.mkv`) before embedding.
+This guide introduces StegoVerify for teammates and markers. The local Flask app uses our version-3 protocol to encrypt, sign, embed, decode, and verify payloads. It supports 8-bit or 16-bit RGB/RGBA PNG, uncompressed PCM WAV, and a video carrier; the web app converts supported image and audio sources and writes video covers as lossless FFV1/PCM Matroska (`.mkv`).
 
-The protocol encrypts the complete payload record with AES-256-GCM, authenticates
-the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
-the intended receiver with RSA-OAEP. [Protocol](docs/protocol.md)
-defines the media hash and verification rules. Container and ancillary metadata
-are outside the authenticity check; output metadata behavior is in [Carrier and
-payload flow](docs/carrier-and-payload-flow.md#metadata-in-the-output).
-The protocol carrier accepts single-frame 8-bit or 16-bit RGB/RGBA PNG images,
-with a decoded image size limit of 715,827,880 bytes.
-
-Requires Python 3.12+ because NumPy 2.5.3 requires it.
+We encrypt the complete payload record with AES-256-GCM, sign the ciphertext and embedding geometry with RSA-PSS, and encrypt the bootstrap for the intended receiver with RSA-OAEP. The [protocol guide](docs/protocol.md) explains the media hash and verification rules. Container and ancillary metadata are outside the authenticity check; see [carrier and payload flow](docs/carrier-and-payload-flow.md#metadata-in-the-output) for output metadata behavior. PNG carriers must be single-frame, 8-bit or 16-bit RGB/RGBA images, with a decoded-size limit of 715,827,880 bytes. NumPy 2.5.3 requires Python 3.12 or later.
 
 ## For markers
 
@@ -97,24 +83,9 @@ The optional demonstration notebook additionally needs:
 python -m pip install -r requirements-notebook.txt
 ```
 
-The notebook is a human-readable, human-verifiable proof of the end-to-end flow.
-It runs the sender and receiver steps in order. Each step states what to expect
-and prints the evidence beside it, so a reader can check the result without
-reading library code. It demonstrates PNG (including 16-bit RGB), RGBA and WAV
-encoding and verification, failure verdicts, typed payloads, PNG/WAV payload-file
-flows, assignment payload sizes, all LSB counts from 1 through 8, JPEG-to-PNG and
-MP3-to-WAV conversion, and a short 8-bit video example. It also simulates
-low-space, audio-depth, RIFF-size, and video mux-space refusals without creating
-large files, and prints video limits and cost estimates. Party A-to-Party B
-transfer is a folder simulation.
+Our notebook walks through the sender and receiver steps in order. It states what each step should do, then prints evidence beside the expected result so teammates and markers can follow the flow. The examples cover PNG (including 16-bit RGB), RGBA, and WAV encoding and verification; failure verdicts; typed payloads; PNG/WAV payload-file flows; assignment payload sizes; all LSB counts from 1 through 8; JPEG-to-PNG and MP3-to-WAV conversion; and a short 8-bit video example. It also simulates low-space, audio-depth, RIFF-size, and video mux-space refusals without creating large files, and prints video limits and cost estimates. Party A-to-Party B transfer is shown as a folder simulation.
 
-The notebook does not show every feature. Tests and the guides in `docs/`
-cover details it omits, including the decoded-PNG size cap, metadata and EXIF
-handling, refused source formats, high-bit-depth and alpha video, video
-payload-file functions, and the web application. The notebook's storage and
-limit refusals are safe simulations, not tests at the real maximum sizes. The
-tests prove individual rules and edge cases. The library code, tests, and guides
-are the reference for exact API contracts.
+The notebook focuses on the end-to-end flow. Tests and the guides in `docs/` cover additional details, including the decoded-PNG size cap, metadata and EXIF handling, refused source formats, high-bit-depth and alpha video, video payload-file functions, and the web application. Storage and limit refusals in the notebook are safe simulations, not tests at the real maximum sizes. The tests cover individual rules and edge cases, while the library and guides describe the API contracts.
 
 ## Web application flow
 
@@ -160,8 +131,8 @@ manually delete `.stego-staging-*` directories under the instance folder.
 The local server has no fixed request-size cap by default. It requires
 `Content-Length` and keeps a shared 3 GiB free-space reserve before it reads an
 encode or verify upload. It stores multipart streams and request temporary files
-under `instance/work`, not `/tmp` (a RAM-backed tmpfs on this host). A configured
-`MAX_CONTENT_LENGTH` still applies. A WAV file larger than 2 GiB can fail to open
+under `instance/work`. On systems where `/tmp` is RAM-backed, keeping uploads on
+that filesystem can consume memory. A configured `MAX_CONTENT_LENGTH` still applies. A WAV file larger than 2 GiB can fail to open
 in some older audio programs because they read the WAV size field as signed;
 the application reads it correctly. See the [Web Application Guide](docs/web-application.md) for request
 and storage behavior. Video resource limits and large-file warnings are in the [video

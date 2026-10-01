@@ -1,6 +1,6 @@
 # Current Protocol
 
-**Status:** Protocol version 3 is implemented. This file is the source of truth for the current masked-media wire format, security checks, compatibility, and typed-payload rules. Historical version 1 decisions are in [Protocol History](history/protocol-history.md#version-1-integrity-protocol).
+The Flask application uses protocol version 3. This guide explains its wire format, media hash, security checks, compatibility, typed payloads, capacity, and verification verdicts for teammates and markers. For earlier design decisions, see [Protocol History](history/protocol-history.md#version-1-integrity-protocol).
 
 ## Overview
 
@@ -170,7 +170,7 @@ The bootstrap plaintext is 62 bytes and GCM additional data is 18 bytes. Minimum
 
 ## Limits and compatibility
 
-- Media-code-3 video carriers produced before the 8–16-bit change (commit `ff4ab39`) used an experimental 30-byte context. They are development files. The current 32-byte interpretation does not verify them, and they are not part of the supported compatibility set.
+- Media-code-3 video carriers produced before the 8–16-bit context change used an experimental 30-byte context. They are development files. The current 32-byte interpretation does not verify them, and they are not part of the supported compatibility set.
 - Overwritten cover LSBs are destroyed and cannot be recovered or authenticated. Padding checks are format checks, not cryptographic checks.
 - With `k=8` and a full-carrier footprint, carrier-unit bits provide no integrity evidence. RGBA alpha and non-LSB bytes of multi-byte WAV samples remain covered by the fixed stream.
 - Transparent RGBA pixel colour can change even when alpha is zero. The strict PNG adapter refuses an RGB PNG with a `tRNS` colour key, because embedding can move pixels onto or off the key colour. The source converter can turn the key into RGBA alpha before encoding. PNG ancillary data, including text, `eXIf`, `iCCP`, and `tRNS`, and WAV data outside declared PCM samples, such as `LIST` chunks, are outside the hash. Verification does not read them, so a `tRNS` chunk added after encoding does not change the verdict. The output keeps this metadata, but anyone can change it and the verdict stays `Authentic`. Do not use it as evidence.

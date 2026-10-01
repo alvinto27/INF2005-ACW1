@@ -1,6 +1,6 @@
 # StegoVerify technical-design slides
 
-The deck is a self-contained Reveal.js presentation matching the active Flask GUI theme. Reveal.js 5.2.1 and its presenter-notes plugin are vendored under `vendor/reveal/`, so the presentation does not require network access.
+This guide helps teammates and markers run the technical-design slides and export a PDF. The offline Reveal.js deck uses the Flask app's visual theme; Reveal.js 5.2.1 and its presenter-notes plugin are included under `vendor/reveal/`, so it needs no network access.
 
 ## Run
 
@@ -33,4 +33,4 @@ Open `http://127.0.0.1:8000/?print-pdf`, use the browser print dialog, select la
 
 `stego-slides.pdf` is a committed export. Export it again after you change the slides.
 
-The slide content describes protocol version 3. Update it together with [`docs/protocol.md`](../docs/protocol.md) if the protocol changes.
+The slides describe protocol version 3. If the protocol changes, update the deck and [`docs/protocol.md`](../docs/protocol.md) together.
