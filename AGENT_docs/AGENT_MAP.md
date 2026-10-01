@@ -15,11 +15,10 @@ Use this map before editing an unfamiliar part of the repository.
 | Current version-3 wire format, media hash, typed metadata, discovery, and verdicts | [CURRENT-PROTOCOL.md](CURRENT-PROTOCOL.md#verification-verdicts) |
 | Protocol design history: v1, v2 plan and stages, KISS reduction, and transition to v3 | [PROTOCOL-HISTORY.md](PROTOCOL-HISTORY.md) |
 | PyAV media migration and imported-legacy cleanup history | [REPOSITORY-HISTORY.md](REPOSITORY-HISTORY.md) |
-| Chunked carrier access, payload APIs, staging cleanup, measurements, and known limits | [CARRIER-AND-PAYLOAD-FLOW.md](CARRIER-AND-PAYLOAD-FLOW.md#4-protocol-flow) |
+| Chunked carrier access, payload APIs, staging cleanup, measurements, and known limits | [CARRIER-AND-PAYLOAD-FLOW.md](CARRIER-AND-PAYLOAD-FLOW.md#protocol-flow) |
 | Video carrier design, implementation details, and measurements | [VIDEO-CARRIER-DESIGN.md](VIDEO-CARRIER-DESIGN.md) |
 | Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
 | Web request contracts, response handling, payload previews, requirement coverage, and disconnected Three.js map status/design | [WEB-APPLICATION-GUIDE.md](WEB-APPLICATION-GUIDE.md#threejs-carrier-map) |
-| Reliability findings, fault-injection matrix, and residual risks | [RELIABILITY-AUDIT.md](RELIABILITY-AUDIT.md) |
 | Current and older protocol compatibility | [CURRENT-PROTOCOL.md](CURRENT-PROTOCOL.md#limits-and-compatibility) |
 
 ## Implementation locations

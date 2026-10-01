@@ -51,14 +51,12 @@ JavaScript is required for the workflow; a `noscript` notice explains this.
 Exported media and recovered payloads remain on disk until deleted.
 
 Both pages use the local `api.js` request boundary for JSON response validation,
-status-specific messages, connection failures, and timeouts. It does not
-automatically retry POST operations. Encode and key generation keep controls
-retryable after failure; encode freezes its form inputs while a request is in
-flight. The browser validates successful response fields and same-origin
-download URLs before showing success. Non-video encode requests time out after
-five minutes; video encode after one hour; key generation after one minute;
-verification after two minutes or 30 minutes for MKV. A browser timeout does
-not prove that server-side processing stopped.
+status-specific messages, connection failures, and timeouts. Encode and key
+generation keep controls retryable after failure; encode freezes its form inputs
+while a request is in flight. The browser validates successful response fields
+and same-origin download URLs before showing success. Non-video encode requests
+time out after five minutes; video encode after one hour; key generation after
+one minute; verification after two minutes or 30 minutes for MKV.
 
 ## Encode request
 
@@ -68,11 +66,11 @@ The password is optional. Leave it empty for an unencrypted private key. A non-e
 
 Flask saves each request's uploads and working files under `STEGO_WORK_DIR`, defaulting to `instance/work`. This host uses `/tmp` as a RAM-backed filesystem, so multipart uploads and video snapshots must stay on the instance filesystem. The request deletes its temporary directory after success or failure. PyAV multipart file streams are also created in the work directory. The PNG encoder stages its intermediate `.stego-staging-*.png` beside the output and removes it after the write; this keeps it off `/tmp`. PNG uses a signature path. The source gate checks WAV's codec and inspects PyAV streams for other accepted inputs before `detect_source_family()` selects an adapter. Strict PNG and PCM WAV carriers bypass conversion and keep their current ancillary data. Key PEMs remain byte inputs.
 
-Converted images check space for the canonical PNG snapshot and filtering temporary before frame decode. The PNG bound includes scanline and Deflate overhead, the source-file size for ancillary chunks, and fixed slack. Converted audio can hold up to 4,294,967,256 bytes of PCM data, the largest size that a standard WAV file can record. The converter checks the shared reserve before writing and every 64 MiB.
+Image and audio source-conversion limits and temporary-storage checks are described in [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#source-conversion).
 
 Allowed, but not advised. A WAV file larger than 2 GiB can fail to open in some older audio programs, because they read the WAV size field as a signed number. The application reads it correctly. Such a file also needs about 8 GiB of disk during encoding (converted copy plus output) and cannot be sent by email.
 
-The adapter calls `open_image_source()` or `open_audio_source()`, then passes the yielded `carrier_source` to the PNG or WAV file API. Those APIs accept `carrier_source`; the video file API does not, so it constructs one `VideoCarrier` for validation, counting, and its bounded read passes. Video encode writes a lossless FFV1 + PCM Matroska output named `stego.mkv`; its source is always reported as converted. The library has a 512 Gi carrier-unit cap, 256 MiB canonical frame-byte cap, 1280 GiB (1.25 TiB) output cap, and 3 GiB free-space reserve (plus payload size for payload-file encoding). The response contains `source_converted`, container-based `source_format`, output `file_size`, and a `stego_url`, file details, sender public key, record summary, capacity, geometry, and preserved-bit measurements; it does not contain stego bytes or private keys. `GET /download/<id>.<ext>` checks the token and extension before serving the file. MKV is served as an attachment because browsers do not play the FFV1 Matroska output inline.
+The adapter calls `open_image_source()` or `open_audio_source()`, then passes the yielded `carrier_source` to the PNG or WAV file API. The video API builds its own `VideoCarrier` for validation, counting, and bounded reads. Video encode writes lossless FFV1/PCM Matroska and reports the source as converted. Its resource limits are in [Video Carrier Design](VIDEO-CARRIER-DESIGN.md#output-and-limits). The response contains `source_converted`, container-based `source_format`, output `file_size`, and a `stego_url`, file details, sender public key, record summary, capacity, geometry, and preserved-bit measurements; it does not contain stego bytes or private keys. `GET /download/<id>.<ext>` checks the token and extension before serving the file. MKV is served as an attachment because browsers do not play the FFV1 Matroska output inline.
 
 ## Capacity request
 
@@ -211,9 +209,9 @@ The default `MAX_CONTENT_LENGTH` is `None`; deployments and tests can configure 
 | Free disk before encode | 3 GiB reserve, plus payload size for payload-file encoding | `insufficient free disk space for video output`, HTTP 400 |
 | Free disk before each mux write | 3 GiB reserve, packet size, and 1 MiB mux slack | `insufficient free disk space for video output`, HTTP 400 |
 
-Image and audio output checks run before the output write. The PNG check uses twice the PNG bound for the encoder temporary and final PNG; payload-file encoding also includes the payload size. The WAV check uses the source file size. These checks keep the shared 3 GiB reserve. Video encoding checks free space before each Matroska packet write. It requires the 3 GiB reserve, the packet size, and 1 MiB of mux slack. A failed check closes and removes the staged output; the route returns HTTP 400 and does not publish a file. The output-size limit is still checked after each packet. Allowed, but not advised. The limits accept a 10-minute 4K video at 30 fps with 16-bit RGBA. This video has about 1.2 TB of uncompressed image data. The lossless MKV output can be close to that size. To verify the output, you must upload it again, and the upload needs the same space again. Processing can take many hours. A file of this size cannot be sent by email. For demonstrations, use short clips (30 seconds or less at 1080p). The application refuses the encode when free disk space falls below the 3 GiB reserve.
+Image and audio output checks run before the output write. The PNG check uses twice the PNG bound for the encoder temporary and final PNG; payload-file encoding also includes the payload size. The WAV check uses the source file size. These checks keep the shared 3 GiB reserve. Video encoding checks free space before each Matroska packet write. It requires the 3 GiB reserve, the packet size, and 1 MiB of mux slack. A failed check closes and removes the staged output; the route returns HTTP 400 and does not publish a file. The output-size limit is still checked after each packet. For large-video resource limits and recommended demonstration sizes, see [Video Carrier Design](VIDEO-CARRIER-DESIGN.md#output-and-limits).
 
-The optional fixed request cap and the upload free-space guard return 413. `create_app(test_config)` can override the work directory and request cap. `TemporaryDirectory` removes request files and source snapshots on normal success or failure; there is no stale-directory sweeper. Encoded carriers and recovered payloads remain in their output directories until users delete them. Private `.stego-staging-*` directories are removed on normal exits. Power loss or `SIGKILL` can leave request or unauthenticated plaintext staging; stop the server and remove these directories manually after a crash. See [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#cleanup-rule).
+The optional fixed request cap and the upload free-space guard return 413. `create_app(test_config)` can override the work directory and request cap. `TemporaryDirectory` removes request files and source snapshots on normal success or failure; there is no stale-directory sweeper. A client disconnect or timeout does not cancel a running Flask/PyAV job. The application has no job-cancellation or idempotency-key support. The browser never retries encode or decode POST requests automatically; a manual retry can start a second job and create another output. Encoded carriers and recovered payloads remain in their output directories until users delete them. Private `.stego-staging-*` directories are removed on normal exits. Power loss or `SIGKILL` can leave request or unauthenticated plaintext staging; stop the server and remove these directories manually after a crash. See [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md#cleanup-rule).
 
 `/keys/generate` is a local setup helper for sender or receiver keys. Its `key_password` field is optional; an empty value returns an unencrypted private key. A non-empty password must have at least 8 characters. The browser warns that an unencrypted private key is for demos only because anyone with the file can use it. Deployment beyond trusted localhost still needs key storage and access controls, key rotation, transport protection, and auditing.
 

@@ -9,20 +9,12 @@ FFV1/PCM Matroska (`.mkv`) before embedding.
 
 The protocol encrypts the complete payload record with AES-256-GCM, authenticates
 the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
-the intended receiver with RSA-OAEP. The version 3 full media hash covers PNG RGB low-byte units and the fixed
-high-byte and alpha values; the masked low byte and other bytes of each declared
-PCM sample; and video frame units, fixed bytes, and audio, as [Current Protocol](AGENT_docs/CURRENT-PROTOCOL.md)
-defines, including 16-bit sample and fixed-byte order. PNG ancillary chunks and WAV chunks outside the
-declared samples are not covered. Strict PNG and PCM WAV rewrites keep their
-supported metadata as described in [Carrier and Payload Flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md#metadata-in-the-output).
-Converted sources keep only metadata that applies to their canonical pixels or
-samples. Metadata is not covered by the media hash, so a change to it does not
-change the verdict. The strict PNG encoder sets an existing PNG `tIME` to the
-encode time and drops `sBIT` and `hIST`. It refuses an RGB PNG with a `tRNS`
-colour key. The source converter (`encode_image` and the web app) accepts that input and converts transparency
-to RGBA. The protocol carrier accepts only single-frame 8-bit or 16-bit RGB/RGBA
-PNG images. Its decoded image size cannot exceed 715,827,880 bytes; see [Current
-Protocol](AGENT_docs/CURRENT-PROTOCOL.md) for sample and context rules.
+the intended receiver with RSA-OAEP. [Current Protocol](AGENT_docs/CURRENT-PROTOCOL.md)
+defines the media hash and verification rules. Container and ancillary metadata
+are outside the authenticity check; output metadata behavior is in [Carrier and
+Payload Flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md#metadata-in-the-output).
+The protocol carrier accepts single-frame 8-bit or 16-bit RGB/RGBA PNG images,
+with a decoded image size limit of 715,827,880 bytes.
 
 Requires Python 3.12+ because NumPy 2.5.3 requires it.
 
@@ -118,22 +110,14 @@ The local server has no fixed request-size cap by default. It requires
 `Content-Length` and keeps a shared 3 GiB free-space reserve before it reads an
 encode or verify upload. It stores multipart streams and request temporary files
 under `instance/work`, not `/tmp` (a RAM-backed tmpfs on this host). A configured
-`MAX_CONTENT_LENGTH` still applies. Converted audio can hold up to
-4,294,967,256 bytes of PCM data, the largest size that a standard WAV file can
-record. Allowed, but not advised. A WAV file larger than 2 GiB can fail to open
-in some older audio programs, because they read the WAV size field as a signed
-number. The application reads it correctly. Such a file also needs about 8 GiB
-of disk during encoding (converted copy plus output) and cannot be sent by
-email. Video backend limits are 512 Gi carrier units, 256 MiB per
-canonical decoded frame, a 1280 GiB (1.25 TiB) output, and a 3 GiB free-space
-reserve before encode (plus payload size for file payloads). Before each
-Matroska packet write, the encoder also checks room for that packet and 1 MiB of
-mux slack above the reserve. It stores
-encoded PNG, WAV, and MKV files in `instance/stego-outputs` and returns a download URL instead of sending
-the media as base64. These files also stay without an expiry. Delete them
-manually when they are no longer needed.
-
-Allowed, but not advised. The limits accept a 10-minute 4K video at 30 fps with 16-bit RGBA. This video has about 1.2 TB of uncompressed image data. The lossless MKV output can be close to that size. To verify the output, you must upload it again, and the upload needs the same space again. Processing can take many hours. A file of this size cannot be sent by email. For demonstrations, use short clips (30 seconds or less at 1080p). The application refuses the encode when free disk space falls below the 3 GiB reserve.
+`MAX_CONTENT_LENGTH` still applies. A WAV file larger than 2 GiB can fail to open
+in some older audio programs because they read the WAV size field as signed;
+the application reads it correctly. See the [Web Application Guide](AGENT_docs/WEB-APPLICATION-GUIDE.md) for request
+and storage behavior. Video resource limits and large-file warnings are in the [video
+carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md#output-and-limits).
+Encoded PNG, WAV, and MKV files are stored in `instance/stego-outputs` and
+returned by download URL, not as base64. Files do not expire; delete them when
+they are no longer needed.
 
 ## Protocol API
 
@@ -167,9 +151,7 @@ required install dependency in `requirements.txt`; PNG, WAV, and video I/O use P
 Pillow is used only by tests and the demonstration notebook. The public
 `CarrierSource` abstraction and `prepare_carrier_encoding` /
 `decode_carrier_source` entry points support backend-level operations. The public
-`lsb_range_transform` helper prepares LSB changes for a carrier range. Whole-array
-carrier APIs and whole-file WAV loading helpers are not public; the
-`MAX_WAV_FRAME_BYTES` limit has been removed. For example:
+`lsb_range_transform` helper prepares LSB changes for a carrier range. For example:
 
 ```python
 layout, payload = encode_png(

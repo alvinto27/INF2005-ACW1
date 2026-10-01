@@ -65,7 +65,7 @@ Only video sources that set `requires_output_check=True` use the additive `Carri
 
 PASS 0 counts carrier units incrementally and checks each canonical frame's byte size before staging. The limits are 512 Gi carrier units, 256 MiB per canonical frame, and 1280 GiB of Matroska output. The payload-path API reserves space for its payload file as well as the 3 GiB free-space reserve. Before each Matroska packet write, the encoder checks for the reserve, that packet's size, and 1 MiB of mux slack. The output-size cap is still checked after each packet. A failed check removes staging and does not publish the output. See [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) for the resolution and duration examples. Audio remains limited to mono or stereo under the channel-identity rule in [Current Protocol](CURRENT-PROTOCOL.md#video-plus-audio-media-code-3). Tests patch the free-space requirement so they do not depend on host disk capacity.
 
-## 4. Protocol flow
+## Protocol flow
 
 ### Encode
 
@@ -80,7 +80,7 @@ The protocol core makes two source-content passes after backend validation. Vide
 
 Verification opens and checks the carrier; reads and opens the bootstrap; reads the packet at the recovered position, checks padding, and verifies RSA-PSS; decrypts AES-GCM and parses the record; then makes one full chunked pass for the masked media hash. The backend must be seekable because packet position is known only after bootstrap decryption. Forward-only carrier streams are not supported.
 
-## 8. Chunk size
+## Chunk size
 
 `DEFAULT_CHUNK_BYTES` is 1 MiB of raw PCM data. Hash-pass throughput was measured on one 96 MiB 16-bit stereo WAV with warm page cache:
 
@@ -135,7 +135,7 @@ Before the file-backed verifier creates its ciphertext staging file, it checks f
 
 A power loss or `SIGKILL` can leave plaintext staging files. Stop the server and manually remove `.stego-staging-*` directories after a crash. Staging files are not served by the web routes. Temporary disk use grows with encrypted and staged plaintext payload size. Same-size payload input changes during an encode read are not prevented by size checks.
 
-## 9. Memory claim
+## Memory measurements
 
 These are reference measurements on one local machine, not performance guarantees.
 
@@ -160,7 +160,7 @@ The normal suite also encodes and verifies 4 MiB at `k=8`: 0.247 s combined, wit
 | Before packed handling | 1 MiB payload, `k=3`, 96 MiB WAV | 20.0 MiB | 34.7 MiB |
 | After packed handling | 4 MiB payload, `k=8`, about 4 MiB WAV | 12.01 MiB | Not measured with `tracemalloc` |
 
-The before-Task-5 timing baseline used a 96 MiB WAV at `k=3`:
+An earlier timing baseline used a 96 MiB WAV at `k=3`:
 
 | Payload | Encode | Encode peak | Verify | Verify peak |
 | --- | ---: | ---: | ---: | ---: |
@@ -173,7 +173,7 @@ File payload streaming was measured on an 8-bit mono WAV at `k=8`: 8 MiB encode 
 
 ### PNG carrier memory
 
-The same 4341 x 26191 RGBA PNG (about 434 MiB decoded) was used. New encode and verify times are medians of three separate-process runs after one source read; old times are single runs under a different rule. The first encode run of each series was slower (about 9.5 s in two series); the cause was not determined. Verify runs did not show this. Peak RSS includes Python and native decoder/encoder allocations and is not a limit or guarantee.
+The 4341 × 26191 RGBA PNG (about 434 MiB decoded) was used. Encode and verify times are medians of three separate-process runs after one source read. The first encode run of each series was slower (about 9.5 s in two series); the cause was not determined. Verify runs did not show this. Peak RSS includes Python and native decoder/encoder allocations and is not a limit or guarantee.
 
 | Operation | Old time | New time | Old peak RSS | New peak RSS |
 | --- | ---: | ---: | ---: | ---: |
@@ -184,9 +184,9 @@ The PNG chunk carry-over did not change these figures. For each version, three s
 
 A separate fixed-key check on RGB and RGBA carriers compared full carrier-unit reads and identity-rewrite outputs; both matched exactly. The encoded files were not compared because encoding uses random nonce material.
 
-#### PyAV PNG migration (M-S1)
+#### PNG implementation measurements
 
-The before run used revision `515cc65`; the after run used the PyAV PNG implementation. Each operation ran in three fresh processes with a small payload. The large source was 4341 × 26191 RGBA (113,695,131 pixels). Times and peak RSS include Python startup and native media buffers; RSS is a host-specific measurement, not a limit.
+The comparison used three fresh processes per operation with a small payload. The source was 4341 × 26191 RGBA (113,695,131 pixels). Times and peak RSS include Python startup and native media buffers; RSS is a host-specific measurement, not a limit.
 
 | Source | Operation | Before median | Before peak RSS | After median | After peak RSS |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -195,9 +195,9 @@ The before run used revision `515cc65`; the after run used the PyAV PNG implemen
 | 4341 × 26191 RGBA | Encode | 5.365 s | 948.1 MiB | 3.517 s | 1870.8 MiB |
 | 4341 × 26191 RGBA | Verify | 2.106 s | 948.0 MiB | 1.351 s | 938.2 MiB |
 
-The PyAV PNG encoder uses `compression_level=1` and `pred=up`, selected from the large-image measurement. Direct writes into a PyAV frame removed the full output ndarray and saved 431 MiB (about 19%) from the first S1 encode peak. Keeping the decoded ndarray as a read-only view removed a decode copy and reduced verify peak by about 430 MiB. Setting encoder `thread_count=1` did not reduce peak RSS. Final large-image encode peak is 1.97 times the before peak; verify peak is 1.0% below it. The 2400×2400 RGBA memory test passes with its original `2.5 × decoded bytes + 2 MiB` traced-memory bound. These are host-specific measurements, not guarantees.
+The PyAV PNG encoder uses `compression_level=1` and `pred=up`, selected from the large-image measurement. Direct writes into a PyAV frame removed the full output ndarray and saved 431 MiB (about 19%) from the first encode peak. Keeping the decoded ndarray as a read-only view removed a decode copy and reduced verify peak by about 430 MiB. Setting encoder `thread_count=1` did not reduce peak RSS. Final large-image encode peak is 1.97 times the before peak; verify peak is 1.0% below it. The 2400×2400 RGBA memory test passes with its original `2.5 × decoded bytes + 2 MiB` traced-memory bound. These are host-specific measurements, not guarantees.
 
-#### PyAV 16-bit PNG measurement (M-S2)
+#### 16-bit PNG measurements
 
 The generated RGBA source was 7746 × 7746 pixels: 60,000,516 pixels and 480,004,128 decoded bytes. It was written by PyAV with a smooth deterministic pattern (41,930,550-byte PNG). Each encode and verify ran in three fresh processes with the same small payload. Peak RSS is a process maximum and includes PyAV and Python allocations.
 
@@ -205,14 +205,14 @@ The generated RGBA source was 7746 × 7746 pixels: 60,000,516 pixels and 480,004
 | --- | --- | ---: | ---: |
 | 16-bit RGBA, 7746 × 7746 | Encode | 5.129 s | 2011.6 MiB |
 | 16-bit RGBA, 7746 × 7746 | Verify | 1.843 s | 1519.6 MiB |
-| 8-bit RGBA, 4341 × 26191 (S1) | Encode | 3.517 s | 1870.8 MiB |
-| 8-bit RGBA, 4341 × 26191 (S1) | Verify | 1.351 s | 938.2 MiB |
+| 8-bit RGBA, 4341 × 26191 | Encode | 3.517 s | 1870.8 MiB |
+| 8-bit RGBA, 4341 × 26191 | Verify | 1.351 s | 938.2 MiB |
 
 The two images have different decoded sizes (480,004,128 and 454,780,524 bytes). Treat these as host-specific examples, not a direct per-byte speed comparison.
 
-## 10. Whole-file WAV cap
+## WAV and request storage
 
-`WavCarrier` reads whole PCM frames, verifies headers when reopening the file, checks the last declared frame on open, and preserves sample bytes outside the low-byte carrier unit. A short file fails early. File reads and early-end failures become `CarrierAccessError`; verification maps these to `Cannot Verify`. WAV output is a chunked copy of the input file with only the declared samples patched; see [Metadata in the output](#metadata-in-the-output). For a 96 MiB 16-bit stereo WAV, three separate-process encode runs took about 0.3 s with 54 MiB peak RSS, before and after this change. The whole-file `WavPcmData`, `load_pcm_wav_from_path`, and `MAX_WAV_FRAME_BYTES` cap are removed. The 8 MiB and 64 MiB WAV file-payload tests (`test_stego.py:876, 881`) stay below a 16 MiB traced peak.
+`WavCarrier` reads whole PCM frames, verifies headers when reopening the file, checks the last declared frame on open, and preserves sample bytes outside the low-byte carrier unit. A short file fails early. File reads and early-end failures become `CarrierAccessError`; verification maps these to `Cannot Verify`. WAV output is a chunked copy of the input file with only the declared samples patched; see [Metadata in the output](#metadata-in-the-output). In one local measurement, three encode runs on a 96 MiB 16-bit stereo WAV took about 0.3 s each with 54 MiB peak RSS.
 
 Flask has no fixed request-size cap by default. Before reading an encode or verify body, it returns 411 if `Content-Length` is missing. It rejects a declared length greater than the free space in `STEGO_WORK_DIR` minus the shared 3 GiB reserve. Multipart streams and request-scoped temporary files use `STEGO_WORK_DIR`, defaulting to `instance/work` on the same filesystem as carrier outputs; this host uses `/tmp` as a RAM-backed tmpfs. A deployment can still set `MAX_CONTENT_LENGTH`. Encode outputs go to `instance/stego-outputs`; authenticated recovered payloads and sidecars go to `instance/recovered-payloads`. These files have no expiry and users delete them manually. Recovered payloads are plaintext on disk. The service returns URLs, not carrier or payload Base64. Browser responses use `Cache-Control: no-store`.
 
@@ -225,14 +225,6 @@ Flask has no fixed request-size cap by default. Before reading an encode or veri
 - Atomic replacement requires staging and output paths on the same filesystem.
 - Flask has no fixed request-size cap by default. It returns 411 for a request without `Content-Length`, and its free-space guard rejects a declared body that exceeds the free space in `STEGO_WORK_DIR` minus the shared 3 GiB reserve; deployments can set `MAX_CONTENT_LENGTH`. PNG images have a 715,827,880-byte decoded-size cap checked before decode, and FFmpeg also receives a format-specific `max_pixels` limit. Converted audio can hold up to 4,294,967,256 bytes of PCM data, the largest size that a standard WAV file can record. It checks the shared reserve before the first PCM write and after each 64 MiB of output.
 
-## 12. Web boundary follow-up
+## Web application guide
 
-- Uploads use request-scoped files; keys remain bounded byte inputs. Carrier detection reads a 16-byte signature; when it is not PNG or RIFF/WAVE, it uses PyAV to identify the stream family.
-- Bytes-API encode functions write directly to the output path and remove partial outputs on failure. File-payload encode functions write to staging and publish with `os.replace`.
-- Verification publishes payload bytes only after `Authentic`; MIME sniffing reads at most 4 KiB (4,096 bytes) and UTF-8 validation uses an incremental decoder.
-- `/download/<id>.<ext>` and `/payload/<id>` validate identifiers and extensions, stream output, and apply browser safety headers. Failed sidecar creation removes the recovered payload.
-- `Cache-Control: no-store` is retained. Stored files have no expiry.
-
-## Source records and measurements
-
-Earlier design details and stage chronology have been removed from current guidance. The measurements above retain carrier throughput, memory, payload, and PNG figures needed to explain the implemented behavior. The current web request and verification contract is in [Web Application Guide](WEB-APPLICATION-GUIDE.md).
+For Flask request handling, upload storage, verification responses, and payload downloads, see the [Web Application Guide](WEB-APPLICATION-GUIDE.md).

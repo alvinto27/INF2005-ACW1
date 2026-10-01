@@ -22,7 +22,6 @@ For repository structure and implementation entry points, see the [Agent Navigat
 - [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) — bounded carrier access, payload APIs, staging cleanup, measurements, and file boundary.
 - [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) — approved design, implementation details, test record, and video performance measurements for media code 3 (`VID-`).
 - [Web Application Guide](WEB-APPLICATION-GUIDE.md) — request contracts, response handling, payload previews, the encode wizard, requirement coverage, and the disconnected Three.js carrier-map design.
-- [Reliability Audit](RELIABILITY-AUDIT.md) — architecture, failure fixes, test matrix, browser fault-injection evidence, and remaining risks.
 
 ## Historical records and project status
 
