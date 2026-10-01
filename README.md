@@ -22,10 +22,12 @@ Requires Python 3.12+ because NumPy 2.5.3 requires it.
 
 ### Quick start
 
+Requires Python 3.12 or later.
+
 Linux and macOS:
 
 ```sh
-python -m venv .venv
+python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 python run.py
@@ -44,7 +46,7 @@ Open `http://127.0.0.1:5000`. The encode page is `/`; the verify page is `/verif
 
 ### Expected test output
 
-- `python -m unittest` → `Ran 308 tests ... OK` (no tests skipped).
+- `python -m unittest` → `Ran 308 tests ... OK`; one subtitle test is skipped if the FFmpeg command-line tool is not installed (`OK (skipped=1)`).
 - `node --test scripts/test-api-js.cjs scripts/test-capacity-js.cjs` → 15 tests pass.
 
 ### Folder guide
