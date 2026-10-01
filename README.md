@@ -187,4 +187,5 @@ History](AGENT_docs/REPOSITORY-HISTORY.md).
 - [Video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md)
 - [Web application guide](AGENT_docs/WEB-APPLICATION-GUIDE.md)
 - [Three.js map status and design](AGENT_docs/WEB-APPLICATION-GUIDE.md#threejs-carrier-map)
+- [Technical-design Reveal.js presentation](presentation/README.md)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)
