@@ -238,5 +238,4 @@ History](AGENT_docs/REPOSITORY-HISTORY.md).
 - [Technical-design Reveal.js presentation](presentation/README.md)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)
 - [Documentation index](AGENT_docs/README.md)
-- [Agent instructions](AGENTS.md)
 - [Agent navigation map](AGENT_docs/AGENT_MAP.md)

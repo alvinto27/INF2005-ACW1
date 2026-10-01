@@ -9,7 +9,6 @@ Use this map before editing an unfamiliar part of the repository.
 | Documentation index | [AGENT_docs/README.md](README.md) |
 | Supplied specification directory | `docs/` |
 | Project-maintained records | `AGENT_docs/` |
-| Repository instructions | [AGENTS.md](../AGENTS.md) |
 | Public setup and protocol usage | [README.md](../README.md) |
 | Assignment specification transcription | [INF2005-ACW1-spec_v5-f2f.md](../docs/INF2005-ACW1-spec_v5-f2f.md) |
 | Current version-3 wire format, media hash, typed metadata, discovery, and verdicts | [CURRENT-PROTOCOL.md](CURRENT-PROTOCOL.md#verification-verdicts) |
@@ -53,7 +52,6 @@ Use this map before editing an unfamiliar part of the repository.
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |
 | Optional dependency-free JavaScript request-boundary and capacity-helper tests | [scripts/test-api-js.cjs](../scripts/test-api-js.cjs), [scripts/test-capacity-js.cjs](../scripts/test-capacity-js.cjs) |
 | CI Python tests, dependency-free JavaScript request tests, and documentation check on Python 3.12–3.14 | [.github/workflows/tests.yml](../.github/workflows/tests.yml) |
-| Git-hook installer | [scripts/install-hooks.sh](../scripts/install-hooks.sh) |
 
 ## Repository boundaries
 

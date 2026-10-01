@@ -4,3 +4,8 @@ __pycache__/
 instance/
 /samples/*
 !/samples/Banana.png
+
+# Local development tooling
+AGENTS.md
+/.githooks/
+/scripts/install-hooks.sh

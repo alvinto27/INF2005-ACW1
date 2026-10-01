@@ -4,7 +4,7 @@ This index lists durable documentation for the Flask application and the current
 
 ## Navigation
 
-For repository structure and implementation entry points, see the [Agent Navigation Map](AGENT_MAP.md). See [AGENTS.md](../AGENTS.md) for repository instructions and the documentation checker's link policy.
+For repository structure and implementation entry points, see the [Agent Navigation Map](AGENT_MAP.md).
 
 ## Repository entry points
 
@@ -14,7 +14,6 @@ For repository structure and implementation entry points, see the [Agent Navigat
 - [test_video.py](../test_video.py) — video protocol and carrier tests; PyAV is required.
 - [Flask application](../run.py) — localhost entry point.
 - [test_webapp.py](../test_webapp.py) — Flask integration tests.
-- [AGENTS](../AGENTS.md) — agent working instructions.
 
 ## Current guides
 
