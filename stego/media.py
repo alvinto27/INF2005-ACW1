@@ -391,7 +391,12 @@ def _save_png_frame_to_path(
             raise ValueError("could not read the PNG carrier chunks") from error
     encoded_path: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temporary_file:
+        with tempfile.NamedTemporaryFile(
+            prefix=".stego-staging-",
+            suffix=".png",
+            dir=os.path.dirname(os.path.abspath(os.fsdecode(fspath(output_path)))),
+            delete=False,
+        ) as temporary_file:
             encoded_path = temporary_file.name
         container = av.open(encoded_path, mode="w", format="image2pipe")
         try:
@@ -556,6 +561,8 @@ class PngCarrier(CarrierSource):
         output_path: str | bytes | PathLike[str],
         transform: Callable[[int, np.ndarray], np.ndarray],
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
+        *,
+        preview_transform: Callable[[int, np.ndarray], np.ndarray] | None = None,
     ) -> None:
         """Write transformed RGB units into one PyAV frame, preserving fixed values."""
         height, width, _ = self._shape
@@ -823,6 +830,8 @@ class WavCarrier(CarrierSource):
         output_path: str | bytes | PathLike[str],
         transform: Callable[[int, np.ndarray], np.ndarray],
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
+        *,
+        preview_transform: Callable[[int, np.ndarray], np.ndarray] | None = None,
     ) -> None:
         """Copy the WAV byte for byte and change only the declared sample LSBs.
 

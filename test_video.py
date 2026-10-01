@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import numpy as np
+import stego.video as video
 
 from stego import (
     VIDEO_MEDIA_CODE,
@@ -112,6 +113,8 @@ class MemoryVideoCarrier(CarrierSource):
         path: str | bytes | PathLike[str],
         transform: Callable[[int, np.ndarray], np.ndarray],
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
+        *,
+        preview_transform: Callable[[int, np.ndarray], np.ndarray] | None = None,
     ) -> None:
         output = np.empty(self.units.size, dtype=np.uint8)
         offset = 0
@@ -596,6 +599,15 @@ class DecoderConfigurationTests(unittest.TestCase):
         _configure_decoder(stream)
         self.assertEqual(stream.thread_count, 0)
         self.assertEqual(stream.thread_type, "AUTO")
+
+    def test_video_decode_failure_reports_possible_damage(self) -> None:
+        error = video.av.error.InvalidDataError(0, "damaged video")
+        with patch("stego.video.av.open", side_effect=error):
+            with self.assertRaisesRegex(
+                ValueError,
+                "^could not decode the file; the file may be damaged$",
+            ):
+                VideoCarrier("damaged.mp4")
 
 
 class VideoMediaCodeTests(unittest.TestCase):
@@ -1451,6 +1463,78 @@ class VideoCarrierReadTests(unittest.TestCase):
                 ):
                     VideoCarrier(path)
 
+    def test_video_limits_match_requested_4k_duration_and_output_bound(self) -> None:
+        self.assertEqual(video._MAX_CARRIER_UNITS, 512 * 1024**3)
+        self.assertEqual(video._MAX_FRAME_BYTES, 256 * 1024**2)
+        self.assertEqual(video._MAX_OUTPUT_BYTES, 1280 * 1024**3)
+
+    def test_mux_space_check_adds_packet_size_and_fixed_slack(self) -> None:
+        destination = Path("output.mkv")
+        packet_size = 12_345
+        with patch("stego.video._check_video_output_resources") as check:
+            video._check_video_mux_space(destination, packet_size)
+        check.assert_called_once_with(
+            destination, packet_size + video._MUX_SPACE_SLACK_BYTES
+        )
+
+    def test_low_space_during_mux_removes_stage_and_does_not_publish(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.mp4"
+            output_path = root / "late-insufficient-space.mkv"
+            mux_slack_bytes = 1024**2
+            make_tiny_clip(source_path)
+            source = VideoCarrier(source_path)
+            audio_spool_bytes = (
+                source._audio_frames_per_channel * source._audio_channels * 2
+            )
+            source.close()
+            with (
+                patch("stego.video._MIN_FREE_BYTES", 4096),
+                patch(
+                    "stego.storage.shutil.disk_usage",
+                    side_effect=(
+                        SimpleNamespace(free=10 * 1024**2),
+                        SimpleNamespace(free=10 * 1024**2),
+                        SimpleNamespace(
+                            free=4096 + mux_slack_bytes
+                        ),
+                    ),
+                ) as disk_usage,
+                patch(
+                    "stego.video._check_video_output_resources",
+                    wraps=video._check_video_output_resources,
+                ) as check_resources,
+                patch(
+                    "stego.video._check_video_mux_space",
+                    wraps=video._check_video_mux_space,
+                ) as check_mux_space,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for video output$"
+                ):
+                    encode_video(
+                        source_path,
+                        output_path,
+                        SIGNING_PRIVATE_KEY,
+                        RECEIVER_PUBLIC_KEY,
+                        bootstrap_span(RECEIVER_PUBLIC_KEY),
+                        3,
+                        b"mux reserve",
+                        b"{}",
+                    )
+            self.assertEqual(disk_usage.call_count, 3)
+            self.assertEqual(check_resources.call_count, 3)
+            self.assertEqual(check_mux_space.call_count, 1)
+            # Destination preflight, exact audio spool space, then first mux packet.
+            self.assertEqual(check_resources.call_args_list[1].args[1], audio_spool_bytes)
+            self.assertEqual(
+                check_resources.call_args_list[2].args[1],
+                check_mux_space.call_args.args[1] + mux_slack_bytes,
+            )
+            self.assertFalse(output_path.exists())
+            self.assertEqual(list(root.glob(".stego-staging-*")), [])
+
     def test_video_beyond_previous_frame_and_duration_limits_round_trips(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1512,11 +1596,16 @@ class VideoCarrierReadTests(unittest.TestCase):
             make_tiny_clip(source_path)
             payload_path.write_bytes(b"p" * 100)
 
+            disk_usage_calls = 0
+
             def disk_usage(_path: str | bytes | PathLike[str]) -> SimpleNamespace:
-                return SimpleNamespace(total=10_000, used=9_950, free=50)
+                nonlocal disk_usage_calls
+                disk_usage_calls += 1
+                free_bytes = 50 if disk_usage_calls == 1 else 10 * 1024**2
+                return SimpleNamespace(total=10_000, used=9_950, free=free_bytes)
 
             with patch("stego.video._MIN_FREE_BYTES", 10), patch(
-                "stego.video.shutil.disk_usage", side_effect=disk_usage
+                "stego.storage.shutil.disk_usage", side_effect=disk_usage
             ):
                 with self.assertRaisesRegex(
                     ValueError, "insufficient free disk space for video output"
@@ -1565,7 +1654,8 @@ class VideoCarrierReadTests(unittest.TestCase):
             make_tiny_clip(source_path)
             source = VideoCarrier(source_path)
             try:
-                source.rewrite_to_path(output_path, lambda _offset, units: units)
+                with patch("stego.video._MIN_FREE_BYTES", 0):
+                    source.rewrite_to_path(output_path, lambda _offset, units: units)
             finally:
                 source.close()
 
@@ -1625,6 +1715,59 @@ class VideoCarrierReadTests(unittest.TestCase):
                         )
                         self.assertEqual(result.verdict, "Authentic", result.detail)
                         self.assertEqual(result.payload.user_payload, b"tiny carrier round trip")
+
+    def test_encoded_audio_packets_are_interleaved_with_video(self) -> None:
+        import av
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "long-source.mp4"
+            output_path = root / "interleaved.mkv"
+            make_h264_aac(
+                source_path, width=64, height=32, frame_count=600,
+                audio_frames=960_000,
+            )
+            with patch("stego.video._MIN_FREE_BYTES", 0):
+                encode_video(
+                    source_path, output_path, SIGNING_PRIVATE_KEY,
+                    RECEIVER_PUBLIC_KEY, bootstrap_span(RECEIVER_PUBLIC_KEY), 3,
+                    b"interleaved audio", b"{}",
+                )
+
+            first_audio_index = -1
+            first_audio_time: float | None = None
+            latest_video_time: float | None = None
+            audio_seen = False
+            packet_index = 0
+            with av.open(str(output_path)) as container:
+                video_stream = next(stream for stream in container.streams if stream.type == "video")
+                audio_stream = next(stream for stream in container.streams if stream.type == "audio")
+                for packet in container.demux((video_stream, audio_stream)):
+                    if packet.dts is None or packet.pts is None:
+                        continue
+                    packet_time = float(packet.pts * packet.time_base)
+                    if packet.stream.type == "video":
+                        latest_video_time = packet_time
+                    elif packet.stream.type == "audio":
+                        if not audio_seen:
+                            first_audio_index = packet_index
+                            first_audio_time = packet_time
+                            audio_seen = True
+                        if latest_video_time is not None:
+                            self.assertLessEqual(
+                                latest_video_time - packet_time, 1.0,
+                                "audio packet trails the latest written video packet",
+                            )
+                    packet_index += 1
+
+            self.assertTrue(audio_seen)
+            self.assertIsNotNone(first_audio_time)
+            self.assertLess(first_audio_index, 40)
+            self.assertLessEqual(abs(first_audio_time), 1.0)
+            result = verify_video(
+                output_path, SIGNING_PUBLIC_KEY, RECEIVER_PRIVATE_KEY
+            )
+            self.assertEqual(result.verdict, "Authentic", result.detail)
 
     def test_packet_can_cross_track_boundary_or_live_wholly_in_audio(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1769,9 +1912,14 @@ class VideoCarrierReadTests(unittest.TestCase):
                 path: str | bytes | PathLike[str],
                 transform: Callable[[int, np.ndarray], np.ndarray],
                 fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
+                *,
+                preview_transform: Callable[[int, np.ndarray], np.ndarray] | None = None,
             ) -> None:
                 Path(carrier._path).write_bytes(b"source changed after pass one")
-                original(carrier, path, transform, fixed_bytes_callback)
+                original(
+                    carrier, path, transform, fixed_bytes_callback,
+                    preview_transform=preview_transform,
+                )
 
             with patch("stego.video._MIN_FREE_BYTES", 0), patch.object(
                 VideoCarrier, "rewrite_to_path", change_source
@@ -1797,8 +1945,13 @@ class VideoCarrierReadTests(unittest.TestCase):
                 path: str | bytes | PathLike[str],
                 transform: Callable[[int, np.ndarray], np.ndarray],
                 fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
+                *,
+                preview_transform: Callable[[int, np.ndarray], np.ndarray] | None = None,
             ) -> None:
-                original(carrier, path, transform, fixed_bytes_callback)
+                original(
+                    carrier, path, transform, fixed_bytes_callback,
+                    preview_transform=preview_transform,
+                )
                 temporary_corrupt = root / "corrupt.mkv"
                 rewrite_matroska(Path(path), temporary_corrupt, video_lsb=True)
                 os.replace(temporary_corrupt, path)
@@ -1867,7 +2020,8 @@ class VideoCarrierReadTests(unittest.TestCase):
             make_h264_aac(source_path, frame_count=3, audio_frames=48_000)
             source = VideoCarrier(source_path)
             try:
-                source.rewrite_to_path(rewritten_path, lambda _offset, units: units)
+                with patch("stego.video._MIN_FREE_BYTES", 0):
+                    source.rewrite_to_path(rewritten_path, lambda _offset, units: units)
             finally:
                 source.close()
 
@@ -1893,7 +2047,8 @@ class VideoCarrierReadTests(unittest.TestCase):
             second_rewrite = root / "rewritten-again.mkv"
             carrier = VideoCarrier(rewritten_path)
             try:
-                carrier.rewrite_to_path(second_rewrite, lambda _offset, units: units)
+                with patch("stego.video._MIN_FREE_BYTES", 0):
+                    carrier.rewrite_to_path(second_rewrite, lambda _offset, units: units)
             finally:
                 carrier.close()
             self.assertTrue(np.array_equal(source_samples, audio_s16(second_rewrite)))

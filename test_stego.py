@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import av
@@ -61,7 +62,17 @@ from stego.crypto import (
 )
 from stego.layout import build_embedding_layout, encode_signing_input_prefix
 from stego.packet import parse_payload_from_reader, serialized_record_length
-from stego.sources import _decoded_audio_frames, _decoded_image_frames, detect_source_family
+from stego.sources import (
+    _MAX_AUDIO_PCM_BYTES,
+    _decoded_audio_frames,
+    _decoded_image_frames,
+    detect_source_family,
+)
+from stego.storage import (
+    DISK_SPACE_RESERVE_BYTES,
+    _check_free_space,
+    _png_output_size_bound,
+)
 
 
 SIGNING_PRIVATE_KEY, SENDER_PUBLIC_KEY = generate_rsa_keypair()
@@ -69,6 +80,21 @@ RECEIVER_PRIVATE_KEY, RECEIVER_PUBLIC_KEY = generate_rsa_keypair()
 OTHER_PRIVATE_KEY, OTHER_PUBLIC_KEY = generate_rsa_keypair()
 PRIVATE_KEY = SIGNING_PRIVATE_KEY
 PUBLIC_KEY = SENDER_PUBLIC_KEY
+
+_STORAGE_SPACE_PATCH = patch(
+    "stego.storage.shutil.disk_usage",
+    return_value=SimpleNamespace(free=16 * 1024**3),
+)
+
+
+def setUpModule() -> None:
+    """Give disk-space checks a deterministic default for test fixtures."""
+    _STORAGE_SPACE_PATCH.start()
+
+
+def tearDownModule() -> None:
+    """Restore the real disk-space query after this module's tests."""
+    _STORAGE_SPACE_PATCH.stop()
 
 
 class ArrayCarrier(CarrierSource):
@@ -887,6 +913,44 @@ class TestPayloadStreaming(unittest.TestCase):
 class TestPng16Bit(unittest.TestCase):
     """Check native-depth PNG carrier values and fixed-byte rules."""
 
+    def test_png_encode_temporary_file_stays_next_to_output(self) -> None:
+        """Do not use the system temporary directory for encoded PNG staging."""
+        with TemporaryDirectory() as root_name:
+            root = Path(root_name)
+            output_dir = root / "output"
+            system_tmp = root / "system-tmp"
+            output_dir.mkdir()
+            system_tmp.mkdir()
+            source_path = output_dir / "source.png"
+            output_path = output_dir / "rewritten.png"
+            Image.new("RGB", (32, 32), (10, 20, 30)).save(source_path)
+
+            created_paths: list[Path] = []
+            real_named_temporary_file = tempfile.NamedTemporaryFile
+
+            def record_temporary_file(*args: object, **kwargs: object) -> object:
+                temporary_file = real_named_temporary_file(*args, **kwargs)
+                created_paths.append(Path(temporary_file.name))
+                return temporary_file
+
+            with patch("stego.media.tempfile.tempdir", str(system_tmp)), patch(
+                "stego.media.tempfile.NamedTemporaryFile",
+                side_effect=record_temporary_file,
+            ):
+                PngCarrier(source_path).rewrite_to_path(
+                    output_path, lambda _start, units: units
+                )
+
+            self.assertEqual(len(created_paths), 1)
+            self.assertEqual(created_paths[0].parent, output_dir)
+            self.assertTrue(created_paths[0].name.startswith(".stego-staging-"))
+            self.assertTrue(created_paths[0].name.endswith(".png"))
+            self.assertTrue(output_path.is_file())
+            self.assertEqual(list(system_tmp.iterdir()), [])
+            self.assertFalse(
+                any(path.name.startswith(".stego-staging-") for path in output_dir.iterdir())
+            )
+
     def test_low_byte_units_and_high_bytes_use_numeric_sample_order(self) -> None:
         with TemporaryDirectory() as directory_name:
             path = Path(directory_name) / "known.png"
@@ -1040,8 +1104,355 @@ class TestPng16Bit(unittest.TestCase):
                     PngCarrier(sixteen_over)
 
 
+class TestStorageChecks(unittest.TestCase):
+    """Check size bounds and preflight for image and audio storage."""
+
+    def test_audio_pcm_cap_is_the_largest_aligned_riff_data_size(self) -> None:
+        self.assertEqual(_MAX_AUDIO_PCM_BYTES % 8, 0)
+        self.assertLessEqual(36 + _MAX_AUDIO_PCM_BYTES, 0xFFFFFFFF)
+        self.assertGreater(36 + _MAX_AUDIO_PCM_BYTES + 8, 0xFFFFFFFF)
+
+    def test_png_bound_uses_exact_reserve_boundary(self) -> None:
+        """Accept exact space and refuse when free space is one byte lower."""
+        bound = _png_output_size_bound(100, 2, 20)
+        expected = 102 + 5 + 20 + 1024**2
+        self.assertEqual(bound, expected)
+        with patch("stego.storage.shutil.disk_usage") as disk_usage:
+            disk_usage.return_value.free = DISK_SPACE_RESERVE_BYTES + bound
+            _check_free_space(Path("unused"), bound, DISK_SPACE_RESERVE_BYTES, "low")
+            disk_usage.return_value.free -= 1
+            with self.assertRaisesRegex(ValueError, "^low$"):
+                _check_free_space(Path("unused"), bound, DISK_SPACE_RESERVE_BYTES, "low")
+
+    def test_file_backed_decode_checks_three_ciphertext_stores(self) -> None:
+        """Require reserve plus three ciphertext lengths before file staging."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.png"
+            encoded_path = directory / "encoded.png"
+            Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8)).save(source_path)
+            layout, _ = encode_png(
+                source_path, encoded_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                2048, 3, b"disk-space check", b"",
+            )
+            required_bytes = 3 * layout.ciphertext_length
+            accepted_output = directory / "accepted.bin"
+            refused_output = directory / "refused.bin"
+            with patch("stego.storage.shutil.disk_usage") as disk_usage:
+                disk_usage.return_value.free = (
+                    DISK_SPACE_RESERVE_BYTES + required_bytes
+                )
+                accepted = verify_png_to_payload_path(
+                    encoded_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, accepted_output
+                )
+            self.assertEqual(accepted.verdict, "Authentic", accepted.detail)
+            self.assertTrue(accepted_output.exists())
+
+            with patch("stego.storage.shutil.disk_usage") as disk_usage:
+                disk_usage.return_value.free = (
+                    DISK_SPACE_RESERVE_BYTES + required_bytes - 1
+                )
+                refused = verify_png_to_payload_path(
+                    encoded_path, PUBLIC_KEY, RECEIVER_PRIVATE_KEY, refused_output
+                )
+            self.assertEqual(refused.verdict, "Cannot Verify")
+            self.assertIn("insufficient free disk space", refused.detail)
+            self.assertFalse(refused_output.exists())
+            self.assertEqual(list(directory.glob(".stego-staging-*")), [])
+
+    def test_png_output_preflight_counts_staging_and_final_png(self) -> None:
+        """Refuse output unless two PNG bounds and the reserve fit."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.png"
+            output_path = directory / "output.png"
+            Image.fromarray(np.zeros((64, 64, 3), dtype=np.uint8)).save(source_path)
+            source = PngCarrier(source_path)
+            height, width, channels = source._shape
+            bound = _png_output_size_bound(
+                height * width * channels * (source._bit_depth // 8),
+                height,
+                source_path.stat().st_size,
+            )
+            with patch("stego.storage.shutil.disk_usage") as disk_usage:
+                disk_usage.return_value.free = (
+                    DISK_SPACE_RESERVE_BYTES + 2 * bound - 1
+                )
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for image output$"
+                ):
+                    encode_png(
+                        source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                        2048, 3, b"x", b"",
+                    )
+            self.assertFalse(output_path.exists())
+
+    def test_wav_output_preflight_counts_source_file(self) -> None:
+        """Refuse WAV output unless one source-file-size bound fits."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.wav"
+            output_path = directory / "output.wav"
+            write_pcm_wav(source_path, 1, 2, 8000)
+            source_size = source_path.stat().st_size
+            with patch("stego.storage.shutil.disk_usage") as disk_usage:
+                disk_usage.return_value.free = (
+                    DISK_SPACE_RESERVE_BYTES + source_size - 1
+                )
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for audio output$"
+                ):
+                    encode_wav(
+                        source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                        2048, 3, b"payload", b"",
+                    )
+            self.assertFalse(output_path.exists())
+
+    def test_payload_file_size_is_included_before_staging(self) -> None:
+        """Include payload bytes in the output-space preflight."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.wav"
+            payload_path = directory / "payload.bin"
+            output_path = directory / "output.wav"
+            write_pcm_wav(source_path, 1, 2, 8000)
+            payload_path.write_bytes(b"a payload that needs staging")
+            needed_bytes = source_path.stat().st_size + payload_path.stat().st_size
+            with patch("stego.storage.shutil.disk_usage") as disk_usage:
+                disk_usage.return_value.free = DISK_SPACE_RESERVE_BYTES + needed_bytes - 1
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for audio output$"
+                ):
+                    encode_wav_from_payload_path(
+                        source_path, output_path, PRIVATE_KEY, RECEIVER_PUBLIC_KEY,
+                        2048, 3, payload_path, b"",
+                    )
+            self.assertFalse(output_path.exists())
+            self.assertEqual(list(directory.glob(".stego-staging-*")), [])
+
+
 class TestSourceConverters(unittest.TestCase):
     """Check snapshot conversion, source rules, cleanup, and metadata handling."""
+
+    def _write_heif_brand_file(self, path: Path) -> None:
+        """Write a bounded ISO-BMFF ftyp header for an HEIF refusal test."""
+        path.write_bytes(
+            struct.pack(">I4s4sI4s4s", 24, b"ftyp", b"mif1", 0, b"heic", b"mif1")
+        )
+
+    def _write_audio_only_webm(self, path: Path) -> None:
+        """Write a short audio-only WebM using Opus."""
+        write_av_audio(
+            path, "libopus", "webm", "fltp",
+            np.zeros((1, 960), dtype=np.float32),
+        )
+
+    def test_allowlist_accepts_image_audio_and_video_families(self) -> None:
+        """Accept one real source from each public media family."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            image_path = directory / "cover.png"
+            Image.new("RGB", (8, 8)).save(image_path)
+            self.assertEqual(detect_source_family(image_path), ("image", "png"))
+
+            audio_path = directory / "sound.flac"
+            write_av_audio(
+                audio_path, "flac", "flac", "s16", np.zeros((1, 960), dtype=np.int16)
+            )
+            self.assertEqual(detect_source_family(audio_path), ("audio", "flac"))
+
+            video_path = directory / "clip.mkv"
+            self._write_video_then_audio(video_path)
+            family, _ = detect_source_family(video_path)
+            self.assertEqual(family, "video")
+
+    def test_avif_compatible_brand_is_accepted_with_mif1_major_brand(self) -> None:
+        """Treat AVIF as an image when avif is a compatible ISO-BMFF brand."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "mif1.avif"
+            self._write_avif(path, "yuv420p")
+            original = path.read_bytes()
+            old_size = int.from_bytes(original[:4], "big")
+            old_ftyp = original[:old_size]
+            compatible = [old_ftyp[offset:offset + 4] for offset in range(16, old_size, 4)]
+            if b"avif" not in compatible:
+                compatible.insert(0, b"avif")
+            new_size = 16 + 4 * len(compatible)
+            ftyp = (
+                struct.pack(">I4s4sI", new_size, b"ftyp", b"mif1", 0)
+                + b"".join(compatible)
+            )
+            path.write_bytes(ftyp + original[old_size:])
+            self.assertEqual(detect_source_family(path), ("image", "avif"))
+
+    def test_refuses_out_of_allowlist_source_families_with_specific_reasons(self) -> None:
+        """Reject unsupported still-image and audio formats before conversion."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            aiff_path = directory / "sample.aiff"
+            write_av_audio(
+                aiff_path, "pcm_s16be", "aiff", "s16",
+                np.zeros((1, 960), dtype=np.int16),
+            )
+            with self.assertRaisesRegex(ValueError, "^AIFF audio is not supported$"):
+                detect_source_family(aiff_path)
+
+            ppm_path = directory / "image.ppm"
+            ppm_path.write_bytes(b"P6\n2 2\n255\n" + bytes(12))
+            with self.assertRaisesRegex(ValueError, "^PPM images are not supported$"):
+                detect_source_family(ppm_path)
+
+            png_path = directory / "real.png"
+            Image.new("RGB", (2, 2), (1, 2, 3)).save(png_path)
+            fake_tga_path = directory / "fake.tga"
+            fake_tga_path.write_bytes(png_path.read_bytes())
+            self.assertEqual(detect_source_family(fake_tga_path), ("image", "png"))
+
+            tga_path = directory / "image.tga"
+            Image.new("RGB", (2, 2), (1, 2, 3)).save(tga_path)
+            with self.assertRaisesRegex(ValueError, "^TGA images are not supported$"):
+                detect_source_family(tga_path)
+
+    def test_refuses_heif_jpeg_xl_and_audio_only_matroska_webm(self) -> None:
+        """Use explicit refusal reasons for unlisted image and audio containers."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            heif_path = directory / "sample.heic"
+            self._write_heif_brand_file(heif_path)
+            with self.assertRaisesRegex(ValueError, "^HEIC/HEIF images are not supported$"):
+                detect_source_family(heif_path)
+
+            jxl_path = directory / "sample.jxl"
+            jxl_path.write_bytes(bytes.fromhex(
+                "ff0a181010090804010044004b188b15c249411e4004000000a80f0000"
+            ))
+            with self.assertRaisesRegex(ValueError, "^JPEG XL images are not supported$"):
+                detect_source_family(jxl_path)
+            with self.assertRaisesRegex(
+                ValueError, "^no decoder is available for this video stream$"
+            ):
+                VideoCarrier(jxl_path)
+
+            matroska_path = directory / "pcm24.mka"
+            values24 = np.array([[0x123456, -0x123456, 0x7FFFFF]], dtype=np.int32)
+            write_av_audio(
+                matroska_path, "pcm_s24le", "matroska", "s32", values24 << 8
+            )
+            webm_path = directory / "audio.webm"
+            self._write_audio_only_webm(webm_path)
+            for path in (matroska_path, webm_path):
+                with self.subTest(path=path.name):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "^audio-only Matroska/WebM sources are not supported$",
+                    ):
+                        detect_source_family(path)
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "^audio-only Matroska/WebM sources are not supported$",
+                    ):
+                        with open_audio_source(path, directory):
+                            self.fail("audio-only Matroska/WebM must be refused")
+
+    def test_damaged_jpeg_reports_decode_failure_not_the_allowlist(self) -> None:
+        """Report an allowed JPEG decoder error without the format list."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            path = directory / "damaged.jpg"
+            Image.new("RGB", (16, 16)).save(path)
+            with (
+                patch(
+                    "stego.sources._decoded_image_frames",
+                    side_effect=av.error.InvalidDataError(0, "damaged JPEG"),
+                ),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "^could not decode the file; the file may be damaged$",
+                ),
+            ):
+                with open_image_source(path, directory):
+                    self.fail("a damaged JPEG must fail during decode")
+
+    def test_image_snapshot_space_is_checked_before_frame_decode(self) -> None:
+        """Refuse image conversion if two bounded PNG files do not fit."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.jpg"
+            Image.fromarray(np.zeros((32, 32, 3), dtype=np.uint8)).save(source_path)
+            with (
+                patch("stego.storage.shutil.disk_usage") as disk_usage,
+                patch(
+                    "stego.sources._decoded_image_frames",
+                    wraps=_decoded_image_frames,
+                ) as decode,
+            ):
+                disk_usage.return_value.free = DISK_SPACE_RESERVE_BYTES
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for image conversion$"
+                ):
+                    with open_image_source(source_path, directory):
+                        self.fail("low disk space must refuse image conversion")
+            decode.assert_not_called()
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_audio_conversion_stops_at_configured_pcm_cap(self) -> None:
+        """Refuse PCM above the configured cap before writing a frame."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.flac"
+            samples = np.arange(4096, dtype=np.int16)
+            write_av_audio(source_path, "flac", "flac", "s16", samples)
+            with patch("stego.sources._MAX_AUDIO_PCM_BYTES", 1):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^canonical PCM data exceeds configured limit of 1 bytes$",
+                ):
+                    with open_audio_source(source_path, directory):
+                        self.fail("PCM above the cap must be refused")
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
+
+    def test_audio_conversion_checks_space_before_first_and_each_64_mib(self) -> None:
+        """Reserve a full interval before writing more decoded PCM."""
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "source.flac"
+            samples = np.arange(65_536, dtype=np.int16)
+            write_av_audio(source_path, "flac", "flac", "s16", samples)
+            interval_bytes = 64 * 1024
+            required_bytes = interval_bytes + 44
+            with (
+                patch(
+                    "stego.sources._AUDIO_SPACE_CHECK_INTERVAL_BYTES",
+                    interval_bytes,
+                    create=True,
+                ),
+                patch(
+                    "stego.storage.shutil.disk_usage",
+                    side_effect=(
+                        SimpleNamespace(
+                            free=DISK_SPACE_RESERVE_BYTES + required_bytes
+                        ),
+                        *(
+                            SimpleNamespace(
+                                free=DISK_SPACE_RESERVE_BYTES + interval_bytes // 2
+                            ),
+                        ) * 20,
+                    ),
+                ),
+                patch("stego.sources._check_free_space", wraps=_check_free_space) as check_space,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "^insufficient free disk space for audio conversion$"
+                ):
+                    with open_audio_source(source_path, directory):
+                        self.fail("the second low-space check must refuse conversion")
+            self.assertEqual(check_space.call_count, 2)
+            self.assertEqual(
+                [call.args[1] for call in check_space.call_args_list],
+                [required_bytes, required_bytes],
+            )
+            self.assertEqual(list(directory.glob(".stego-source-*")), [])
 
     def test_image_source_kinds_and_alpha_channels(self) -> None:
         with TemporaryDirectory() as directory_name:
@@ -1215,7 +1626,7 @@ class TestSourceConverters(unittest.TestCase):
                 )
             with patch("stego.sources._decoded_image_frames") as decode:
                 with self.assertRaisesRegex(
-                    ValueError, "image sample depth greater than 16 bits is not supported"
+                    ValueError, "EXR images are not supported"
                 ):
                     with open_image_source(exr_path, directory):
                         self.fail("floating-point EXR must be refused")
@@ -1463,6 +1874,42 @@ class TestSourceConverters(unittest.TestCase):
             self.assertIn(b"LIST", wav_output.read_bytes())
             self.assertEqual(list(directory.glob(".stego-source-*")), [])
 
+    def test_unsupported_lossless_audio_depth_is_refused(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "lossless.flac"
+            write_av_audio(
+                source_path,
+                "flac",
+                "flac",
+                "s16",
+                np.array([[-12000, -1, 0, 1, 12000]], dtype=np.int16),
+            )
+            with patch("stego.sources._audio_integer_width", return_value=20) as depth:
+                with self.assertRaisesRegex(
+                    ValueError, "unsupported lossless audio sample depth: 20 bits"
+                ):
+                    with open_audio_source(source_path, directory):
+                        self.fail("unsupported lossless sample depth must be refused")
+            depth.assert_called_once()
+
+    def test_12_bit_lossless_audio_converts_to_16_bit_wav(self) -> None:
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source_path = directory / "lossless.flac"
+            values = np.array([[-2048, -1, 0, 1, 2047]], dtype=np.int16)
+            write_av_audio(source_path, "flac", "flac", "s16", values)
+            with patch("stego.sources._audio_integer_width", return_value=12) as depth:
+                with open_audio_source(source_path, directory) as source:
+                    self.assertEqual(source.info.sample_width, 2)
+                    with wave.open(str(source.path), "rb") as audio:
+                        self.assertEqual(audio.getsampwidth(), 2)
+                        actual = np.frombuffer(
+                            audio.readframes(audio.getnframes()), dtype="<i2"
+                        )
+                self.assertTrue(np.array_equal(actual, values.reshape(-1)))
+            depth.assert_called_once()
+
     def test_lossless_audio_widths_and_exact_signed_samples(self) -> None:
         with TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -1475,7 +1922,6 @@ class TestSourceConverters(unittest.TestCase):
                 ("flac24.flac", "flac", "flac", "s32", values24 << 8, 3, values24),
                 ("alac16.m4a", "alac", "ipod", "s16p", values16, 2, values16),
                 ("alac24.m4a", "alac", "ipod", "s32p", values24 << 8, 3, values24),
-                ("pcm24.mka", "pcm_s24le", "matroska", "s32", values24 << 8, 3, values24),
             )
             for filename, codec, container_format, sample_format, values, width, expected in fixtures:
                 source_path = directory / filename
@@ -1524,9 +1970,11 @@ class TestSourceConverters(unittest.TestCase):
 
             multistream_path = directory / "two-audio.mka"
             self._write_two_audio_streams(multistream_path)
-            with self.assertRaisesRegex(ValueError, "exactly one audio stream"):
+            with self.assertRaisesRegex(
+                ValueError, "audio-only Matroska/WebM sources are not supported"
+            ):
                 with open_audio_source(multistream_path, directory):
-                    self.fail("two audio streams must be refused")
+                    self.fail("audio-only Matroska sources must be refused")
 
             cover_first_path = directory / "cover-first.mkv"
             self._write_cover_first_matroska(cover_first_path, values)
@@ -1562,11 +2010,13 @@ class TestSourceConverters(unittest.TestCase):
                 surround_path, "pcm_s16le", "matroska", "s16",
                 np.zeros((6, 480), dtype=np.int16), layout="5.1",
             )
-            with self.assertRaisesRegex(ValueError, "unsupported audio channel count"):
+            with self.assertRaisesRegex(
+                ValueError, "audio-only Matroska/WebM sources are not supported"
+            ):
                 with open_audio_source(surround_path, directory):
-                    self.fail("more than two channels must be refused")
+                    self.fail("audio-only Matroska sources must be refused")
 
-    def test_audio_decode_once_riff_cap_cleanup_and_payload_wrapper(self) -> None:
+    def test_audio_decode_once_cleanup_and_payload_wrapper(self) -> None:
         with TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
             source_path = directory / "source.mp3"
@@ -1579,12 +2029,6 @@ class TestSourceConverters(unittest.TestCase):
                     self.assertGreater(source.total_units, 0)
                 self.assertFalse(snapshot_path.exists())
                 self.assertEqual(decode.call_count, 1)
-
-            with patch("stego.sources._MAX_RIFF_DATA_BYTES", 1):
-                with self.assertRaisesRegex(ValueError, "RIFF 4 GiB limit"):
-                    with open_audio_source(source_path, directory):
-                        self.fail("patched RIFF limit must refuse")
-            self.assertEqual(list(directory.glob(".stego-source-*")), [])
 
             payload_path = directory / "payload.bin"
             payload_path.write_bytes(b"payload file")
@@ -2888,7 +3332,9 @@ class TestMaskedStego(unittest.TestCase):
             output_path = directory / "output.png"
             Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8), mode="RGB").save(input_path)
 
-            def write_partial_then_fail(self: PngCarrier, path: Path, *args: object) -> None:
+            def write_partial_then_fail(
+                self: PngCarrier, path: Path, *args: object, **kwargs: object
+            ) -> None:
                 Path(path).write_bytes(b"\x89PNG partial")
                 raise OSError("disk full")
 

@@ -16,8 +16,11 @@ from flask import (
     send_file,
     url_for,
 )
+from werkzeug.datastructures import FileStorage
 
 from stego import PROTOCOL_VERSION
+from stego.storage import DISK_SPACE_RESERVE_BYTES, _check_free_space
+from stego.sources import source_accept_attribute
 
 from .services.current_protocol import (
     CurrentProtocolService,
@@ -29,6 +32,7 @@ from .services.current_protocol import (
 web = Blueprint("web", __name__)
 protocol_service = CurrentProtocolService()
 _STEGO_ID = re.compile(r"[A-Za-z0-9_-]{22}\Z")
+_MAX_KEY_UPLOAD_BYTES = 64 * 1024
 _DOWNLOAD_TYPES = {
     "png": "image/png",
     "wav": "audio/wav",
@@ -36,10 +40,22 @@ _DOWNLOAD_TYPES = {
 }
 
 
+class InsufficientDiskSpace(ValueError):
+    """Raised when a route upload copy would use the reserved disk space."""
+
+
 @web.get("/")
 def index() -> str:
-    """Render the retained encoding and verification layout."""
-    return render_template("index.html")
+    """Render the encoding workspace with the current source allowlist."""
+    return render_template(
+        "index.html", source_accept=source_accept_attribute()
+    )
+
+
+@web.get("/verify")
+def verify_page() -> str:
+    """Render the separate receiver verification workspace."""
+    return render_template("verify.html")
 
 
 @web.post("/encode")
@@ -67,9 +83,13 @@ def encode() -> Response | tuple[Response, int]:
             result = protocol_service.encode(
                 cover_path,
                 output_path,
-                _required_upload("sender_private_key"),
-                _required_form_value("sender_key_password"),
-                _required_upload("receiver_public_key"),
+                _required_upload(
+                    "sender_private_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
+                ),
+                _optional_form_value("sender_key_password"),
+                _required_upload(
+                    "receiver_public_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
+                ),
                 _integer_form_value("start_unit", minimum=0),
                 _lsb_bits(),
                 payload_path,
@@ -77,7 +97,7 @@ def encode() -> Response | tuple[Response, int]:
                 payload_name,
                 _required_form_value("team_id"),
                 _required_form_value("sender"),
-                request.form.get("metadata", "").strip(),
+                _optional_form_value("metadata").strip(),
                 detected_source=detected_source,
             )
         payload_fields = protocol_service.payload_record(result.payload)
@@ -113,10 +133,67 @@ def encode() -> Response | tuple[Response, int]:
                 "media-exported",
             ],
         )
-    except (OSError, TypeError, ValueError) as error:
+    except InsufficientDiskSpace as error:
+        if output_path is not None:
+            output_path.unlink(missing_ok=True)
+        return _error(str(error), 413)
+    except ValueError as error:
         if output_path is not None:
             output_path.unlink(missing_ok=True)
         return _error(str(error), 400)
+    except OSError:
+        if output_path is not None:
+            output_path.unlink(missing_ok=True)
+        current_app.logger.exception("Encode storage failure")
+        return _error("Could not read or store the media. Check available disk space and try again.", 500)
+    except Exception:
+        if output_path is not None:
+            output_path.unlink(missing_ok=True)
+        raise
+
+
+@web.post("/capacity")
+def capacity() -> Response | tuple[Response, int]:
+    """Estimate payload fit without storing an output carrier or payload."""
+    try:
+        payload_size, payload_mime, payload_name = _capacity_payload_description()
+        team_id = _required_form_value("team_id")
+        sender = _required_form_value("sender")
+        extra_metadata = _optional_form_value("metadata").strip()
+        cover_upload = _single_upload("cover")
+        work_dir = Path(current_app.config["STEGO_WORK_DIR"])
+        work_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="inf2005-capacity-", dir=work_dir
+        ) as temporary:
+            cover_path = Path(temporary) / "cover.upload"
+            _save_carrier_upload("cover", cover_path)
+            detected_source = protocol_service.detect_carrier(
+                cover_path, cover_upload.filename
+            )
+            result = protocol_service.capacity(
+                cover_path,
+                payload_size,
+                payload_mime,
+                payload_name,
+                team_id,
+                sender,
+                extra_metadata,
+                detected_source=detected_source,
+            )
+        return jsonify(ok=True, protocol_version=PROTOCOL_VERSION, **result)
+    except InsufficientDiskSpace as error:
+        return _error(str(error), 413)
+    except ValueError as error:
+        return _error(str(error), 400)
+    except OSError:
+        current_app.logger.exception("Capacity storage failure")
+        return _error(
+            "Could not read or store the media. Check available disk space and try again.",
+            500,
+        )
+    except Exception:
+        raise
 
 
 @web.get("/download/<stego_id>.<ext>")
@@ -135,15 +212,21 @@ def download(stego_id: str, ext: str) -> Response | tuple[Response, int]:
     )
 
 
+@web.post("/layout/estimate")
+def estimate_layout() -> Response | tuple[Response, int]:
+    """Explain that the disconnected carrier-map estimator is unavailable."""
+    return _error("Layout estimation is unavailable; use the manual start unit in the encode wizard.", 503)
+
+
 @web.post("/keys/generate")
 def generate_keys() -> Response | tuple[Response, int]:
     """Generate a sender or receiver RSA pair as an explicit setup action."""
     try:
-        role = request.form.get("role", "key").strip().lower()
+        role = _optional_form_value("role", "key").strip().lower()
         if role not in {"sender", "receiver", "key"}:
             raise ValueError("role must be sender or receiver")
         keys = protocol_service.generate_key_pair(
-            _required_form_value("key_password")
+            _optional_form_value("key_password")
         )
     except (TypeError, ValueError) as error:
         return _error(str(error), 400)
@@ -174,14 +257,25 @@ def decode() -> Response | tuple[Response, int]:
             report, recovered_path = protocol_service.verify(
                 stego_path,
                 payload_output_path,
-                _required_upload("sender_public_key"),
-                _required_upload("receiver_private_key"),
-                _required_form_value("receiver_key_password"),
+                _required_upload("sender_public_key", max_bytes=_MAX_KEY_UPLOAD_BYTES),
+                _required_upload(
+                    "receiver_private_key", max_bytes=_MAX_KEY_UPLOAD_BYTES
+                ),
+                _optional_form_value("receiver_key_password"),
             )
-    except (OSError, TypeError, ValueError) as error:
+    except InsufficientDiskSpace as error:
+        if payload_output_path is not None:
+            payload_output_path.unlink(missing_ok=True)
+        return _error(str(error), 413, "Cannot Verify")
+    except ValueError as error:
         if payload_output_path is not None:
             payload_output_path.unlink(missing_ok=True)
         return _error(str(error), 400, "Cannot Verify")
+    except OSError:
+        if payload_output_path is not None:
+            payload_output_path.unlink(missing_ok=True)
+        current_app.logger.exception("Decode storage failure")
+        return _error("Could not read or store the media. Check available disk space and try again.", 500, "Cannot Verify")
     except Exception:
         if payload_output_path is not None:
             payload_output_path.unlink(missing_ok=True)
@@ -196,9 +290,10 @@ def decode() -> Response | tuple[Response, int]:
             _, payload_fields["payload_url"] = _store_recovered_payload(
                 recovered_path, payload_fields
             )
-        except (OSError, TypeError, ValueError) as error:
+        except (OSError, TypeError, ValueError):
             recovered_path.unlink(missing_ok=True)
-            return _error(f"could not store recovered payload: {error}", 500, "Cannot Verify")
+            current_app.logger.exception("Could not publish authenticated payload")
+            return _error("Could not store the verified payload. Check available disk space and try again.", 500, "Cannot Verify")
 
     status = 422 if report["verdict"] == "Payload Missing" else 200
     return jsonify(report), status
@@ -290,39 +385,81 @@ def _new_payload_path(output_dir: Path) -> Path:
     raise OSError("could not allocate a recovered payload ID")
 
 
+def _save_upload(upload: FileStorage, destination: Path) -> None:
+    """Check free space, then copy one spooled upload to its route destination."""
+    stream = upload.stream
+    position = stream.tell()
+    stream.seek(0, 2)
+    size = stream.tell()
+    stream.seek(position)
+    message = "insufficient free disk space for the uploaded file"
+    try:
+        _check_free_space(
+            destination.parent,
+            size,
+            DISK_SPACE_RESERVE_BYTES,
+            message,
+        )
+    except ValueError as error:
+        raise InsufficientDiskSpace(message) from error
+    upload.save(destination)
+
+
 def _save_carrier_upload(name: str, destination: Path) -> None:
     """Save a required carrier upload to disk and reject an empty file."""
-    upload = request.files.get(name)
-    if upload is None or not upload.filename:
-        raise ValueError(f"missing required upload: {name}")
-    upload.save(destination)
+    upload = _single_upload(name)
+    _save_upload(upload, destination)
     if destination.stat().st_size == 0:
         raise ValueError(f"uploaded file is empty: {name}")
 
 
-def _required_upload(name: str) -> bytes:
-    """Read one required non-empty, non-carrier multipart upload."""
-    upload = request.files.get(name)
-    if upload is None or not upload.filename:
-        raise ValueError(f"missing required upload: {name}")
-    data = upload.read()
+def _required_upload(name: str, *, max_bytes: int | None) -> bytes:
+    """Read one required non-empty multipart upload with an optional size limit."""
+    upload = _single_upload(name)
+    if max_bytes is None:
+        data = upload.read()
+    else:
+        data = upload.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise ValueError(
+                f"uploaded file is too large: {name} (limit {max_bytes} bytes)"
+            )
     if not data:
         raise ValueError(f"uploaded file is empty: {name}")
     return data
 
 
+def _single_upload(name: str) -> FileStorage:
+    """Require exactly one named file, never silently choose among duplicates."""
+    uploads = request.files.getlist(name)
+    if not uploads or not uploads[0].filename:
+        raise ValueError(f"missing required upload: {name}")
+    if len(uploads) != 1:
+        raise ValueError(f"upload exactly one file: {name}")
+    return uploads[0]
+
+
 def _required_form_value(name: str) -> str:
     """Read one required non-empty form value."""
-    value = request.form.get(name, "").strip()
+    value = _optional_form_value(name).strip()
     if not value:
         raise ValueError(f"missing required field: {name}")
     return value
 
 
+def _optional_form_value(name: str, default: str = "") -> str:
+    """Return one optional form value or reject an ambiguous duplicate."""
+    values = request.form.getlist(name)
+    if len(values) > 1:
+        raise ValueError(f"provide exactly one value: {name}")
+    return values[0] if values else default
+
+
 def _integer_form_value(name: str, minimum: int) -> int:
     """Read a bounded integer form field."""
+    raw = _required_form_value(name)
     try:
-        value = int(request.form.get(name, ""))
+        value = int(raw)
     except ValueError as error:
         raise ValueError(f"{name} must be an integer") from error
     if value < minimum:
@@ -340,8 +477,11 @@ def _lsb_bits() -> int:
 
 def _payload_input(directory: Path) -> tuple[Path, str, str]:
     """Save one uploaded payload or UTF-8 message to a request-scoped file."""
-    upload = request.files.get("payload_file")
-    message = request.form.get("secret_message", "")
+    uploads = request.files.getlist("payload_file")
+    if len(uploads) > 1:
+        raise ValueError("upload exactly one file: payload_file")
+    upload = uploads[0] if uploads else None
+    message = _optional_form_value("secret_message")
     has_upload = upload is not None and bool(upload.filename)
     has_message = bool(message.strip())
     if has_upload and has_message:
@@ -350,7 +490,7 @@ def _payload_input(directory: Path) -> tuple[Path, str, str]:
         raise ValueError("a payload file or secret message is required")
     payload_path = directory / "payload.upload"
     if has_upload:
-        upload.save(payload_path)
+        _save_upload(upload, payload_path)
         if payload_path.stat().st_size == 0:
             raise ValueError("payload file is empty")
         payload_mime, payload_name = infer_payload_claim(
@@ -360,6 +500,41 @@ def _payload_input(directory: Path) -> tuple[Path, str, str]:
         payload_path.write_bytes(message.encode("utf-8"))
         payload_mime, payload_name = infer_payload_claim(None, None, True)
     return payload_path, payload_mime, payload_name
+
+
+def _capacity_payload_description() -> tuple[int, str, str]:
+    """Read one message or a client-supplied file size and claim."""
+    message = _optional_form_value("secret_message")
+    raw_size = _optional_form_value("payload_size")
+    raw_filename = _optional_form_value("payload_filename")
+    raw_type = _optional_form_value("payload_type")
+    payload_uploads = request.files.getlist("payload_file")
+    if len(payload_uploads) > 1:
+        raise ValueError("upload exactly one file: payload_file")
+
+    has_message = bool(message.strip())
+    has_file_description = bool(raw_size or raw_filename or raw_type)
+    has_uploaded_file = bool(payload_uploads and payload_uploads[0].filename)
+    has_file_input = has_file_description or has_uploaded_file
+    if has_message and has_file_input:
+        raise ValueError("choose either a payload file or a secret message, not both")
+    if not has_message and not has_file_input:
+        raise ValueError("a payload file or secret message is required")
+    if has_uploaded_file:
+        raise ValueError("capacity requests must describe a payload, not upload it")
+    if has_message:
+        payload_mime, payload_name = infer_payload_claim(None, None, True)
+        return len(message.encode("utf-8")), payload_mime, payload_name
+
+    payload_size = _integer_form_value("payload_size", minimum=1)
+    if not raw_filename:
+        raise ValueError("missing required field: payload_filename")
+    if "payload_type" not in request.form:
+        raise ValueError("missing required field: payload_type")
+    payload_mime, payload_name = infer_payload_claim(
+        raw_filename, raw_type, False
+    )
+    return payload_size, payload_mime, payload_name
 
 
 def _error(

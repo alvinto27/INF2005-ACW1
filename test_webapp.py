@@ -10,6 +10,7 @@ import wave
 import zlib
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import av
@@ -17,6 +18,7 @@ import numpy as np
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from PIL import Image
+from werkzeug.datastructures import MultiDict
 
 from stego import (
     BOOTSTRAP_LSB_COUNT,
@@ -34,14 +36,19 @@ from stego import (
     seal_to_public_key,
     write_lsb_bits,
 )
+from stego.constants import MEDIA_ID_SIZE
 from stego.media import _PNG_MAX_DECODED_BYTES
+from stego.packet import serialized_record_length
+from stego.storage import DISK_SPACE_RESERVE_BYTES
 from stego.sources import (
+    SOURCE_ALLOWLIST,
     _convert_audio,
     _convert_image,
     _decoded_audio_frames,
     _decoded_image_frames,
+    accepted_source_message,
 )
-from stego_web import create_app
+from stego_web import create_app, routes
 from stego_web.services.current_protocol import (
     CurrentProtocolService,
     infer_payload_claim,
@@ -49,6 +56,22 @@ from stego_web.services.current_protocol import (
 
 
 PASSWORD = "test-password"
+
+
+_STORAGE_SPACE_PATCH = patch(
+    "stego.storage.shutil.disk_usage",
+    return_value=SimpleNamespace(free=16 * 1024**3),
+)
+
+
+def setUpModule() -> None:
+    """Give disk-space checks a deterministic default for test fixtures."""
+    _STORAGE_SPACE_PATCH.start()
+
+
+def tearDownModule() -> None:
+    """Restore the real disk-space query after this module's tests."""
+    _STORAGE_SPACE_PATCH.stop()
 
 
 def sample_png() -> bytes:
@@ -157,6 +180,49 @@ def sample_mp4_with_video(audio_streams: int = 0) -> bytes:
         return path.read_bytes()
 
 
+def sample_audio_only_matroska_pcm24() -> bytes:
+    """Return a short audio-only 24-bit PCM Matroska source."""
+    with tempfile.TemporaryDirectory() as directory_name:
+        path = Path(directory_name) / "pcm24.mka"
+        with av.open(str(path), mode="w", format="matroska") as output:
+            stream = output.add_stream("pcm_s24le", rate=48_000)
+            stream.layout = "mono"
+            stream.codec_context.format = av.AudioFormat("s32")
+            frame = av.AudioFrame.from_ndarray(
+                np.zeros((1, 480), dtype=np.int32), format="s32", layout="mono"
+            )
+            frame.sample_rate = 48_000
+            frame.pts = 0
+            frame.time_base = Fraction(1, 48_000)
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                output.mux(packet)
+        return path.read_bytes()
+
+
+def sample_audio_only_webm_opus() -> bytes:
+    """Return a short audio-only WebM source encoded with Opus."""
+    with tempfile.TemporaryDirectory() as directory_name:
+        path = Path(directory_name) / "audio.webm"
+        with av.open(str(path), mode="w", format="webm") as output:
+            stream = output.add_stream("libopus", rate=48_000)
+            stream.layout = "mono"
+            stream.codec_context.format = av.AudioFormat("fltp")
+            frame = av.AudioFrame.from_ndarray(
+                np.zeros((1, 960), dtype=np.float32), format="fltp", layout="mono"
+            )
+            frame.sample_rate = 48_000
+            frame.pts = 0
+            frame.time_base = Fraction(1, 48_000)
+            for packet in (*stream.encode(frame), *stream.encode(None)):
+                output.mux(packet)
+        return path.read_bytes()
+
+
+def sample_jxl() -> bytes:
+    """Return a tiny real JPEG XL codestream generated with libjxl."""
+    return bytes.fromhex("ff0a181010090804010044004b188b15c249411e4004000000a80f0000")
+
+
 def sample_webm_with_video() -> bytes:
     """Return a tiny WebM video fixture using the installed VP8 encoder."""
     with tempfile.TemporaryDirectory() as directory_name:
@@ -240,6 +306,15 @@ def private_pem(private_key: rsa.RSAPrivateKey) -> bytes:
     )
 
 
+def unencrypted_private_pem(private_key: rsa.RSAPrivateKey) -> bytes:
+    """Serialize a test private key without encryption."""
+    return private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+
+
 def public_pem(public_key: rsa.RSAPublicKey) -> bytes:
     """Serialize a test public key."""
     return public_key.public_bytes(
@@ -286,15 +361,22 @@ class WebApplicationTests(unittest.TestCase):
         payload: tuple[bytes, str] | None = None,
         payload_mime: str = "",
         payload_name: str = "",
+        start_unit: int = 2048,
+        sender_private_key_pem: bytes | None = None,
+        sender_key_password: str = PASSWORD,
     ) -> object:
         """Post one valid encoding request and return its Flask response."""
         data: dict[str, object] = {
             "cover": (io.BytesIO(cover), filename),
             "sender_private_key": (
-                io.BytesIO(self.sender_private_pem),
+                io.BytesIO(
+                    self.sender_private_pem
+                    if sender_private_key_pem is None
+                    else sender_private_key_pem
+                ),
                 "sender-private.pem",
             ),
-            "sender_key_password": PASSWORD,
+            "sender_key_password": sender_key_password,
             "receiver_public_key": (
                 io.BytesIO(self.receiver_public_pem),
                 "receiver-public.pem",
@@ -303,7 +385,7 @@ class WebApplicationTests(unittest.TestCase):
             "sender": "Test User",
             "secret_message": message,
             "metadata": "project=verification;sequence=1",
-            "start_unit": "2048",
+            "start_unit": str(start_unit),
             "lsb_bits": str(lsb_bits),
         }
         if payload is not None:
@@ -321,6 +403,31 @@ class WebApplicationTests(unittest.TestCase):
         )
         return response
 
+    def capacity_request(
+        self,
+        cover: bytes,
+        filename: str,
+        message: str | None = "authenticated message",
+        file_description: tuple[int, str, str] | None = None,
+    ) -> object:
+        """Post one valid capacity request with the encode metadata claims."""
+        data: dict[str, object] = {
+            "cover": (io.BytesIO(cover), filename),
+            "team_id": "P1-4",
+            "sender": "Test User",
+            "metadata": "project=verification;sequence=1",
+        }
+        if file_description is None:
+            if message is not None:
+                data["secret_message"] = message
+        else:
+            data["payload_size"] = str(file_description[0])
+            data["payload_filename"] = file_description[1]
+            data["payload_type"] = file_description[2]
+        return self.client.post(
+            "/capacity", data=data, content_type="multipart/form-data"
+        )
+
     def download_stego(self, encoded: dict[str, object]) -> bytes:
         """Fetch the carrier bytes from the API's download URL."""
         response = self.client.get(str(encoded["stego_url"]))
@@ -335,10 +442,15 @@ class WebApplicationTests(unittest.TestCase):
         filename: str,
         sender_public: bytes | None = None,
         receiver_private: bytes | None = None,
+        receiver_key_password: str = PASSWORD,
     ) -> object:
         """Download one encoded file, then post it for verification."""
         return self.decode_bytes(
-            self.download_stego(encoded), filename, sender_public, receiver_private
+            self.download_stego(encoded),
+            filename,
+            sender_public,
+            receiver_private,
+            receiver_key_password,
         )
 
     def decode_bytes(
@@ -347,6 +459,7 @@ class WebApplicationTests(unittest.TestCase):
         filename: str,
         sender_public: bytes | None = None,
         receiver_private: bytes | None = None,
+        receiver_key_password: str = PASSWORD,
     ) -> object:
         """Post carrier bytes with independently selectable verification keys."""
         response = self.client.post(
@@ -358,10 +471,14 @@ class WebApplicationTests(unittest.TestCase):
                     "sender-public.pem",
                 ),
                 "receiver_private_key": (
-                    io.BytesIO(receiver_private or self.receiver_private_pem),
+                    io.BytesIO(
+                        self.receiver_private_pem
+                        if receiver_private is None
+                        else receiver_private
+                    ),
                     "receiver-private.pem",
                 ),
-                "receiver_key_password": PASSWORD,
+                "receiver_key_password": receiver_key_password,
             },
             content_type="multipart/form-data",
         )
@@ -382,32 +499,377 @@ class WebApplicationTests(unittest.TestCase):
         """Check that no payload or sidecar was stored after failure."""
         self.assertEqual(list(self.payload_dir.iterdir()), [])
 
+    def test_index_has_six_encode_steps_without_integrity(self) -> None:
+        """The encode page has six markers and no placeholder integrity step."""
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.count(b'data-step-marker="'), 6)
+        self.assertNotIn(b"<small>Integrity</small>", response.data)
+        self.assertIn(b'aria-valuemax="6"', response.data)
+
+    def test_index_loads_capacity_statuses_and_script_before_app(self) -> None:
+        """The accessible capacity statuses exist and helpers load before the wizard."""
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="capacity-status"', response.data)
+        self.assertIn(b'id="layout-capacity-status"', response.data)
+        self.assertIn(b'role="status" aria-live="polite"', response.data)
+        capacity_script = response.data.index(b"/static/capacity.js")
+        app_script = response.data.index(b"/static/app.js")
+        self.assertLess(capacity_script, app_script)
+
+    def test_layout_start_slider_is_labelled_and_not_submitted(self) -> None:
+        """LSB precedes the accessible range control; only the number is submitted."""
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        data = response.data
+        lsb_index = data.index(b'id="encode-lsb"')
+        range_index = data.index(b'id="start-unit-range"')
+        number_index = data.index(b'<input id="start-unit"')
+        self.assertLess(lsb_index, range_index)
+        self.assertLess(range_index, number_index)
+        self.assertIn(b"Packet start unit slider", data)
+        range_start = data.rfind(b"<input", 0, range_index)
+        range_end = data.index(b">", range_index)
+        range_markup = data[range_start : range_end + 1]
+        self.assertIn(b'type="range"', range_markup)
+        self.assertNotIn(b"name=", range_markup)
+        number_end = data.index(b">", number_index)
+        number_markup = data[number_index : number_end + 1]
+        self.assertIn(b'type="number"', number_markup)
+        self.assertIn(b'name="start_unit"', number_markup)
+
     def test_index_uses_current_protocol_inputs_and_retains_layout(self) -> None:
-        """The original wizard remains while obsolete inputs are absent."""
+        """Encode and verify have separate pages with the current inputs."""
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Encode", response.data)
-        self.assertIn(b"Decode and verify", response.data)
+        self.assertNotIn(b"Decode and verify media", response.data)
+        self.assertIn(b"LAYER / 01", response.data)
+        self.assertIn(b"LAYER / 04", response.data)
+        self.assertIn(b"feature-motion.js", response.data)
         self.assertIn(b"sender_private_key", response.data)
         self.assertIn(b"receiver_public_key", response.data)
-        self.assertIn(b"receiver_private_key", response.data)
+        self.assertNotIn(b'name="receiver_private_key"', response.data)
         self.assertIn(b"payload_file", response.data)
         self.assertIn(b'id="payload-mime" name="payload_mime" readonly aria-readonly="true"', response.data)
         self.assertIn(b'id="payload-name" name="payload_name" readonly aria-readonly="true"', response.data)
         self.assertIn(b"Generated automatically from the payload", response.data)
         self.assertIn(b"Use a supported image, audio, or video file", response.data)
         self.assertIn(b"lossless PNG, WAV, or MKV", response.data)
-        self.assertIn(b"accept=\"image/*,audio/*,video/*,.png,.jpg,.jpeg,.webp,.avif,.bmp,.tif,.tiff,.gif,.wav,.mp3,.aac,.m4a,.flac,.ogg,.oga,.opus,.mp4,.mov,.mkv,.webm,.avi\" required", response.data)
-        self.assertIn(b"accept=\".png,.wav,.mkv,image/png,audio/wav,video/x-matroska\" required", response.data)
+        expected_accept = ",".join(
+            extension
+            for family in SOURCE_ALLOWLIST.values()
+            for extension in family["extensions"]
+        )
+        self.assertIn(f'accept="{expected_accept}" required'.encode(), response.data)
+        self.assertIn(b'href="/verify"', response.data)
         self.assertIn(b"PNG output", response.data)
         self.assertIn(b"WAV output", response.data)
         self.assertIn(b"protocol v3", response.data)
         self.assertNotIn(b"start_secret", response.data)
         self.assertNotIn(b"original_cover", response.data)
         self.assertIn(b"gsap@3.15", response.data)
+        self.assertNotIn(b'id="decode-form"', response.data)
+        verify_page = self.client.get("/verify")
+        self.assertEqual(verify_page.status_code, 200)
+        self.assertIn(b"Decode and verify media", verify_page.data)
+        self.assertIn(b'id="decode-form"', verify_page.data)
+        self.assertIn(b'name="receiver_private_key"', verify_page.data)
+        self.assertNotIn(b'id="encode-form"', verify_page.data)
+        self.assertNotIn(b'name="sender_private_key"', verify_page.data)
+        self.assertIn(b'accept=".png,.wav,.mkv,image/png,audio/wav,video/x-matroska" required', verify_page.data)
         app_js = self.client.get("/static/app.js")
         self.assertIn(b"source was converted to a lossless", app_js.data)
+        self.assertIn(
+            b"Allowed, but not advised: long or 4K videos make very large MKV files "
+            b"and can take hours. Use a short clip for demonstrations.",
+            app_js.data,
+        )
+        self.assertIn(b"coverMeta.textContent = DEFAULT_COVER_META", app_js.data)
+        self.assertIn(b"coverMeta.textContent = isVideo", app_js.data)
+        self.assertNotIn(b"coverMeta.innerHTML", app_js.data)
         app_js.close()
+
+    def test_capacity_png_finds_latest_start_for_one_and_eight_lsb(self) -> None:
+        """The reported boundary agrees with successful and failed encodes."""
+        cover = sample_png()
+        message = "capacity boundary proof"
+        response = self.capacity_request(cover, "cover.png", message=message)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        result = response.get_json()
+        self.assertEqual(result["media_type"], "image")
+        self.assertEqual(result["source_format"], "png")
+        self.assertEqual(result["total_units"], 96 * 96 * 3)
+        self.assertEqual(result["payload_bytes"], len(message.encode("utf-8")))
+        self.assertEqual(result["bootstrap_span"], bootstrap_span(self.receiver_public))
+        self.assertEqual(len(result["lsb_results"]), 8)
+        self.assertEqual(
+            [item["lsb_bits"] for item in result["lsb_results"]], list(range(1, 9))
+        )
+        for lsb_bits in (1, 8):
+            with self.subTest(lsb_bits=lsb_bits):
+                item = next(
+                    entry for entry in result["lsb_results"]
+                    if entry["lsb_bits"] == lsb_bits
+                )
+                minimum_capacity = self.encode(
+                    cover,
+                    "cover.png",
+                    lsb_bits=lsb_bits,
+                    message=message,
+                    start_unit=result["bootstrap_span"],
+                )
+                self.assertEqual(minimum_capacity.status_code, 200)
+                self.assertEqual(
+                    item["max_payload_bytes_at_min_start"],
+                    minimum_capacity.get_json()["capacity_bytes"],
+                )
+                latest_start = item["max_start_unit"]
+                self.assertIsInstance(latest_start, int)
+                encoded = self.encode(
+                    cover,
+                    "cover.png",
+                    lsb_bits=lsb_bits,
+                    message=message,
+                    start_unit=latest_start,
+                )
+                self.assertEqual(encoded.status_code, 200, encoded.get_data(as_text=True))
+                too_late = self.encode(
+                    cover,
+                    "cover.png",
+                    lsb_bits=lsb_bits,
+                    message=message,
+                    start_unit=latest_start + 1,
+                )
+                self.assertEqual(too_late.status_code, 400)
+                self.assertIn("user payload exceeds capacity", too_late.get_json()["error"])
+
+    def test_capacity_reports_wav_units_and_eight_lsb_results(self) -> None:
+        """WAV capacity uses the adapter's interleaved sample-unit count."""
+        response = self.capacity_request(sample_wav(), "cover.wav")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        result = response.get_json()
+        self.assertEqual(result["media_type"], "audio")
+        self.assertEqual(result["source_format"], "wav")
+        self.assertEqual(result["total_units"], 8000)
+        self.assertEqual(len(result["lsb_results"]), 8)
+        self.assertTrue(
+            all(
+                isinstance(item["max_payload_bytes_at_min_start"], int)
+                for item in result["lsb_results"]
+            )
+        )
+
+    def test_capacity_oversized_payload_has_no_fitting_start(self) -> None:
+        """A payload larger than the cover has no valid start for any LSB count."""
+        response = self.capacity_request(
+            sample_png(),
+            "cover.png",
+            message=None,
+            file_description=(10_000_000, "large.bin", "application/octet-stream"),
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        result = response.get_json()
+        self.assertEqual(result["payload_bytes"], 10_000_000)
+        self.assertTrue(
+            all(item["max_start_unit"] is None for item in result["lsb_results"])
+        )
+
+    def test_capacity_empty_file_type_matches_encode_mimetype_claim(self) -> None:
+        """The browser's octet-stream fallback produces the encode file claim."""
+        cover = sample_png()
+        payload = b"untyped browser file"
+        capacity_response = self.capacity_request(
+            cover,
+            "cover.png",
+            message=None,
+            file_description=(len(payload), "opaque.bin", "application/octet-stream"),
+        )
+        encode_response = self.client.post(
+            "/encode",
+            data={
+                "cover": (io.BytesIO(cover), "cover.png"),
+                "sender_private_key": (
+                    io.BytesIO(self.sender_private_pem),
+                    "sender-private.pem",
+                ),
+                "sender_key_password": PASSWORD,
+                "receiver_public_key": (
+                    io.BytesIO(self.receiver_public_pem),
+                    "receiver-public.pem",
+                ),
+                "team_id": "P1-4",
+                "sender": "Test User",
+                "secret_message": "",
+                "metadata": "project=verification;sequence=1",
+                "start_unit": "2048",
+                "lsb_bits": "1",
+                "payload_file": (
+                    io.BytesIO(payload),
+                    "opaque.bin",
+                    "application/octet-stream",
+                ),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(
+            capacity_response.status_code,
+            200,
+            capacity_response.get_data(as_text=True),
+        )
+        self.assertEqual(encode_response.status_code, 200, encode_response.get_data(as_text=True))
+        encoded_payload = encode_response.get_json()["payload"]
+        self.assertEqual(encoded_payload["mime"], "application/octet-stream")
+        metadata = encoded_payload["metadata"].encode("utf-8")
+        self.assertEqual(
+            capacity_response.get_json()["record_overhead"],
+            serialized_record_length(MEDIA_ID_SIZE, 0, len(metadata)),
+        )
+
+    def test_capacity_file_description_uses_encode_metadata_overhead(self) -> None:
+        """A described file's record overhead matches the encode metadata claim."""
+        cover = sample_png()
+        payload = b"typed file payload"
+        capacity_response = self.capacity_request(
+            cover,
+            "cover.png",
+            message=None,
+            file_description=(len(payload), "note.txt", "text/plain"),
+        )
+        self.assertEqual(
+            capacity_response.status_code,
+            200,
+            capacity_response.get_data(as_text=True),
+        )
+        encoded_response = self.encode(
+            cover, "cover.png", payload=(payload, "note.txt")
+        )
+        self.assertEqual(encoded_response.status_code, 200, encoded_response.get_data(as_text=True))
+        encoded = encoded_response.get_json()
+        metadata_bytes = encoded["payload"]["metadata"].encode("utf-8")
+        self.assertEqual(
+            capacity_response.get_json()["record_overhead"],
+            serialized_record_length(MEDIA_ID_SIZE, 0, len(metadata_bytes)),
+        )
+        self.assertEqual(capacity_response.get_json()["payload_bytes"], len(payload))
+
+    def test_capacity_unsupported_cover_uses_encode_error(self) -> None:
+        """Unsupported cover content returns the same HTTP 400 message as encode."""
+        cover = sample_cmyk_jpeg()
+        encoded = self.encode(cover, "cover.jpg")
+        capacity = self.capacity_request(cover, "cover.jpg")
+        self.assertEqual(encoded.status_code, 400)
+        self.assertEqual(capacity.status_code, 400)
+        self.assertEqual(capacity.get_json()["error"], encoded.get_json()["error"])
+
+    def test_capacity_leaves_no_temporary_or_output_files(self) -> None:
+        """Converted snapshots and carrier copies are removed after the request."""
+        response = self.capacity_request(sample_jpeg(), "cover.jpg")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(list(self.work_dir.iterdir()), [])
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(list(self.payload_dir.iterdir()), [])
+
+    def test_capacity_video_reports_decoded_carrier_units(self) -> None:
+        """The video route counts decoded carrier units without writing output."""
+        response = self.capacity_request(sample_mp4_with_video(), "clip.mp4")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        result = response.get_json()
+        self.assertEqual(result["media_type"], "video")
+        self.assertEqual(result["source_format"], "mp4")
+        self.assertGreater(result["total_units"], 0)
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(list(self.payload_dir.iterdir()), [])
+
+    def test_capacity_and_encode_reject_jpeg_xl_with_specific_400(self) -> None:
+        """Reject JPEG XL at the source gate for both upload routes."""
+        cover = sample_jxl()
+        capacity = self.capacity_request(cover, "cover.jxl")
+        encoded = self.encode(cover, "cover.jxl")
+        for response in (capacity, encoded):
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(
+                response.get_json()["error"], "JPEG XL images are not supported"
+            )
+
+    def test_capacity_refuses_audio_only_matroska_and_webm(self) -> None:
+        """Return the explicit audio-only container refusal from capacity."""
+        for cover, filename in (
+            (sample_audio_only_matroska_pcm24(), "pcm24.mka"),
+            (sample_audio_only_webm_opus(), "audio.webm"),
+        ):
+            with self.subTest(filename=filename):
+                response = self.capacity_request(cover, filename)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.get_json()["error"],
+                    "audio-only Matroska/WebM sources are not supported",
+                )
+
+    def test_missing_video_decoder_is_a_400_for_capacity_and_encode(self) -> None:
+        """Map a missing video decoder to the source error, not HTTP 500."""
+        cover = sample_webm_with_video()
+        reason = "no decoder is available for this video stream"
+        with patch("stego.video._require_decoder_context", side_effect=ValueError(reason)):
+            capacity = self.capacity_request(cover, "clip.webm")
+            encoded = self.encode(cover, "clip.webm")
+        for response in (capacity, encoded):
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.get_json()["error"], reason)
+
+    def test_capacity_rejects_duplicate_message_fields(self) -> None:
+        """Duplicate payload descriptions use the standard form-field error."""
+        data = MultiDict(
+            [
+                ("cover", (io.BytesIO(sample_png()), "cover.png")),
+                ("team_id", "P1-4"),
+                ("sender", "Test User"),
+                ("secret_message", "first"),
+                ("secret_message", "second"),
+            ]
+        )
+        response = self.client.post(
+            "/capacity", data=data, content_type="multipart/form-data"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"], "provide exactly one value: secret_message"
+        )
+
+    def test_capacity_request_guard_rejects_upload_before_body_parsing(self) -> None:
+        """The shared free-space guard applies to capacity multipart bodies."""
+        with patch("stego.storage.shutil.disk_usage") as disk_usage:
+            disk_usage.return_value.free = DISK_SPACE_RESERVE_BYTES + 10
+            response = self.client.post(
+                "/capacity",
+                data={"cover": (io.BytesIO(b"x" * 1024), "cover.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.get_json()["error"],
+            "upload is larger than the free disk space allows",
+        )
+        disk_usage.assert_called_once_with(self.work_dir)
+
+    def test_capacity_cover_copy_space_failure_returns_413(self) -> None:
+        """Refuse the route's cover copy when it would use the disk reserve."""
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + 1),
+            ),
+        ):
+            response = self.capacity_request(sample_png(), "cover.png")
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.get_json()["error"],
+            "insufficient free disk space for the uploaded file",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(list(self.work_dir.iterdir()), [])
 
     def test_16bit_png_cover_works_through_web_routes(self) -> None:
         """The web routes encode and verify a native 16-bit PNG cover."""
@@ -560,6 +1022,16 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "Authentic")
         self.assertEqual(self.get_payload(report["payload"]).get_data(), b"mp3 payload")
 
+    def test_lossless_audio_depth_refusal_returns_http_400(self) -> None:
+        """Expose the source converter's lossless-depth refusal to the client."""
+        with patch("stego.sources._audio_integer_width", return_value=20):
+            response = self.encode(sample_mp3(), "cover.mp3")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "unsupported lossless audio sample depth: 20 bits",
+        )
+
     def test_video_cover_with_audio_encodes_and_verifies(self) -> None:
         """Video with audio uses a Matroska output and recovers the exact payload."""
         payload = b"payload for video carrier"
@@ -640,7 +1112,7 @@ class WebApplicationTests(unittest.TestCase):
 
     def test_video_verify_input_accepts_mkv(self) -> None:
         """The verification upload control accepts the backend's MKV output."""
-        response = self.client.get("/")
+        response = self.client.get("/verify")
         self.assertIn(b'accept=".png,.wav,.mkv,image/png,audio/wav,video/x-matroska"', response.data)
 
     def test_cmyk_and_animated_image_sources_are_http_400(self) -> None:
@@ -826,6 +1298,123 @@ class WebApplicationTests(unittest.TestCase):
                 report = self.decode(encoded.get_json(), "stego.png").get_json()
                 self.assertEqual(report["verdict"], "Authentic")
                 self.assertEqual(report["lsb_bits"], lsb_bits)
+
+    def test_encode_message_cover_copy_space_failure_returns_413(self) -> None:
+        """Refuse the carrier copy when it would use the disk reserve."""
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + 1),
+            ),
+        ):
+            response = self.encode(sample_png(), "cover.png", message="message")
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.get_json()["error"],
+            "insufficient free disk space for the uploaded file",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(list(self.work_dir.iterdir()), [])
+
+    def test_encode_payload_file_copy_space_failure_returns_413(self) -> None:
+        """Refuse the payload-file copy before copying the cover upload."""
+        cover = sample_png()
+        payload = b"x" * (len(cover) + 1024)
+        call_count = 0
+
+        def disk_usage(_path: str | bytes | os.PathLike[str]) -> SimpleNamespace:
+            nonlocal call_count
+            call_count += 1
+            free = (
+                16 * 1024**3
+                if call_count == 1
+                else DISK_SPACE_RESERVE_BYTES + len(cover)
+            )
+            return SimpleNamespace(free=free)
+
+        with patch("stego.storage.shutil.disk_usage", side_effect=disk_usage):
+            response = self.encode(
+                cover, "cover.png", message="", payload=(payload, "payload.bin")
+            )
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.get_json()["error"],
+            "insufficient free disk space for the uploaded file",
+        )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertEqual(list(self.work_dir.iterdir()), [])
+
+    def test_decode_stego_copy_space_failure_returns_413(self) -> None:
+        """Refuse the stego upload copy and leave no recovered files."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        stego_bytes = self.download_stego(encoded)
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + 1),
+            ),
+        ):
+            response = self.decode_bytes(stego_bytes, "stego.png")
+        self.assertEqual(response.status_code, 413)
+        report = response.get_json()
+        self.assertEqual(report["verdict"], "Cannot Verify")
+        self.assertEqual(
+            report["error"],
+            "insufficient free disk space for the uploaded file",
+        )
+        self.assert_no_recovered_payloads()
+        self.assertEqual(list(self.work_dir.iterdir()), [])
+
+    def test_decode_upload_copy_check_exact_disk_space_boundary(self) -> None:
+        """Accept exact copy space and refuse the same upload one byte below."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        stego_bytes = self.download_stego(encoded)
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + len(stego_bytes)),
+                SimpleNamespace(free=16 * 1024**3),
+            ),
+        ):
+            accepted = self.decode_bytes(stego_bytes, "stego.png")
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.get_json()["verdict"], "Authentic")
+        for path in self.payload_dir.iterdir():
+            path.unlink()
+
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + len(stego_bytes) - 1),
+            ),
+        ):
+            refused = self.decode_bytes(stego_bytes, "stego.png")
+        self.assertEqual(refused.status_code, 413)
+        self.assertEqual(refused.get_json()["verdict"], "Cannot Verify")
+        self.assert_no_recovered_payloads()
+
+    def test_decode_staging_space_failure_returns_cannot_verify(self) -> None:
+        """The route keeps low decode-staging space as an HTTP 200 verdict."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        stego_bytes = self.download_stego(encoded)
+        with patch(
+            "stego.storage.shutil.disk_usage",
+            side_effect=(
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=16 * 1024**3),
+                SimpleNamespace(free=DISK_SPACE_RESERVE_BYTES + 1),
+            ),
+        ):
+            response = self.decode_bytes(stego_bytes, "stego.png")
+        self.assertEqual(response.status_code, 200)
+        report = response.get_json()
+        self.assertEqual(report["verdict"], "Cannot Verify")
+        self.assertIn("insufficient free disk space", report["message"])
+        self.assert_no_recovered_payloads()
 
     def test_bad_verify_key_returns_cannot_verify_report(self) -> None:
         """An unreadable key remains a Cannot Verify report with file size."""
@@ -1186,6 +1775,96 @@ class WebApplicationTests(unittest.TestCase):
             response = self.decode(encoded, "stego.png")
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assertNotIn("sidecar failed", response.get_data(as_text=True))
+        self.assert_no_recovered_payloads()
+
+    def test_large_text_payload_is_download_only(self) -> None:
+        """Avoid reading a multi-megabyte authenticated text payload into the browser."""
+        payload = PayloadRecord(
+            "ID", 0, b"\0" * 16, b"\0" * 32, b"x",
+            b"mime=text/plain;name=large.txt",
+        )
+        path = self.payload_dir / "large.bin"
+        path.write_bytes(b"a" * (1024 * 1024 + 1))
+        details = CurrentProtocolService()._verified_payload(payload, path)
+        self.assertTrue(details["type_agrees"])
+        self.assertFalse(details["preview_allowed"])
+        path.write_bytes(b"a" * (1024 * 1024))
+        self.assertTrue(CurrentProtocolService()._verified_payload(payload, path)["preview_allowed"])
+
+    def test_inactive_layout_estimate_returns_controlled_failure(self) -> None:
+        """The disconnected map API must not raise or mislabel its failure as bad input."""
+        response = self.client.post("/layout/estimate", data={})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["ok"], False)
+        self.assertIn("manual start unit", response.get_json()["error"])
+
+    def test_duplicate_file_and_form_fields_are_rejected(self) -> None:
+        """Multipart duplicates must not silently choose an arbitrary first value."""
+        duplicate = self.client.post(
+            "/decode",
+            data=MultiDict([
+                ("stego", (io.BytesIO(b"one"), "one.png")),
+                ("stego", (io.BytesIO(b"two"), "two.png")),
+            ]),
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(duplicate.get_json()["error"], "upload exactly one file: stego")
+        self.assertEqual(list(self.payload_dir.iterdir()), [])
+        with self.client.application.test_request_context(
+            "/encode", method="POST",
+            data=MultiDict([("team_id", "first"), ("team_id", "second")]),
+        ):
+            with self.assertRaisesRegex(ValueError, "exactly one value: team_id"):
+                routes._required_form_value("team_id")
+        with self.client.application.test_request_context(
+            "/encode", method="POST",
+            data=MultiDict([("start_unit", "2048"), ("start_unit", "2049")]),
+        ):
+            with self.assertRaisesRegex(ValueError, "exactly one value: start_unit"):
+                routes._integer_form_value("start_unit", 0)
+        with self.client.application.test_request_context(
+            "/encode", method="POST",
+            data=MultiDict([("secret_message", "one"), ("secret_message", "two")]),
+        ):
+            with self.assertRaisesRegex(ValueError, "exactly one value: secret_message"):
+                routes._payload_input(self.work_dir)
+
+    def test_bad_numeric_fields_do_not_reach_the_encoder(self) -> None:
+        """Decimal, negative, and out-of-range layout values give controlled errors."""
+        for value, expected in (("1.5", "integer"), ("-1", "at least"), ("9", "between 1 and 8")):
+            with self.subTest(value=value):
+                data = {"start_unit": value, "lsb_bits": "1"}
+                if value == "9":
+                    data = {"start_unit": "2048", "lsb_bits": value}
+                with self.client.application.test_request_context("/encode", method="POST", data=data):
+                    with self.assertRaisesRegex(ValueError, expected):
+                        routes._lsb_bits() if value == "9" else routes._integer_form_value("start_unit", 0)
+
+    def test_encode_storage_failure_is_safe_and_removes_partial_output(self) -> None:
+        """An output-device failure is a 500 without path disclosure or leftover media."""
+        def fail_after_write(*args: object, **kwargs: object) -> None:
+            Path(str(args[1])).write_bytes(b"partial")
+            raise OSError("private path /secret/output")
+
+        with patch("stego_web.routes.protocol_service.encode", side_effect=fail_after_write):
+            response = self.encode(sample_png(), "cover.png")
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("/secret", response.get_data(as_text=True))
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_decode_storage_failure_is_safe_and_removes_partial_payload(self) -> None:
+        """A read/write failure cannot publish a partial plaintext payload."""
+        def fail_after_write(*args: object, **kwargs: object) -> None:
+            Path(str(args[1])).write_bytes(b"partial secret")
+            raise OSError("private path /secret/payload")
+
+        with patch("stego_web.routes.protocol_service.verify", side_effect=fail_after_write):
+            response = self.decode_bytes(sample_png(), "received.png")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assertNotIn("/secret", response.get_data(as_text=True))
         self.assert_no_recovered_payloads()
 
     def test_key_generation_supports_both_roles(self) -> None:
@@ -1201,6 +1880,200 @@ class WebApplicationTests(unittest.TestCase):
                 self.assertEqual(body["role"], role)
                 self.assertIn("BEGIN ENCRYPTED PRIVATE KEY", body["private_key_pem"])
                 self.assertIn("BEGIN PUBLIC KEY", body["public_key_pem"])
+
+    def test_key_generation_without_password_returns_unencrypted_pkcs8(self) -> None:
+        """An omitted key password generates a plain PKCS#8 private PEM."""
+        response = self.client.post("/keys/generate", data={"role": "sender"})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        private_pem_text = response.get_json()["private_key_pem"]
+        self.assertTrue(private_pem_text.startswith("-----BEGIN PRIVATE KEY-----"))
+        self.assertNotIn("ENCRYPTED", private_pem_text)
+
+    def test_key_generation_keeps_nonempty_password_whitespace(self) -> None:
+        """A non-empty password is used exactly as entered, without stripping."""
+        password = " 123456 "
+        response = self.client.post(
+            "/keys/generate", data={"role": "sender", "key_password": password}
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        generated_pem = response.get_json()["private_key_pem"].encode("ascii")
+        loaded = CurrentProtocolService()._load_private_key(
+            generated_pem, password, "sender private key"
+        )
+        self.assertEqual(loaded.key_size, 2048)
+
+    def test_key_generation_rejects_duplicate_optional_password(self) -> None:
+        """Optional key-password fields still reject duplicate values."""
+        response = self.client.post(
+            "/keys/generate",
+            data=MultiDict(
+                [
+                    ("role", "sender"),
+                    ("key_password", "first-password"),
+                    ("key_password", "second-password"),
+                ]
+            ),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"], "provide exactly one value: key_password"
+        )
+
+    def test_key_password_fields_are_optional_with_eight_character_minimum(self) -> None:
+        """Each key-password input allows empty text but keeps minlength eight."""
+        pages = (
+            (
+                self.client.get("/").data,
+                (b'name="sender_key_password"', b'id="receiver-setup-password"'),
+            ),
+            (
+                self.client.get("/verify").data,
+                (b'name="receiver_key_password"',),
+            ),
+        )
+        for page, markers in pages:
+            lowered_page = page.lower()
+            self.assertIn(b"optional", lowered_page)
+            self.assertIn(b"leave empty for an unencrypted key", lowered_page)
+            for marker in markers:
+                marker_index = page.index(marker)
+                input_start = page.rfind(b"<input", 0, marker_index)
+                input_end = page.index(b">", marker_index)
+                input_markup = page[input_start : input_end + 1]
+                self.assertIn(b'minlength="8"', input_markup)
+                self.assertNotIn(b" required", input_markup)
+
+    def test_unencrypted_sender_and_receiver_keys_round_trip_with_empty_passwords(self) -> None:
+        """Protocol v3 encodes and verifies with unencrypted RSA private keys."""
+        sender_pem = unencrypted_private_pem(self.sender_private)
+        receiver_pem = unencrypted_private_pem(self.receiver_private)
+        encoded_response = self.encode(
+            sample_png(),
+            "cover.png",
+            message="unencrypted demo key round trip",
+            sender_private_key_pem=sender_pem,
+            sender_key_password="",
+        )
+        self.assertEqual(
+            encoded_response.status_code,
+            200,
+            encoded_response.get_data(as_text=True),
+        )
+        decoded = self.decode(
+            encoded_response.get_json(),
+            "stego.png",
+            receiver_private=receiver_pem,
+            receiver_key_password="",
+        )
+        self.assertEqual(decoded.status_code, 200, decoded.get_data(as_text=True))
+        self.assertEqual(decoded.get_json()["verdict"], "Authentic")
+
+    def test_encrypted_sender_key_with_empty_password_returns_400(self) -> None:
+        """The encode route tells users to enter a password for encrypted keys."""
+        response = self.encode(
+            sample_png(), "cover.png", sender_key_password=""
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "sender private key is encrypted; enter its password",
+        )
+
+    def test_encrypted_receiver_key_with_empty_password_reports_cannot_verify(self) -> None:
+        """The encrypted-key mismatch returns the normal Cannot Verify report."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        response = self.decode(encoded, "stego.png", receiver_key_password="")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assertEqual(
+            response.get_json()["message"],
+            "receiver private key is encrypted; enter its password",
+        )
+        self.assert_no_recovered_payloads()
+
+    def test_wrong_sender_password_keeps_existing_error_message(self) -> None:
+        """An incorrect sender password keeps the established error text."""
+        response = self.encode(
+            sample_png(), "cover.png", sender_key_password="wrong-password"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "sender private key could not be loaded with that password",
+        )
+
+    def test_wrong_receiver_password_keeps_existing_report_message(self) -> None:
+        """An incorrect receiver password keeps the Cannot Verify report."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        response = self.decode(
+            encoded, "stego.png", receiver_key_password="wrong-password"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assertEqual(
+            response.get_json()["message"],
+            "receiver private key could not be loaded with that password",
+        )
+
+    def test_unencrypted_sender_key_with_password_returns_400(self) -> None:
+        """The encode route rejects a password for an unencrypted sender key."""
+        response = self.encode(
+            sample_png(),
+            "cover.png",
+            sender_private_key_pem=unencrypted_private_pem(self.sender_private),
+            sender_key_password=PASSWORD,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "sender private key is not encrypted; leave the password empty",
+        )
+
+    def test_unencrypted_receiver_key_with_password_reports_cannot_verify(self) -> None:
+        """A password for an unencrypted key returns Cannot Verify normally."""
+        encoded = self.encode(sample_png(), "cover.png").get_json()
+        response = self.decode(
+            encoded,
+            "stego.png",
+            receiver_private=unencrypted_private_pem(self.receiver_private),
+            receiver_key_password=PASSWORD,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["verdict"], "Cannot Verify")
+        self.assertEqual(
+            response.get_json()["message"],
+            "receiver private key is not encrypted; leave the password empty",
+        )
+        self.assert_no_recovered_payloads()
+
+    def test_seven_character_password_is_rejected_for_generation_encode_and_decode(self) -> None:
+        """Non-empty passwords still need at least eight characters."""
+        generated = self.client.post(
+            "/keys/generate", data={"role": "sender", "key_password": "1234567"}
+        )
+        self.assertEqual(generated.status_code, 400)
+        self.assertEqual(
+            generated.get_json()["error"],
+            "key password must contain at least 8 characters",
+        )
+        encoded = self.encode(
+            sample_png(), "cover.png", sender_key_password="1234567"
+        )
+        self.assertEqual(encoded.status_code, 400)
+        self.assertEqual(
+            encoded.get_json()["error"],
+            "key password must contain at least 8 characters",
+        )
+        valid_encoded = self.encode(sample_png(), "cover.png").get_json()
+        decoded = self.decode(
+            valid_encoded, "stego.png", receiver_key_password="1234567"
+        )
+        self.assertEqual(decoded.status_code, 200)
+        self.assertEqual(decoded.get_json()["verdict"], "Cannot Verify")
+        self.assertEqual(
+            decoded.get_json()["message"],
+            "key password must contain at least 8 characters",
+        )
 
     def test_obsolete_or_ambiguous_inputs_are_rejected(self) -> None:
         """The route requires current keys, valid layout, and exactly one payload."""
@@ -1316,7 +2189,7 @@ class WebApplicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(
             response.get_json()["error"],
-            "unsupported or unreadable source; upload an image (PNG, JPEG, WebP, AVIF, BMP, TIFF, GIF) or audio (WAV, MP3, AAC/M4A, FLAC, ALAC, Ogg Vorbis/Opus) file",
+            accepted_source_message(),
         )
 
     def test_missing_and_empty_carrier_upload_errors_remain(self) -> None:
@@ -1354,6 +2227,108 @@ class WebApplicationTests(unittest.TestCase):
         )
         self.assertEqual(list(self.output_dir.iterdir()), [])
 
+    def test_encode_rejects_sender_private_key_over_64_kib(self) -> None:
+        """Reject an oversized sender key before reading it into memory."""
+        limit = 64 * 1024
+        response = self.client.post(
+            "/encode",
+            data={
+                "cover": (io.BytesIO(sample_png()), "cover.png"),
+                "sender_private_key": (io.BytesIO(b"x" * (limit + 1)), "sender.pem"),
+                "sender_key_password": PASSWORD,
+                "receiver_public_key": (
+                    io.BytesIO(self.receiver_public_pem), "receiver.pem"
+                ),
+                "team_id": "P1-4",
+                "sender": "Test User",
+                "secret_message": "message",
+                "start_unit": "2048",
+                "lsb_bits": "1",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "ok": False,
+                "error": (
+                    "uploaded file is too large: sender_private_key "
+                    f"(limit {limit} bytes)"
+                ),
+            },
+        )
+
+    def test_decode_rejects_receiver_private_key_over_64_kib(self) -> None:
+        """Reject an oversized receiver key with the existing decode response."""
+        limit = 64 * 1024
+        response = self.client.post(
+            "/decode",
+            data={
+                "stego": (io.BytesIO(b"not decoded before key loading"), "cover.png"),
+                "sender_public_key": (
+                    io.BytesIO(self.sender_public_pem), "sender.pem"
+                ),
+                "receiver_private_key": (
+                    io.BytesIO(b"x" * (limit + 1)), "receiver.pem"
+                ),
+                "receiver_key_password": PASSWORD,
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "ok": False,
+                "error": (
+                    "uploaded file is too large: receiver_private_key "
+                    f"(limit {limit} bytes)"
+                ),
+                "verdict": "Cannot Verify",
+            },
+        )
+
+    def test_required_upload_without_limit_reads_full_file(self) -> None:
+        """Read the complete multipart upload when no size limit is set."""
+        content = b"the complete cover upload"
+        with self.client.application.test_request_context(
+            "/layout/estimate",
+            method="POST",
+            data={"cover": (io.BytesIO(content), "cover.png")},
+            content_type="multipart/form-data",
+        ):
+            self.assertEqual(
+                routes._required_upload("cover", max_bytes=None), content
+            )
+
+    def test_key_upload_at_64_kib_is_not_refused_for_size(self) -> None:
+        """Accept the size boundary, then report the invalid key itself."""
+        limit = 64 * 1024
+        response = self.client.post(
+            "/encode",
+            data={
+                "cover": (io.BytesIO(sample_png()), "cover.png"),
+                "sender_private_key": (io.BytesIO(b"x" * limit), "sender.pem"),
+                "sender_key_password": PASSWORD,
+                "receiver_public_key": (
+                    io.BytesIO(self.receiver_public_pem), "receiver.pem"
+                ),
+                "team_id": "P1-4",
+                "sender": "Test User",
+                "secret_message": "message",
+                "start_unit": "2048",
+                "lsb_bits": "1",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "sender private key could not be loaded with that password",
+        )
+        self.assertNotIn("uploaded file is too large", response.get_json()["error"])
+
     def test_failed_encode_leaves_no_output_file(self) -> None:
         """An encode refusal removes any incomplete output file."""
         response = self.encode(
@@ -1363,10 +2338,32 @@ class WebApplicationTests(unittest.TestCase):
         self.assertIn("user payload exceeds capacity", response.get_json()["error"])
         self.assertEqual(list(self.output_dir.iterdir()), [])
 
+    def test_request_without_content_length_returns_411_before_disk_check(self) -> None:
+        """Refuse upload routes without parsing bodies or checking disk space."""
+        with patch("stego.storage.shutil.disk_usage") as disk_usage:
+            for path, expected_verdict in (
+                ("/encode", None),
+                ("/decode", "Cannot Verify"),
+                ("/capacity", None),
+            ):
+                response = self.client.open(
+                    path,
+                    method="POST",
+                    data=b"",
+                    environ_overrides={"CONTENT_LENGTH": None},
+                )
+                self.assertEqual(response.status_code, 411)
+                self.assertEqual(
+                    response.get_json()["error"],
+                    "Content-Length header is required",
+                )
+                self.assertEqual(response.get_json().get("verdict"), expected_verdict)
+        disk_usage.assert_not_called()
+
     def test_disk_guard_rejects_upload_before_body_parsing(self) -> None:
         """The free-space check refuses requests above the guarded capacity."""
-        with patch("stego_web.shutil.disk_usage") as disk_usage:
-            disk_usage.return_value.free = 1024**3 + 10
+        with patch("stego.storage.shutil.disk_usage") as disk_usage:
+            disk_usage.return_value.free = 3 * 1024**3 + 10
             response = self.client.post(
                 "/decode",
                 data={"stego": (io.BytesIO(b"x" * 1024), "cover.mkv")},

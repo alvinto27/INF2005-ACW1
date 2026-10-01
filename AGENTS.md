@@ -21,21 +21,22 @@ python -m pip install -r requirements.txt
 # Optional: install only when you need to run the demonstration notebook.
 python -m pip install -r requirements-notebook.txt
 python -m unittest -v
+node --test scripts/test-api-js.cjs scripts/test-capacity-js.cjs
 python3 scripts/check-docs.py
 bash scripts/install-hooks.sh
 ```
 
 ## State
 
-- This is a standalone Python module repository with no package build configuration or CI workflow.
-- The `stego/` package requires Python 3.10+ and uses PyAV, `cryptography`, and NumPy. Pillow is only for tests and the demonstration notebook.
+- This repository has no package build configuration. CI runs the Python tests, dependency-free Node request-boundary and capacity-helper tests, and documentation check on Python 3.12, 3.13, and 3.14 through [.github/workflows/tests.yml](.github/workflows/tests.yml).
+- The `stego/` package requires Python 3.12+ and uses PyAV, `cryptography`, and NumPy. Pillow is only for tests and the demonstration notebook.
 - The active Flask routes use the `stego/` protocol through `stego_web/services/current_protocol.py`; the earlier `STG1` implementation and its web services have been removed.
 - `test_stego.py`, `test_video.py`, and `test_webapp.py` are the active test modules.
 
 ## Conventions
 
 - Commit the notebook with all outputs cleared.
-- The notebook is an API demonstration of the main flows, not the reference for API behaviour, and it does not show every feature. Keep notebook changes minimal; prove behaviour with tests.
+- The notebook is a human-readable, human-verifiable proof of the end-to-end flow: it runs the sender and receiver steps in order and shows each result and verdict. The flow is part of the behaviour. Before each step, state in plain words what the step does and what result to expect. After the step, print the evidence (values, verdicts, hashes, or changed-unit counts) beside that expected result, so that a reader can check it without reading library code. The tests prove individual rules and edge cases. The library code, the tests, and the `AGENT_docs/` guides are the reference for exact API contracts. The notebook does not need to show every feature. When a backend change affects the flow, update the notebook so that it shows the new flow.
 - Keep the masked-media protocol media-neutral and use its fixed `stego/` PNG and WAV adapters for file I/O.
 - Preserve protocol version 3 and its documented verification verdicts. The active Flask routes accept only protocol version 3; do not present older masked-media or `STG1` files as interoperable.
 - Keep runtime and test dependencies in `requirements.txt`, optional notebook dependencies in `requirements-notebook.txt`, and tests in the existing three test modules unless the repository adopts a different layout.

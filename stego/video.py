@@ -1,7 +1,6 @@
 """Read a bounded, canonical video-plus-audio carrier with PyAV."""
 
 import os
-import shutil
 import struct
 import tempfile
 from collections.abc import Callable, Iterator
@@ -37,15 +36,25 @@ from .core import (
 )
 from .layout import EmbeddingLayout
 from .packet import PayloadFileRecord, PayloadRecord
+from .storage import _check_free_space
 
-_MAX_CARRIER_UNITS = 4 * 1024**3
+_MAX_CARRIER_UNITS = 512 * 1024**3
 _MAX_FRAME_BYTES = 256 * 1024**2
-_MAX_OUTPUT_BYTES = 2 * 1024**3
+_MAX_OUTPUT_BYTES = 1280 * 1024**3
 _MIN_FREE_BYTES = 3 * 1024 * 1024 * 1024
+_MUX_SPACE_SLACK_BYTES = 1024**2
 _AUDIO_CHANNEL_COUNTS = frozenset((1, 2))
 _VIDEO_CONTEXT_FORMAT = ">IIQBBIHQ"
 _VIDEO_DEPTHS = (8, 9, 10, 12, 14, 16)
 _VIDEO_ALPHA_DEPTHS = (8, 10, 12, 14, 16)
+
+
+def _require_decoder_context(stream: object, media_type: str) -> object:
+    """Return an input stream codec context or report a missing decoder."""
+    codec = stream.codec_context
+    if codec is None:
+        raise ValueError(f"no decoder is available for this {media_type} stream")
+    return codec
 
 
 def _check_video_output_resources(
@@ -55,9 +64,12 @@ def _check_video_output_resources(
     if additional_required_bytes < 0:
         raise ValueError("additional_required_bytes must be non-negative")
     destination = Path(os.fsdecode(fspath(path)))
-    parent = destination.parent
-    if shutil.disk_usage(parent).free < _MIN_FREE_BYTES + additional_required_bytes:
-        raise ValueError("insufficient free disk space for video output")
+    _check_free_space(
+        destination.parent,
+        additional_required_bytes,
+        _MIN_FREE_BYTES,
+        "insufficient free disk space for video output",
+    )
     return destination
 
 
@@ -77,6 +89,15 @@ def _new_video_stage(destination: Path) -> Path:
     )
     os.close(descriptor)
     return Path(stage_name)
+
+
+def _check_video_mux_space(
+    path: str | bytes | PathLike[str], packet_size: int
+) -> None:
+    """Require one packet, mux slack, and the free-space reserve before muxing."""
+    if packet_size < 0:
+        raise ValueError("packet_size must be non-negative")
+    _check_video_output_resources(path, packet_size + _MUX_SPACE_SLACK_BYTES)
 
 
 def _check_video_file_size(path: str | bytes | PathLike[str]) -> None:
@@ -338,7 +359,10 @@ class VideoCarrier(CarrierSource):
         self._closed = False
         self._current_video_origin: Fraction | None = None
         self._output_reader = False
-        self._scan()
+        try:
+            self._scan()
+        except av.error.FFmpegError as error:
+            raise ValueError("could not decode the file; the file may be damaged") from error
 
     @property
     def path(self) -> str | bytes | PathLike[str]:
@@ -389,8 +413,10 @@ class VideoCarrier(CarrierSource):
             raise ValueError("unsupported additional stream")
         if len(videos) != 1:
             raise ValueError("video file must contain exactly one video stream")
+        _require_decoder_context(videos[0], "video")
         _configure_decoder(videos[0])
         if audios:
+            _require_decoder_context(audios[0], "audio")
             _configure_decoder(audios[0])
         return videos[0], audios[0] if audios else None
 
@@ -691,38 +717,132 @@ class VideoCarrier(CarrierSource):
         path: str | bytes | PathLike[str],
         transform: Callable[[int, np.ndarray], np.ndarray],
         fixed_bytes_callback: Callable[[int, np.ndarray, bytes], None] | None = None,
+        *,
+        preview_transform: Callable[[int, np.ndarray], np.ndarray] | None = None,
     ) -> None:
-        """Write selected native-depth RGB(A)/s16 tracks to tag-free Matroska."""
+        """Write tracks to Matroska; stateful transforms need a pure preview callback."""
         if not isinstance(path, (str, bytes, PathLike)):
             raise TypeError("path must be a filesystem path")
         import av
 
-        output = av.open(fspath(path), mode="w", format="matroska")
-        # The stream rate is a nominal codec setting; explicit millisecond PTS
-        # and time bases below carry the actual (including VFR) frame timing.
-        video_output = output.add_stream("ffv1", rate=25)
-        video_output.width = self._width
-        video_output.height = self._height
-        video_output.pix_fmt = self._output_pixel_format
-        video_output.time_base = Fraction(1, 1000)
-        video_codec = video_output.codec_context
-        video_codec.time_base = Fraction(1, 1000)
-        video_codec.gop_size = 1
-        video_codec.thread_count = 0
-        video_codec.options = {"level": "3", "slices": "16", "threads": "auto"}
-
-        audio_output = None
-        audio_layout = "mono" if self._audio_channels == 1 else "stereo"
+        audio_spool_path: Path | None = None
         if self._audio_channels:
-            audio_output = output.add_stream("pcm_s16le", rate=self._audio_rate)
-            audio_output.layout = audio_layout
-            audio_output.time_base = Fraction(1, self._audio_rate)
+            destination = _check_video_output_resources(
+                path, self._audio_frames_per_channel * self._audio_channels * 2
+            )
+            descriptor, spool_name = tempfile.mkstemp(
+                prefix=".stego-staging-audio-", suffix=".pcm", dir=destination.parent
+            )
+            os.close(descriptor)
+            audio_spool_path = Path(spool_name)
+            audio_preview = transform if preview_transform is None else preview_transform
+            if not callable(audio_preview):
+                audio_spool_path.unlink(missing_ok=True)
+                raise ValueError("video encoding requires a side-effect-free preview transform")
+            try:
+                with audio_spool_path.open("wb") as audio_spool:
+                    audio_offset = 0
+                    for units, fixed in self._iter_audio(True):
+                        changed = _validate_transformed_units(
+                            audio_preview(self._video_units + audio_offset, units),
+                            units.size,
+                        )
+                        high = fixed[8:] if audio_offset == 0 else fixed
+                        if len(high) != changed.size:
+                            raise CarrierAccessError(
+                                "audio fixed-byte chunk has the wrong size"
+                            )
+                        pcm = np.empty(changed.size * 2, dtype=np.uint8)
+                        pcm[0::2] = changed
+                        pcm[1::2] = np.frombuffer(high, dtype=np.uint8)
+                        audio_spool.write(pcm.tobytes())
+                        audio_offset += changed.size
+                    if audio_offset != self._audio_frames_per_channel * self._audio_channels:
+                        raise CarrierAccessError("audio carrier changed after validation")
+            except BaseException:
+                audio_spool_path.unlink(missing_ok=True)
+                raise
+
+        try:
+            output = av.open(fspath(path), mode="w", format="matroska")
+        except BaseException:
+            if audio_spool_path is not None:
+                audio_spool_path.unlink(missing_ok=True)
+            raise
+        try:
+            # The stream rate is nominal; explicit PTS values carry actual timing.
+            video_output = output.add_stream("ffv1", rate=25)
+            video_output.width = self._width
+            video_output.height = self._height
+            video_output.pix_fmt = self._output_pixel_format
+            video_output.time_base = Fraction(1, 1000)
+            video_codec = video_output.codec_context
+            video_codec.time_base = Fraction(1, 1000)
+            video_codec.gop_size = 1
+            video_codec.thread_count = 0
+            video_codec.options = {"level": "3", "slices": "16", "threads": "auto"}
+
+            audio_output = None
+            audio_layout = "mono" if self._audio_channels == 1 else "stereo"
+            if self._audio_channels:
+                audio_output = output.add_stream("pcm_s16le", rate=self._audio_rate)
+                audio_output.layout = audio_layout
+                audio_output.time_base = Fraction(1, self._audio_rate)
+            audio_spool = (
+                audio_spool_path.open("rb") if audio_spool_path is not None else None
+            )
+        except BaseException:
+            output.close()
+            if audio_spool_path is not None:
+                audio_spool_path.unlink(missing_ok=True)
+            raise
 
         def mux_packets(stream: object, frame: object | None = None) -> None:
             packets = stream.encode() if frame is None else stream.encode(frame)
             for packet in packets:
+                _check_video_mux_space(path, packet.size)
                 output.mux(packet)
                 _check_video_file_size(path)
+
+        audio_sample_position = _round_fraction(
+            Fraction(self._audio_start_tick * self._audio_rate, 1000)
+        )
+        audio_samples_written = 0
+
+        def mux_audio_until(tick: int | None) -> None:
+            nonlocal audio_samples_written
+            if audio_output is None or audio_spool is None:
+                return
+            if tick is None:
+                target_samples = self._audio_frames_per_channel
+            else:
+                elapsed = Fraction(
+                    (tick - self._audio_start_tick) * self._audio_rate, 1000
+                )
+                target_samples = min(
+                    self._audio_frames_per_channel,
+                    max(0, elapsed.numerator // elapsed.denominator),
+                )
+            max_samples = max(
+                1,
+                min(DEFAULT_CHUNK_BYTES // (2 * self._audio_channels), self._audio_rate),
+            )
+            while audio_samples_written < target_samples:
+                sample_count = min(
+                    max_samples, target_samples - audio_samples_written
+                )
+                raw = audio_spool.read(sample_count * self._audio_channels * 2)
+                if len(raw) != sample_count * self._audio_channels * 2:
+                    raise CarrierAccessError("audio spool ended before all samples were read")
+                samples = np.frombuffer(raw, dtype="<i2")
+                audio_frame = av.AudioFrame.from_ndarray(
+                    samples.reshape(1, -1), format="s16", layout=audio_layout
+                )
+                audio_frame.sample_rate = self._audio_rate
+                audio_frame.pts = audio_sample_position + audio_samples_written
+                audio_frame.time_base = Fraction(1, self._audio_rate)
+                mux_packets(audio_output, audio_frame)
+                audio_samples_written += sample_count
 
         try:
             video_units = 0
@@ -799,59 +919,62 @@ class VideoCarrier(CarrierSource):
                     encoded_frame.pts = tick
                     encoded_frame.time_base = Fraction(1, 1000)
                     mux_packets(video_output, encoded_frame)
+                    mux_audio_until(tick)
                     frame_count += 1
             if frame_count != self._frame_count or video_units != self._video_units:
                 raise CarrierAccessError("video carrier changed after validation")
 
             if audio_output is not None:
-                audio_sample_position = _round_fraction(
-                    Fraction(self._audio_start_tick * self._audio_rate, 1000)
-                )
+                if audio_spool_path is None:
+                    raise CarrierAccessError("audio spool is missing")
                 audio_unit_offset = 0
                 first_audio_chunk = True
-                for units, fixed in self._iter_audio(True):
-                    high_bytes = fixed[8:] if first_audio_chunk else fixed
-                    if fixed_bytes_callback is not None:
-                        fixed_bytes_callback(
-                            self._video_units + audio_unit_offset, units, fixed
+                with audio_spool_path.open("rb") as audio_compare_spool:
+                    for units, fixed in self._iter_audio(True):
+                        high_bytes = fixed[8:] if first_audio_chunk else fixed
+                        if fixed_bytes_callback is not None:
+                            fixed_bytes_callback(
+                                self._video_units + audio_unit_offset, units, fixed
+                            )
+                        changed = _validate_transformed_units(
+                            transform(self._video_units + audio_unit_offset, units),
+                            units.size,
                         )
-                    changed = _validate_transformed_units(
-                        transform(self._video_units + audio_unit_offset, units),
-                        units.size,
-                    )
-                    high = np.frombuffer(high_bytes, dtype=np.uint8)
-                    if high.size != changed.size:
-                        raise CarrierAccessError("audio fixed-byte chunk has the wrong size")
-                    pcm = np.empty(changed.size * 2, dtype=np.uint8)
-                    pcm[0::2] = changed
-                    pcm[1::2] = high
-                    samples = np.frombuffer(pcm.tobytes(), dtype="<i2")
-                    audio_frame = av.AudioFrame.from_ndarray(
-                        samples.reshape(1, -1),
-                        format="s16",
-                        layout=audio_layout,
-                    )
-                    audio_frame.sample_rate = self._audio_rate
-                    audio_frame.pts = audio_sample_position
-                    audio_frame.time_base = Fraction(1, self._audio_rate)
-                    mux_packets(audio_output, audio_frame)
-                    sample_count = changed.size // self._audio_channels
-                    audio_sample_position += sample_count
-                    audio_unit_offset += changed.size
-                    first_audio_chunk = False
+                        high = np.frombuffer(high_bytes, dtype=np.uint8)
+                        if high.size != changed.size:
+                            raise CarrierAccessError("audio fixed-byte chunk has the wrong size")
+                        expected = np.empty(changed.size * 2, dtype=np.uint8)
+                        expected[0::2] = changed
+                        expected[1::2] = high
+                        actual = audio_compare_spool.read(changed.size * 2)
+                        if actual != expected.tobytes():
+                            raise CarrierAccessError(
+                                "audio spool differs from ordered carrier transform"
+                            )
+                        audio_unit_offset += changed.size
+                        first_audio_chunk = False
                 if audio_unit_offset != self._audio_frames_per_channel * self._audio_channels:
                     raise CarrierAccessError("audio carrier changed after validation")
 
+            mux_audio_until(None)
             mux_packets(video_output)
             if audio_output is not None:
                 mux_packets(audio_output)
         finally:
-            output.close()
+            try:
+                if audio_spool is not None:
+                    audio_spool.close()
+            finally:
+                try:
+                    output.close()
+                finally:
+                    if audio_spool_path is not None:
+                        audio_spool_path.unlink(missing_ok=True)
         _check_video_file_size(path)
 
     def open_rewritten_output(
         self, path: str | bytes | PathLike[str]
-    ) -> VideoCarrier:
+    ) -> "VideoCarrier":
         """Open a read-back iterator that validates during its single full pass.
 
         The expected context is copied as a comparison target. The output pass

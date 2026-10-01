@@ -83,6 +83,7 @@ from .packet import (
     parse_payload_from_reader,
     serialized_record_length,
 )
+from .storage import DISK_SPACE_RESERVE_BYTES, _check_free_space, _png_output_size_bound
 
 
 def _validate_carrier_source(source: CarrierSource) -> CarrierSource:
@@ -282,7 +283,7 @@ class _StagingSession:
             return None
         return Path(self._temporary_directory.name)
 
-    def __enter__(self) -> _StagingSession:
+    def __enter__(self) -> "_StagingSession":
         """Create the private directory when the file backend is selected."""
         if self.file_backed and self._temporary_directory is None:
             self._temporary_directory = tempfile.TemporaryDirectory(
@@ -333,13 +334,37 @@ class _StagingSession:
         self._closed = True
 
 
-def _plan_layout(total_units: int, receiver_public_key: rsa.RSAPublicKey, start_unit: int, lsb_count: int, media_id: str, user_payload_size: int, metadata: bytes) -> EmbeddingLayout:
-    """Check capacity and return the packet geometry before any carrier data is read.
+def _plan_layout(
+    total_units: int,
+    receiver_public_key: rsa.RSAPublicKey,
+    start_unit: int,
+    lsb_count: int,
+    media_id: str,
+    user_payload_size: int,
+    metadata: bytes,
+) -> EmbeddingLayout:
+    """Check capacity and return packet geometry before reading carrier data."""
+    return _plan_layout_with_span(
+        total_units,
+        bootstrap_span(receiver_public_key),
+        start_unit,
+        lsb_count,
+        len(media_id.encode("utf-8")),
+        user_payload_size,
+        metadata,
+    )
 
-    The record length does not depend on the media hash value, because the hash
-    has a fixed size, so the whole geometry is known before the first pass.
-    """
-    span = bootstrap_span(receiver_public_key)
+
+def _plan_layout_with_span(
+    total_units: int,
+    span: int,
+    start_unit: int,
+    lsb_count: int,
+    media_id_length: int,
+    user_payload_size: int,
+    metadata: bytes,
+) -> EmbeddingLayout:
+    """Apply the encoder's capacity and geometry checks for a known bootstrap span."""
     minimum_record_length = serialized_record_length(MEDIA_ID_SIZE, 0, 0)
     minimum_units = minimum_carrier_units(span, lsb_count, minimum_record_length)
     if total_units < minimum_units:
@@ -353,9 +378,7 @@ def _plan_layout(total_units: int, receiver_public_key: rsa.RSAPublicKey, start_
             f"start_unit {start_unit} is below the reserved bootstrap region; "
             f"lowest legal start_unit is {span}"
         )
-    record_overhead = serialized_record_length(
-        len(media_id.encode("utf-8")), 0, len(metadata)
-    )
+    record_overhead = serialized_record_length(media_id_length, 0, len(metadata))
     maximum_user_payload = max_user_payload_length(
         total_units, start_unit, span, lsb_count, record_overhead
     )
@@ -366,7 +389,7 @@ def _plan_layout(total_units: int, receiver_public_key: rsa.RSAPublicKey, start_
             f"start_unit={start_unit}, lsb_count={lsb_count}"
         )
     record_length = serialized_record_length(
-        len(media_id.encode("utf-8")), user_payload_size, len(metadata)
+        media_id_length, user_payload_size, len(metadata)
     )
     return build_embedding_layout(
         total_units, start_unit, lsb_count, record_length + GCM_TAG_SIZE, span
@@ -450,7 +473,7 @@ class CarrierEncoding:
         self._rehash = _new_masked_hasher(media_code, layout, fixed_byte_count)
         self._next_unit = 0
 
-    def __enter__(self) -> CarrierEncoding:
+    def __enter__(self) -> "CarrierEncoding":
         """Return this resource for use in a context manager."""
         return self
 
@@ -470,6 +493,13 @@ class CarrierEncoding:
         result = self._packet_transform(chunk_start, result)
         self._next_unit = chunk_end
         return result
+
+    def preview_chunk(self, chunk_start: int, units: np.ndarray) -> np.ndarray:
+        """Apply the embedded transforms without changing pass state or hashes."""
+        units = _validate_carrier_units(units)
+        chunk_start = _validate_non_negative_integer(chunk_start, "chunk_start")
+        result = self._bootstrap_transform(chunk_start, units)
+        return self._packet_transform(chunk_start, result)
 
     def update_fixed_bytes(self, chunk_start: int, units: np.ndarray, fixed_bytes: bytes) -> None:
         """Hash fixed bytes paired with the current original carrier chunk."""
@@ -540,6 +570,36 @@ class CarrierEncoding:
         self._closed = True
 
 
+def _check_file_carrier_output_space(
+    source: CarrierSource,
+    output_path: str | bytes | PathLike[str],
+    additional_required_bytes: int = 0,
+) -> None:
+    """Check the output bound and reserve for a strict PNG or PCM WAV carrier."""
+    destination = Path(os.fsdecode(fspath(output_path)))
+    if isinstance(source, PngCarrier):
+        height, width, channels = source._shape
+        decoded_bytes = height * width * channels * (source._bit_depth // 8)
+        source_path = Path(os.fsdecode(fspath(source.path)))
+        bound = _png_output_size_bound(
+            decoded_bytes, height, source_path.stat().st_size
+        )
+        required_bytes = 2 * bound + additional_required_bytes
+        error_message = "insufficient free disk space for image output"
+    elif isinstance(source, WavCarrier):
+        source_path = Path(os.fsdecode(fspath(source.path)))
+        required_bytes = source_path.stat().st_size + additional_required_bytes
+        error_message = "insufficient free disk space for audio output"
+    else:
+        return
+    _check_free_space(
+        destination.parent,
+        required_bytes,
+        DISK_SPACE_RESERVE_BYTES,
+        error_message,
+    )
+
+
 def _rewrite_checked(
     source: CarrierSource,
     encoding: CarrierEncoding,
@@ -547,8 +607,12 @@ def _rewrite_checked(
 ) -> None:
     """Rewrite one carrier, optionally check its output, then finish encoding."""
     try:
+        _check_file_carrier_output_space(source, path)
         source.rewrite_to_path(
-            path, encoding.embed_chunk, encoding.update_fixed_bytes
+            path,
+            encoding.embed_chunk,
+            encoding.update_fixed_bytes,
+            preview_transform=encoding.preview_chunk,
         )
         if source.requires_output_check:
             output_source = source.open_rewritten_output(path)
@@ -929,6 +993,20 @@ def _decode_carrier_source(
     context.preserved_ratio = (
         context.preserved_bits / total_bits if total_bits else 0.0
     )
+    if session.file_backed:
+        try:
+            _check_free_space(
+                session.directory,
+                3 * layout.ciphertext_length,
+                DISK_SPACE_RESERVE_BYTES,
+                "insufficient free disk space to verify this carrier",
+            )
+        except ValueError:
+            return _failure_result(
+                "Cannot Verify",
+                "insufficient free disk space to verify this carrier",
+                context,
+            )
     ciphertext = session.new_store("ciphertext")
     signature_buffer = bytearray()
     signing_hasher = hashes.Hash(hashes.SHA256())
@@ -1190,6 +1268,7 @@ def _encode_file_from_payload_path(
     payload_file_path = Path(os.fsdecode(fspath(payload_path)))
     payload_size = payload_file_path.stat().st_size
     output_file_path = Path(os.fsdecode(fspath(output_path)))
+    _check_file_carrier_output_space(source, output_file_path, payload_size)
     with _StagingSession(True, output_file_path.parent) as session:
         encoding = _prepare_carrier_encoding(
             source,

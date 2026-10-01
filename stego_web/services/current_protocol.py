@@ -16,6 +16,7 @@ from stego import (
     PayloadFileRecord,
     PayloadRecord,
     VerificationResult,
+    VideoCarrier,
     encode_png_from_payload_path,
     encode_video_from_payload_path,
     encode_wav_from_payload_path,
@@ -26,14 +27,18 @@ from stego import (
     verify_video_to_payload_path,
     verify_wav_to_payload_path,
 )
+from stego.bootstrap import rsa_2048_bootstrap_span
+from stego.constants import MEDIA_ID_SIZE
+from stego.core import _plan_layout_with_span
 from stego.crypto import validate_rsa_private_key, validate_rsa_public_key
-from stego.sources import detect_source_family, open_audio_source, open_image_source
 from stego.packet import serialized_record_length
+from stego.sources import detect_source_family, open_audio_source, open_image_source
 
 
 _METADATA_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}\Z")
 _MIME_TYPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*/[A-Za-z0-9][A-Za-z0-9.+-]*\Z")
 _RESERVED_METADATA_KEYS = frozenset({"flow", "team", "sender", "mime", "name"})
+_MAX_TEXT_PREVIEW_BYTES = 1024 * 1024
 _PREVIEW_MIME_TYPES = frozenset(
     {
         "text/plain",
@@ -103,7 +108,7 @@ class WebEncodingResult:
 
 @dataclass(frozen=True)
 class GeneratedKeyPair:
-    """Hold an encrypted private PEM and its matching public PEM."""
+    """Hold a private PEM and its matching public PEM."""
 
     private_key_pem: bytes
     public_key_pem: bytes
@@ -113,14 +118,19 @@ class CurrentProtocolService:
     """Bridge uploaded files to the protocol version 3 file APIs."""
 
     def generate_key_pair(self, password: str) -> GeneratedKeyPair:
-        """Generate one RSA-2048 pair with a password-protected private key."""
+        """Generate an RSA-2048 pair with optional private-key encryption."""
         password_bytes = self._password_bytes(password)
+        encryption = (
+            serialization.NoEncryption()
+            if password_bytes is None
+            else serialization.BestAvailableEncryption(password_bytes)
+        )
         private_key, public_key = generate_rsa_keypair()
         return GeneratedKeyPair(
             private_key.private_bytes(
                 serialization.Encoding.PEM,
                 serialization.PrivateFormat.PKCS8,
-                serialization.BestAvailableEncryption(password_bytes),
+                encryption,
             ),
             self._public_key_pem(public_key),
         )
@@ -235,6 +245,112 @@ class CurrentProtocolService:
             output_path.unlink(missing_ok=True)
             raise
 
+    def capacity(
+        self,
+        carrier_path: Path,
+        payload_size: int,
+        payload_mime: str,
+        payload_name: str,
+        team_id: str,
+        sender: str,
+        extra_metadata: str,
+        detected_source: tuple[str, str, str] | None = None,
+    ) -> dict[str, object]:
+        """Report payload fit using the same layout checks as encode."""
+        media_type, _, source_format = detected_source or self.detect_carrier(
+            carrier_path
+        )
+        metadata = self._build_metadata(
+            team_id,
+            sender,
+            payload_mime,
+            payload_name,
+            extra_metadata,
+        )
+        span = rsa_2048_bootstrap_span()
+        if media_type == "image":
+            with open_image_source(carrier_path, carrier_path.parent) as source:
+                total_units = source.total_units
+        elif media_type == "audio":
+            with open_audio_source(carrier_path, carrier_path.parent) as source:
+                total_units = source.total_units
+        else:
+            source = VideoCarrier(carrier_path)
+            try:
+                total_units = source.total_units
+            finally:
+                source.close()
+
+        record_overhead = serialized_record_length(
+            MEDIA_ID_SIZE, 0, len(metadata)
+        )
+        lsb_results: list[dict[str, int | None]] = []
+        for lsb_count in range(1, 9):
+            def fits(start_unit: int) -> bool:
+                try:
+                    _plan_layout_with_span(
+                        total_units,
+                        span,
+                        start_unit,
+                        lsb_count,
+                        MEDIA_ID_SIZE,
+                        payload_size,
+                        metadata,
+                    )
+                except ValueError:
+                    return False
+                return True
+
+            try:
+                maximum_payload = max_user_payload_length(
+                    total_units,
+                    span,
+                    span,
+                    lsb_count,
+                    record_overhead,
+                )
+                _plan_layout_with_span(
+                    total_units,
+                    span,
+                    span,
+                    lsb_count,
+                    MEDIA_ID_SIZE,
+                    maximum_payload,
+                    metadata,
+                )
+            except ValueError:
+                maximum_payload = None
+
+            latest_start: int | None = None
+            if fits(span):
+                low = span
+                high = total_units
+                latest_start = span
+                while low <= high:
+                    candidate = (low + high) // 2
+                    if fits(candidate):
+                        latest_start = candidate
+                        low = candidate + 1
+                    else:
+                        high = candidate - 1
+            lsb_results.append(
+                {
+                    "lsb_bits": lsb_count,
+                    "max_start_unit": latest_start,
+                    "max_payload_bytes_at_min_start": maximum_payload,
+                }
+            )
+
+        return {
+            "media_type": media_type,
+            "source_format": source_format,
+            "total_units": total_units,
+            "bootstrap_span": span,
+            "record_overhead": record_overhead,
+            "payload_bytes": payload_size,
+            "lsb_results": lsb_results,
+        }
+
     def verify(
         self,
         carrier_path: Path,
@@ -345,6 +461,7 @@ class CurrentProtocolService:
         safe_name = self.safe_filename(claimed_name or "recovered-payload.bin")
         preview_allowed = bool(
             type_agrees and declared_mime in _PREVIEW_MIME_TYPES
+            and (declared_mime != "text/plain" or payload_path.stat().st_size <= _MAX_TEXT_PREVIEW_BYTES)
         )
         return {
             **self.payload_record(payload),
@@ -381,25 +498,67 @@ class CurrentProtocolService:
         }
 
     @staticmethod
-    def _password_bytes(password: str) -> bytes:
-        """Validate a web key password and encode it for cryptography."""
-        if not isinstance(password, str) or len(password) < 8:
+    def _password_bytes(password: str) -> bytes | None:
+        """Return None for an empty password; validate and encode any other value."""
+        if not isinstance(password, str):
+            raise ValueError("key password must be text")
+        if password == "":
+            return None
+        if len(password) < 8:
             raise ValueError("key password must contain at least 8 characters")
         return password.encode("utf-8")
 
     def _load_private_key(
         self, pem: bytes, password: str, label: str
     ) -> rsa.RSAPrivateKey:
-        """Load one encrypted RSA-2048 private key from uploaded PEM bytes."""
+        """Load an RSA-2048 PEM key and report password/encryption mismatches."""
         if not isinstance(pem, bytes):
             raise TypeError(f"{label} must be uploaded as bytes")
+        password_bytes = self._password_bytes(password)
         try:
             key = serialization.load_pem_private_key(
-                pem, password=self._password_bytes(password)
+                pem, password=password_bytes
             )
             return validate_rsa_private_key(key)
-        except (TypeError, ValueError, UnsupportedAlgorithm) as error:
+        except TypeError as error:
+            header, encrypted = self._private_key_pem_info(pem)
+            if password_bytes is None and encrypted:
+                raise ValueError(
+                    f"{label} is encrypted; enter its password"
+                ) from error
+            if password_bytes is not None and header in {
+                b"-----BEGIN PRIVATE KEY-----",
+                b"-----BEGIN RSA PRIVATE KEY-----",
+            } and not encrypted:
+                raise ValueError(
+                    f"{label} is not encrypted; leave the password empty"
+                ) from error
             raise ValueError(f"{label} could not be loaded with that password") from error
+        except (ValueError, UnsupportedAlgorithm) as error:
+            raise ValueError(f"{label} could not be loaded with that password") from error
+
+    @staticmethod
+    def _private_key_pem_info(pem: bytes) -> tuple[bytes, bool]:
+        """Return the PEM label and whether its headers mark it as encrypted."""
+        lines = pem.lstrip().splitlines()
+        if not lines:
+            return b"", False
+        header = lines[0].strip()
+        if header == b"-----BEGIN ENCRYPTED PRIVATE KEY-----":
+            return header, True
+        if header != b"-----BEGIN RSA PRIVATE KEY-----":
+            return header, False
+        for line in lines[1:4]:
+            if not line.strip():
+                break
+            name, separator, value = line.partition(b":")
+            if (
+                separator
+                and name.strip().lower() == b"proc-type"
+                and value.strip().lower() == b"4,encrypted"
+            ):
+                return header, True
+        return header, False
 
     @staticmethod
     def _load_public_key(pem: bytes, label: str) -> rsa.RSAPublicKey:
@@ -424,7 +583,7 @@ class CurrentProtocolService:
         carrier_path: Path, original_name: str | None = None
     ) -> tuple[str, str, str]:
         """Return carrier family, output extension, and uploaded source format."""
-        media_type, source_format = detect_source_family(carrier_path)
+        media_type, source_format = detect_source_family(carrier_path, original_name)
         suffix = Path(original_name or "").suffix.lower().lstrip(".")
         if source_format == "mov" and suffix in {
             "mp4", "mov", "m4a", "3gp", "3g2", "mj2"

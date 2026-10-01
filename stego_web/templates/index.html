@@ -3,110 +3,169 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>StegoVerify - Protected media</title>
+  <title>StegoVerify — Hidden by design. Verified by proof.</title>
+  <meta name="description" content="Encrypt, sign, and hide payloads in media. Verify and recover them locally with StegoVerify.">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <div class="ambient ambient-one" aria-hidden="true"></div>
-  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <a class="skip-link" href="#encode-title">Skip to encoding workspace</a>
+  <div class="page-shell">
   <header class="site-header">
     <div class="brand-row">
-      <a class="brand-mark" href="#encode-title" aria-label="StegoVerify home">SV</a>
+      <a class="brand-mark" href="#top" aria-label="StegoVerify home"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m16 2 12 7v14l-12 7L4 23V9Z M4 9l12 7 12-7 M16 16v14 M10 5v14l12 7 M22 5v14l-12 7"/></svg><span>StegoVerify</span></a>
       <nav class="workflow-nav" aria-label="Workflows">
-        <a class="is-current" href="#encode-title">Encode</a>
-        <a id="open-verify" href="#verify-panel">Verify / Decode</a>
+        <a href="#how-it-works">How it works</a>
+        <a class="is-current" href="#encode-title" aria-current="location">Encode</a>
+        <a id="open-verify" href="{{ url_for('web.verify_page') }}">Verify / Decode</a>
       </nav>
-    </div>
-    <div class="hero-copy">
-      <p class="eyebrow">INF2005 / LOCAL SECURITY TOOL</p>
-      <h1>Hide the proof.<br><span>Keep the trust.</span></h1>
-      <p class="lede">Encrypt, sign, embed, and verify payloads in lossless PNG, WAV, or MKV outputs with the current receiver-gated protocol.</p>
-      <div class="trust-strip" aria-label="Supported capabilities">
-        <span>PNG output</span><span>WAV output</span><span>MKV output</span><span>AES-256-GCM</span><span>RSA-OAEP + RSA-PSS</span><span>1-8 LSB</span>
-      </div>
+      <a class="header-cta" href="#encode-title">Open workspace <span aria-hidden="true">↗</span></a>
     </div>
   </header>
-  <main>
+  <main id="top">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <div class="hero-badges"><span>MASKED-MEDIA / V3</span><span><i aria-hidden="true"></i> LOCAL PROCESSING</span></div>
+          <h1 id="hero-title">Hidden by design.<br><span>Verified by proof.</span></h1>
+          <p class="lede">A message beneath the surface.<br>Encrypt, sign, and embed your payload. Give the right receiver the power to verify it.</p>
+          <div class="hero-actions"><a class="button-link" href="#encode-title">Protect your media <span aria-hidden="true">↗</span></a><a class="text-link" href="{{ url_for('web.verify_page') }}">Verify a file <span aria-hidden="true">→</span></a></div>
+          <p class="hero-note">YOUR MEDIA. YOUR KEYS. YOUR LOCAL WORKSPACE.</p>
+        </div>
+        <div class="hero-visual" aria-hidden="true">
+          <svg class="protocol-art" viewBox="0 0 640 520" fill="none">
+            <defs>
+              <linearGradient id="slab-top" x1="170" y1="210" x2="460" y2="440" gradientUnits="userSpaceOnUse"><stop stop-color="#2e48ff"/><stop offset="1" stop-color="#8cbfff"/></linearGradient>
+              <linearGradient id="slab-side" x1="200" y1="335" x2="200" y2="405" gradientUnits="userSpaceOnUse"><stop stop-color="#80c2ff"/><stop offset="1" stop-color="#2747eb"/></linearGradient>
+              <radialGradient id="art-glow"><stop stop-color="#94c7ff" stop-opacity=".65"/><stop offset="1" stop-color="#315dff" stop-opacity="0"/></radialGradient>
+              <pattern id="dot-matrix" width="14" height="14" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1" fill="#d3e6ff" fill-opacity=".55"/></pattern>
+            </defs>
+            <ellipse cx="335" cy="345" rx="300" ry="175" fill="url(#art-glow)"/>
+            <g stroke="#9fc4ff" stroke-opacity=".2" stroke-width=".7"><path d="m20 325 335-195 280 162M35 405l300-175 300 174M85 470l300-174 240 140M50 245l420 244M155 180l420 244M260 120l370 215"/><path d="m63 372 269-155 269 155-269 155Z"/></g>
+            <path d="m127 342 205-119 205 119-205 119Z" fill="#172ed7" fill-opacity=".35" stroke="#93bbff" stroke-opacity=".3"/>
+            <path d="m127 307 205 118v35L127 342Z" fill="url(#slab-side)"/>
+            <path d="m332 425 205-118v35L332 460Z" fill="#305be9" fill-opacity=".85"/>
+            <path d="m127 307 205-119 205 119-205 118Z" fill="url(#slab-top)" stroke="#a6ceff" stroke-opacity=".65"/>
+            <path d="m171 306 161-93 161 93-161 93Z" stroke="#d3e8ff" stroke-opacity=".35"/>
+            <path d="m230 304 102-59 102 59-102 59Z" fill="url(#dot-matrix)"/>
+            <g class="floating-layer"><path d="m171 202 161-93 161 93-161 93Z" fill="#315dff" fill-opacity=".08" stroke="#cbdfff" stroke-opacity=".85"/><path d="M171 202v104m161-197v104m161-11v104M332 295v104" stroke="#d4e6ff" stroke-opacity=".5" stroke-dasharray="3 6"/><path d="m300 208 32-19 32 19-32 19Z" stroke="#d0e3ff"/><path d="m308 203 24-14v-11c0-19 31-19 31 0v13" stroke="#d0e3ff"/><text x="325" y="139" transform="rotate(30 325 139)">ENCRYPTED PAYLOAD</text></g>
+            <g fill="#ecf5ff"><circle cx="127" cy="307" r="2.4"/><circle cx="537" cy="307" r="2.4"/><circle cx="332" cy="425" r="2.4"/><circle cx="332" cy="188" r="2.4"/><circle cx="93" cy="399" r="3"/></g>
+            <g stroke="#b4d2ff" stroke-opacity=".65"><path d="m93 399 75-44M493 202l55-31 48 28"/><path d="m47 419 44-25 50 29-44 25Z"/><path d="m516 159 39-23 66 38-39 23Z"/></g>
+            <text x="67" y="422" transform="rotate(30 67 422)">SHA-256</text><text x="533" y="157" transform="rotate(30 533 157)">RSA-PSS</text><text x="203" y="319" transform="rotate(30 203 319)">PROTECTED MEDIA</text>
+            <text x="260" y="490" class="art-caption">01 / ENCRYPT · 02 / SIGN · 03 / EMBED</text>
+          </svg>
+        </div>
+      </div>
+      <div class="trust-strip" aria-label="Supported capabilities"><p>ONE WORKFLOW. THREE CARRIERS.</p><div><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h18v18H3Z M3 17l6-7 5 5 3-3 4 5"/><circle cx="16" cy="8" r="2"/></svg>PNG output</span><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4m4-8v12m5-16v20m5-16v12m4-8v4"/></svg>WAV output</span><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v16H3Z M7 4v16m10-16v16M3 9h4m-4 6h4m10-6h4m-4 6h4"/></svg>MKV output</span><span class="trust-detail">AES-256-GCM <b>+</b> RSA-2048</span></div></div>
+    </section>
+    <section id="how-it-works" class="features content-width" aria-labelledby="features-title">
+      <p class="eyebrow">THE PROTECTION STACK</p>
+      <h2 class="section-title" id="features-title">Every layer has a purpose.<br><span>Every check tells a story.</span></h2>
+      <p class="section-description">From a private message to verifiable media, with protection at every step.</p>
+      <div class="feature-grid">
+        <article class="feature"><p class="feature-index">LAYER / 01 — CARRIER</p>
+          <svg viewBox="0 0 220 155" aria-hidden="true" focusable="false">
+            <rect class="diagram-panel" x="16" y="21" width="188" height="113" rx="7"/>
+            <text class="diagram-label" x="28" y="39">LOSSLESS CARRIER</text>
+            <g class="diagram-rail"><path d="M30 53h160M30 75h160M30 97h160M30 119h160"/></g>
+            <text class="diagram-label" x="31" y="67">PNG</text><text class="diagram-label" x="31" y="89">WAV</text><text class="diagram-label" x="31" y="111">MKV</text>
+            <g class="diagram-bits"><rect x="93" y="55" width="13" height="12" rx="2"/><rect x="110" y="55" width="13" height="12" rx="2"/><rect x="127" y="55" width="13" height="12" rx="2"/><rect x="93" y="77" width="13" height="12" rx="2"/><rect x="110" y="77" width="13" height="12" rx="2"/><rect x="127" y="77" width="13" height="12" rx="2"/><rect x="93" y="99" width="13" height="12" rx="2"/><rect x="110" y="99" width="13" height="12" rx="2"/><rect x="127" y="99" width="13" height="12" rx="2"/></g>
+            <path class="diagram-circuit" d="M162 61h25M162 83h25M162 105h25"/><g class="diagram-signal"><circle cx="161" cy="61" r="4"/><circle cx="161" cy="83" r="4"/><circle cx="161" cy="105" r="4"/></g>
+          </svg><h3>Hidden in plain sight.</h3><p>Embed a message or file in image, audio, or video using a chosen start unit and bit depth.</p></article>
+        <article class="feature"><p class="feature-index">LAYER / 02 — ACCESS</p>
+          <svg viewBox="0 0 220 155" aria-hidden="true" focusable="false">
+            <rect class="diagram-panel" x="16" y="21" width="188" height="113" rx="7"/>
+            <rect class="diagram-module" x="29" y="48" width="65" height="51" rx="4"/><text class="diagram-label" x="39" y="66">PAYLOAD</text><text class="diagram-value" x="39" y="83">AES-GCM</text>
+            <path class="diagram-circuit" d="M94 74h30m-7-5 7 5-7 5"/><rect class="diagram-module" x="124" y="48" width="65" height="51" rx="4"/><text class="diagram-label" x="133" y="66">BOOTSTRAP</text><text class="diagram-value" x="133" y="83">RSA-OAEP</text>
+            <path class="diagram-rail" d="M53 100v21h112v-21"/><circle class="diagram-signal" cx="165" cy="120" r="4"/><text class="diagram-label" x="29" y="39">RECEIVER-GATED LOCATION</text>
+          </svg><h3>Only the right receiver.</h3><p>AES encrypts the payload. The receiver’s private key opens the bootstrap holding its location and session key.</p></article>
+        <article class="feature"><p class="feature-index">LAYER / 03 — PROOF</p>
+          <svg viewBox="0 0 220 155" aria-hidden="true" focusable="false">
+            <rect class="diagram-panel" x="16" y="21" width="188" height="113" rx="7"/><text class="diagram-label" x="28" y="39">TWO INDEPENDENT CHECKS</text>
+            <rect class="diagram-module" x="29" y="53" width="71" height="28" rx="4"/><text class="diagram-value" x="38" y="71">RSA-PSS</text><rect class="diagram-module" x="29" y="94" width="71" height="28" rx="4"/><text class="diagram-value" x="38" y="112">SHA-256</text>
+            <path class="diagram-circuit" d="M100 67h51m-7-5 7 5-7 5M100 108h51m-7-5 7 5-7 5"/><circle class="diagram-signal" cx="160" cy="67" r="9"/><path class="diagram-tick" d="m156 67 3 3 5-6"/><circle class="diagram-signal" cx="160" cy="108" r="9"/><path class="diagram-tick" d="m156 108 3 3 5-6"/>
+          </svg><h3>Signed. Then checked.</h3><p>RSA-PSS authenticates the encrypted record and layout; SHA-256 checks the preserved media bytes.</p></article>
+        <article class="feature"><p class="feature-index">LAYER / 04 — VERDICT</p>
+          <svg viewBox="0 0 220 155" aria-hidden="true" focusable="false">
+            <rect class="diagram-panel" x="16" y="21" width="188" height="113" rx="7"/><text class="diagram-label" x="28" y="39">RECEIVED MEDIA</text>
+            <path class="diagram-rail" d="M52 58h50v47h37"/><circle class="diagram-signal" cx="52" cy="58" r="8"/><text class="diagram-label" x="44" y="61">IN</text>
+            <rect class="diagram-module" x="102" y="48" width="88" height="26" rx="4"/><text class="diagram-value" x="113" y="65">VERIFY KEYS</text><rect class="diagram-module" x="102" y="88" width="88" height="34" rx="4"/><text class="diagram-verdict" x="112" y="103">AUTHENTIC</text><text class="diagram-label" x="112" y="115">RELEASE PAYLOAD</text><path class="diagram-circuit" d="M146 74v14"/>
+          </svg><h3>A result you can inspect.</h3><p>Review the verdict and checks. The payload is released only when verification is Authentic.</p></article>
+      </div>
+      <a class="text-link feature-link" href="#workspace">Explore the workspace <span aria-hidden="true">→</span></a>
+    </section>
+    <section id="workspace" class="workspace content-width" aria-labelledby="workspace-title">
+      <div class="workspace-heading"><div><p class="eyebrow">YOUR LOCAL WORKSPACE</p><h2 class="section-title" id="workspace-title">Keep the message private.<br><span>Make its integrity clear.</span></h2><p class="section-description">Create protected media with your own keys and a lossless carrier.</p></div><span class="workspace-tag"><i aria-hidden="true"></i> PROTOCOL V3</span></div>
+      <noscript><p class="noscript-notice">Enable JavaScript to use the encoding wizard and verification tools.</p></noscript>
+      <div class="workspace-grid">
     <section class="wizard-shell" aria-labelledby="encode-title">
-      <div class="wizard-heading"><div><p class="eyebrow">ENCODING PHASE</p><h2 id="encode-title">Create protected media</h2></div><span id="step-count" class="step-count" aria-live="polite">Step 1 of 7</span></div>
-      <div class="progress" role="progressbar" aria-label="Encoding progress" aria-valuemin="1" aria-valuemax="7" aria-valuenow="1"><span id="progress-bar"></span></div>
+      <div class="wizard-heading"><div><p class="eyebrow">01 / ENCODE</p><h2 id="encode-title" tabindex="-1">Create protected media</h2></div><span id="step-count" class="step-count" aria-live="polite">Step 1 of 6</span></div>
+      <div class="progress" role="progressbar" aria-label="Encoding progress" aria-valuemin="1" aria-valuemax="6" aria-valuenow="1"><span id="progress-bar"></span></div>
       <ol class="step-track" aria-label="Encoding steps">
         <li class="is-active" data-step-marker="0"><span>1</span><small>Input</small></li>
         <li data-step-marker="1"><span>2</span><small>Sender</small></li>
         <li data-step-marker="2"><span>3</span><small>Receiver</small></li>
         <li data-step-marker="3"><span>4</span><small>Layout</small></li>
-        <li data-step-marker="4"><span>5</span><small>Integrity</small></li>
-        <li data-step-marker="5"><span>6</span><small>Protect</small></li>
-        <li data-step-marker="6"><span>7</span><small>Export</small></li>
+        <li data-step-marker="4"><span>5</span><small>Protect</small></li>
+        <li data-step-marker="5"><span>6</span><small>Export</small></li>
       </ol>
       <form id="encode-form" enctype="multipart/form-data" novalidate>
         <section class="wizard-card is-active" data-step="0" aria-labelledby="step-1-title">
           <span class="step-kicker">01 / INPUT VALIDATION</span><h3 id="step-1-title">Choose the cover and hidden payload</h3><p class="hint">Use a supported image, audio, or video file. The output is a lossless PNG, WAV, or MKV. Add either a UTF-8 message or one payload file.</p>
-          <label id="cover-drop" class="drop-zone" for="cover-input" tabindex="0"><span class="drop-icon" aria-hidden="true">+</span><strong id="cover-name">Drop an image, audio, or video file here</strong><small>or click to browse; the server validates the source and writes a lossless PNG, WAV, or MKV</small><span id="cover-meta" class="file-meta">Maximum upload size is limited by free disk space and the carrier backend.</span><input id="cover-input" name="cover" type="file" accept="image/*,audio/*,video/*,.png,.jpg,.jpeg,.webp,.avif,.bmp,.tif,.tiff,.gif,.wav,.mp3,.aac,.m4a,.flac,.ogg,.oga,.opus,.mp4,.mov,.mkv,.webm,.avi" required></label>
+          <label id="cover-drop" class="drop-zone" for="cover-input"><span class="drop-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 16V4m-5 5 5-5 5 5M5 20h14" /></svg></span><strong id="cover-name">Drop an image, audio, or video file here</strong><small>or click to browse; the server validates the source and writes a lossless PNG, WAV, or MKV</small><span id="cover-meta" class="file-meta">Maximum upload size is limited by free disk space and the carrier backend.</span><input id="cover-input" name="cover" type="file" aria-label="Cover image, audio, or video file" aria-describedby="cover-meta" accept="{{ source_accept }}" required></label>
           <div class="field-grid"><label>Team ID<input name="team_id" value="P1-4" required></label><label>Sender<input name="sender" placeholder="Your name" required></label></div>
           <label>Secret message<textarea id="secret-message" name="secret_message" rows="3" placeholder="Enter a message, or leave blank and upload a payload file below"></textarea></label>
           <label>Payload file<input id="payload-file" name="payload_file" type="file"></label>
           <div class="field-grid"><label class="generated-claim">Payload MIME claim<input id="payload-mime" name="payload_mime" readonly aria-readonly="true" placeholder="Generated automatically"></label><label class="generated-claim">Payload filename claim<input id="payload-name" name="payload_name" readonly aria-readonly="true" placeholder="Generated automatically"></label></div><p class="hint claim-hint">Generated automatically from the payload.</p>
           <label>Additional authenticated metadata<textarea name="metadata" rows="2" placeholder="Optional key=value entries, e.g. project=INF2005;case=demo"></textarea></label>
-          <div class="wizard-actions"><span></span><button type="button" class="next">Validate input <span>-&gt;</span></button></div>
+          <div id="capacity-status" class="result operation-status" role="status" aria-live="polite" aria-atomic="true"></div>
+          <div class="wizard-actions"><span></span><button type="button" class="next">Validate input</button></div>
         </section>
         <section class="wizard-card" data-step="1" aria-labelledby="step-2-title" hidden>
           <span class="step-kicker">02 / SENDER AUTHENTICATION</span><h3 id="step-2-title">Load the sender signing key</h3><p class="hint">The sender private key creates the RSA-PSS signature. Its public half is exported with the stego file.</p>
-          <label>Sender encrypted private key (.pem)<input name="sender_private_key" type="file" accept=".pem,application/x-pem-file,text/plain" required></label>
-          <label>Sender private-key password<input id="sender-key-password" name="sender_key_password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label>
+          <label>Sender private key (.pem)<input name="sender_private_key" type="file" accept=".pem,application/x-pem-file,text/plain" required></label>
+          <label>Sender private-key password (optional)<input id="sender-key-password" name="sender_key_password" type="password" minlength="8" autocomplete="new-password" placeholder="Optional; leave empty for an unencrypted key"></label>
           <button type="button" class="secondary generate-keys" data-role="sender" data-password="sender-key-password" data-result="sender-key-result">Generate sender key pair</button><div id="sender-key-result" class="result" aria-live="polite"></div>
-          <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Sender key ready <span>-&gt;</span></button></div>
+          <div class="wizard-actions"><button type="button" class="back">Back</button><button type="button" class="next">Sender key ready</button></div>
         </section>
         <section class="wizard-card" data-step="2" aria-labelledby="step-3-title" hidden>
           <span class="step-kicker">03 / RECEIVER GATE</span><h3 id="step-3-title">Select the intended receiver</h3><p class="hint">The receiver public key encrypts the bootstrap. Only its matching private key can recover the packet location and AES session material.</p>
           <label>Receiver public key (.pem)<input name="receiver_public_key" type="file" accept=".pem,application/x-pem-file,text/plain" required></label>
-          <label>New receiver-key password (generation only)<input id="receiver-setup-password" type="password" minlength="8" autocomplete="new-password" placeholder="Needed only when generating a pair"></label>
+          <label>New receiver-key password (optional)<input id="receiver-setup-password" type="password" minlength="8" autocomplete="new-password" placeholder="Optional; leave empty for an unencrypted key"></label>
           <button type="button" class="secondary generate-keys" data-role="receiver" data-password="receiver-setup-password" data-result="receiver-key-result">Generate receiver key pair</button><div id="receiver-key-result" class="result" aria-live="polite"></div>
-          <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Receiver key ready <span>-&gt;</span></button></div>
+          <div class="wizard-actions"><button type="button" class="back">Back</button><button type="button" class="next">Receiver key ready</button></div>
         </section>
         <section class="wizard-card" data-step="3" aria-labelledby="step-4-title" hidden>
           <span class="step-kicker">04 / EMBEDDING GEOMETRY</span><h3 id="step-4-title">Choose the protected layout</h3><p class="hint">Units 0-2047 hold the RSA-2048 bootstrap. Choose a packet start at or after unit 2048; the receiver recovers both values automatically.</p>
-          <label>Packet start unit<input id="start-unit" name="start_unit" type="number" min="2048" step="1" value="2048" required></label>
           <label class="range-label"><span class="range-heading">Least Significant Bits <output id="encode-lsb-output">1</output></span><input id="encode-lsb" type="range" name="lsb_bits" min="1" max="8" value="1"><span class="range-scale"><span>Subtle</span><span>Maximum capacity</span></span></label>
           <div class="lsb-insight"><span class="insight-dot" aria-hidden="true"></span><div><strong id="lsb-impact">Lowest visual impact</strong><small id="lsb-guidance">Best first choice when the cover has enough capacity.</small></div></div>
-          <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Validate layout <span>-&gt;</span></button></div>
+          <label class="range-label" id="start-unit-range-label" hidden>Packet start unit slider<input id="start-unit-range" type="range" min="2048" max="2048" value="2048" step="1" aria-describedby="start-unit-range-limits" disabled><span id="start-unit-range-limits" class="range-scale"><span id="start-unit-range-min">2,048</span><span id="start-unit-range-max">2,048</span></span></label>
+          <label>Packet start unit<input id="start-unit" name="start_unit" type="number" min="2048" step="1" value="2048" required></label>
+          <div id="layout-capacity-status" class="result key-warning" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+          <div class="wizard-actions"><button type="button" class="back">Back</button><button type="button" class="next">Validate layout</button></div>
         </section>
         <section class="wizard-card" data-step="4" aria-labelledby="step-5-title" hidden>
-          <span class="step-kicker">05 / FULL-MEDIA INTEGRITY</span><h3 id="step-5-title">Hash all preserved media bytes</h3><p class="hint">The protocol masks the bits it writes, then hashes RGB units, RGBA alpha, and every declared PCM sample byte with the chosen geometry.</p>
-          <div class="process-box"><span class="spinner" aria-hidden="true"></span><div><strong id="hash-status">Ready to calculate</strong><small id="hash-detail">The authoritative SHA-256 value is created during encoding.</small></div></div>
-          <div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="button" class="next">Initialize integrity <span>-&gt;</span></button></div>
+          <span class="step-kicker">05 / ENCRYPT, SIGN AND EMBED</span><h3 id="step-5-title">Protect the complete record</h3><p class="hint">AES-256-GCM encrypts the payload and metadata, RSA-PSS authenticates the encrypted record and layout, and RSA-OAEP protects the receiver bootstrap. Before encryption and signing, the server hashes preserved media bytes (RGB units, RGBA alpha, and declared PCM sample bytes) with the chosen geometry.</p>
+          <div class="process-box" role="status" aria-live="polite"><span id="encode-process-indicator" class="insight-dot" aria-hidden="true"></span><div><strong id="encode-process-title">Ready for local processing</strong><small id="encode-process-detail">No original cover or location secret will be required by the receiver.</small></div></div>
+          <div id="encode-result" class="result" aria-live="polite"></div><div class="wizard-actions"><button type="button" class="back">Back</button><button type="submit" class="primary">Encrypt, sign and export</button></div>
         </section>
-        <section class="wizard-card" data-step="5" aria-labelledby="step-6-title" hidden>
-          <span class="step-kicker">06 / ENCRYPT, SIGN AND EMBED</span><h3 id="step-6-title">Protect the complete record</h3><p class="hint">AES-256-GCM encrypts the payload and metadata, RSA-PSS authenticates the encrypted record and layout, and RSA-OAEP protects the receiver bootstrap.</p>
-          <div class="process-box"><span class="spinner" aria-hidden="true"></span><div><strong>Ready for local processing</strong><small>No original cover or location secret will be required by the receiver.</small></div></div>
-          <div id="encode-result" class="result" aria-live="polite"></div><div class="wizard-actions"><button type="button" class="back">&lt;- Back</button><button type="submit" class="primary">Encrypt, sign and export <span>-&gt;</span></button></div>
-        </section>
-        <section class="wizard-card success-card" data-step="6" aria-labelledby="success-title" hidden>
-          <div class="success-mark">OK</div><span class="step-kicker">07 / OUTPUT</span><h3 id="success-title">Your stego object is ready</h3><p class="hint" id="success-summary">The encrypted signed payload was embedded successfully.</p>
+        <section class="wizard-card success-card" data-step="5" aria-labelledby="step-6-title" hidden>
+          <div class="success-mark">OK</div><span class="step-kicker">06 / OUTPUT</span><h3 id="step-6-title">Your stego object is ready</h3><p class="hint" id="success-summary">The encrypted signed payload was embedded successfully.</p>
           <div class="comparison"><figure><figcaption>Original cover</figcaption><div id="cover-preview" class="preview">Awaiting file</div></figure><figure><figcaption>Stego output</figcaption><div id="stego-preview" class="preview">Awaiting encode</div></figure></div>
           <div id="download-links" class="download-links"></div><button id="start-over" type="button" class="secondary">Encode another file</button>
         </section>
       </form>
     </section>
-    <details id="verify-panel" class="decode-panel"><summary><span class="summary-icon" aria-hidden="true">V</span><span><small>RECEIVED A STEGO FILE?</small>Decode and verify media</span><span class="summary-arrow" aria-hidden="true">+</span></summary>
-      <div class="decode-intro"><p class="hint">Use the trusted sender public key and intended receiver private key. The encrypted bootstrap recovers the start unit, LSB count, record length, and AES session material.</p><div class="mini-flow" aria-label="Verification sequence"><span>Open bootstrap</span><i></i><span>Verify signature</span><i></i><span>Decrypt and check integrity</span></div></div>
-      <form id="decode-form" enctype="multipart/form-data">
-        <label>Received stego file<input id="decode-file" name="stego" type="file" accept=".png,.wav,.mkv,image/png,audio/wav,video/x-matroska" required></label>
-        <div class="field-grid">
-          <label>Sender public key (.pem)<input name="sender_public_key" type="file" accept=".pem,text/plain" required></label>
-          <label>Receiver encrypted private key (.pem)<input name="receiver_private_key" type="file" accept=".pem,text/plain" required></label>
-        </div>
-        <label>Receiver private-key password<input name="receiver_key_password" type="password" minlength="8" required autocomplete="off"></label>
-        <p class="hint">Version 3 does not request the original cover, start secret, start unit, or LSB count. It checks the full media hash after the bootstrap is opened.</p>
-        <button type="submit" class="primary">Verify and decrypt payload</button>
-      </form>
-      <div id="decode-progress" class="result" role="status" aria-live="polite"></div>
-      <section id="decode-result" class="result" aria-label="Verification result" tabindex="-1" hidden></section>
-    </details>
+    <aside class="workspace-aside" aria-labelledby="checklist-title"><div class="aside-header"><span class="eyebrow">BEFORE YOU BEGIN</span><span aria-hidden="true">↗</span></div><h3 id="checklist-title">A little preparation.<br>A protected payload.</h3><ol class="prep-list"><li><span>01</span><div><strong>Choose your carrier</strong><p>An image, audio, or video file with enough room for your payload.</p></div></li><li><span>02</span><div><strong>Bring your message</strong><p>Enter text or upload a file. Your payload is encrypted before embedding.</p></div></li><li><span>03</span><div><strong>Have your keys ready</strong><p>Your encrypted private key and the receiver’s public key. You can generate pairs in the wizard.</p></div></li></ol><p class="storage-note">Processing runs on your local Flask server. Exported media and recovered payloads stay on disk until you delete them.</p></aside>
+      </div>
+    </section>
   </main>
-  <footer><span>StegoVerify / protocol v3</span><span>Runs on localhost / Temporary request files are deleted after processing.</span></footer>
+  <footer class="content-width"><a href="#top">StegoVerify <span>/ protocol v3</span></a><span>Built for the proof beneath the surface.</span><a href="#encode-title">Back to workspace ↑</a></footer>
+  </div>
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.15/dist/gsap.min.js" defer></script>
   <script src="{{ url_for('static', filename='motion.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='api.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='capacity.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='feature-motion.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
-  <script src="{{ url_for('static', filename='verify.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='navigation.js') }}" defer></script>
 </body></html>

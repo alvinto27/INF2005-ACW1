@@ -1,30 +1,40 @@
 /* Verify/decode UI for the receiver-gated protocol. */
 (() => {
   const form = document.querySelector('#decode-form');
-  const panel = document.querySelector('#verify-panel');
   const progress = document.querySelector('#decode-progress');
   const result = document.querySelector('#decode-result');
   const submit = form.querySelector('button[type="submit"]');
   const motion = window.StegoMotion;
+  const api = window.StegoApi;
+  const verdicts = new Set(['Authentic', 'Tampered', 'Signature Invalid', 'Payload Missing',
+    'Wrong Start Location', 'Cannot Decrypt', 'Cannot Verify']);
+  const previewMimes = new Set(['text/plain', 'image/png', 'image/jpeg', 'image/gif',
+    'image/webp', 'image/avif', 'image/bmp', 'audio/wav', 'audio/mpeg', 'audio/ogg',
+    'audio/flac', 'audio/mp4', 'audio/webm', 'video/mp4', 'video/webm', 'video/ogg']);
 
-  function openPanel() {
-    panel.open = true;
-    document.querySelectorAll('.workflow-nav a').forEach(link => link.classList.toggle('is-current', link.id === 'open-verify'));
-    window.requestAnimationFrame(() => motion.reveal([panel.querySelector('.decode-intro'), form], {y: 14, stagger: .08}));
+  function validReport(data) {
+    if (!api.record(data) || typeof data.ok !== 'boolean'
+        || typeof data.verdict !== 'string' || !verdicts.has(data.verdict)
+        || (data.payload != null && !api.record(data.payload))
+        || (data.preserved_ratio != null && (!Number.isFinite(data.preserved_ratio)
+          || data.preserved_ratio < 0 || data.preserved_ratio > 1))) throw api.malformed();
+    if (data.verdict === 'Authentic') {
+      if (data.ok !== true || !api.record(data.payload)
+          || typeof data.payload.download_name !== 'string'
+          || typeof data.payload.declared_mime !== 'string') throw api.malformed();
+      api.localUrl(data.payload.payload_url, '/payload/');
+    } else if (data.ok === true || data.payload != null) throw api.malformed();
+    return data;
   }
-  document.querySelector('#open-verify').addEventListener('click', openPanel);
-  document.querySelector('.brand-mark').addEventListener('click', () => {
-    document.querySelectorAll('.workflow-nav a').forEach(link => link.classList.toggle('is-current', link.id !== 'open-verify'));
-  });
-  document.querySelector('.workflow-nav a[href="#encode-title"]').addEventListener('click', () => {
-    document.querySelectorAll('.workflow-nav a').forEach(link => link.classList.toggle('is-current', link.id !== 'open-verify'));
-  });
-  if (location.hash === '#verify-panel') openPanel();
+
+  const receiverKeyPassword = form.elements.receiver_key_password;
+  receiverKeyPassword.addEventListener('input', () => receiverKeyPassword.setCustomValidity(''));
   form.addEventListener('input', () => { result.hidden = true; progress.textContent = ''; });
 
   function element(tag, text) {
     const node = document.createElement(tag);
     node.textContent = text;
+    if (tag === 'pre') node.tabIndex = 0;
     return node;
   }
 
@@ -41,12 +51,25 @@
     return value === true ? yes : value === false ? no : 'Not checked';
   }
 
+  function noPreviewMessage(fileName, mime) {
+    const basename = typeof fileName === 'string'
+      ? fileName.replace(/\\/g, '/').split('/').pop() : '';
+    const dot = basename.lastIndexOf('.');
+    const extension = dot > 0 ? basename.slice(dot + 1).trim() : '';
+    const mediaType = typeof mime === 'string' ? mime.split(';', 1)[0].trim() : '';
+    const subtype = mediaType.includes('/') ? mediaType.slice(mediaType.indexOf('/') + 1) : '';
+    const type = (extension || subtype).trim().toUpperCase();
+    return type
+      ? `No preview available for ${type} files.`
+      : 'No preview available for this file type.';
+  }
+
   function payloadSection(payload) {
     const section = document.createElement('section');
     section.className = 'decoded-payload';
     section.append(element('h4', 'Authenticated decrypted payload'));
     const mime = payload.declared_mime || 'application/octet-stream';
-    const url = payload.payload_url;
+    const url = api.localUrl(payload.payload_url, '/payload/');
     const download = document.createElement('a');
     download.href = url;
     download.download = payload.download_name || 'recovered-payload.bin';
@@ -56,32 +79,43 @@
       section.append(element('p', 'The authenticated MIME claim does not match the recovered bytes. The payload is available for download but will not be rendered.'));
       return section;
     }
-    if (!payload.preview_allowed) {
+    if (payload.preview_allowed !== true) {
       section.append(element('p', `Preview is disabled for ${mime}; download the authenticated bytes to inspect them safely.`));
+      return section;
+    }
+    if (!previewMimes.has(mime)) {
+      section.append(element('p', `${noPreviewMessage(payload.download_name, mime)} Download the authenticated bytes to inspect them safely.`));
       return section;
     }
     if (mime === 'text/plain') {
       const pre = element('pre', 'Loading authenticated text...');
-      section.append(pre);
-      fetch(url).then(response => {
-        if (!response.ok) throw new Error('Payload download failed.');
-        return response.text();
-      }).then(text => {
-        pre.textContent = text;
-      }).catch(() => {
-        pre.textContent = 'The authenticated text could not be loaded.';
-      });
+      const retry = element('button', 'Retry preview');
+      retry.type = 'button';
+      retry.className = 'secondary';
+      retry.hidden = true;
+      async function loadPreview() {
+        retry.hidden = true;
+        pre.textContent = 'Loading authenticated text...';
+        try { pre.textContent = await api.getText(url); }
+        catch (error) { pre.textContent = error.message; retry.hidden = false; }
+      }
+      retry.addEventListener('click', loadPreview);
+      section.append(pre, retry);
+      loadPreview();
     } else if (mime.startsWith('image/')) {
       const image = document.createElement('img');
       image.src = url; image.alt = 'Recovered authenticated payload';
+      image.addEventListener('error', () => { image.replaceWith(element('p', 'Preview could not load. Use the download link instead.')); }, {once: true});
       section.append(image);
     } else if (mime.startsWith('audio/')) {
       const audio = document.createElement('audio');
       audio.src = url; audio.controls = true;
+      audio.addEventListener('error', () => { audio.replaceWith(element('p', 'Preview could not load. Use the download link instead.')); }, {once: true});
       section.append(audio);
     } else if (mime.startsWith('video/')) {
       const video = document.createElement('video');
       video.src = url; video.controls = true;
+      video.addEventListener('error', () => { video.replaceWith(element('p', 'Preview could not load. Use the download link instead.')); }, {once: true});
       section.append(video);
     }
     return section;
@@ -137,6 +171,15 @@
 
   form.addEventListener('submit', async event => {
     event.preventDefault();
+    if (receiverKeyPassword.value
+        && receiverKeyPassword.value.length < receiverKeyPassword.minLength) {
+      receiverKeyPassword.setCustomValidity(
+        'Use at least 8 characters, or leave empty for an unencrypted key.',
+      );
+      receiverKeyPassword.reportValidity();
+      return;
+    }
+    receiverKeyPassword.setCustomValidity('');
     if (!form.reportValidity() || submit.disabled) return;
     const body = new FormData(form);
     const filename = form.elements.stego.files[0]?.name;
@@ -150,24 +193,14 @@
     submit.classList.add('is-loading');
     form.setAttribute('aria-busy', 'true');
     for (const control of form.elements) control.disabled = true;
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      isVideo ? 30 * 60 * 1000 : 120000,
-    );
     try {
-      const response = await fetch('/decode', {method: 'POST', body, signal: controller.signal});
-      if (!response.headers.get('content-type')?.includes('application/json')) {
-        throw new Error(`Verification failed (HTTP ${response.status}).`);
-      }
-      const data = await response.json();
-      render({...data, filename: data.filename || filename});
+      const data = validReport(await api.post('/decode', body,
+        isVideo ? 30 * 60 * 1000 : 120000, {allowStatuses: [422]}));
+      render({...data, filename: typeof data.filename === 'string' ? data.filename : filename});
     } catch (error) {
-      render({verdict: 'Cannot Verify', filename, message: error.name === 'AbortError'
-        ? 'Verification timed out. Try again with a smaller file.'
-        : `Unable to complete verification: ${error.message}`});
+      render({ok: false, verdict: 'Cannot Verify', filename,
+        message: `Unable to complete verification: ${error.message}`});
     } finally {
-      clearTimeout(timeout);
       progress.textContent = '';
       progress.className = 'result';
       submit.classList.remove('is-loading');

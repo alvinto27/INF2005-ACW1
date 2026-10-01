@@ -21,17 +21,13 @@ For repository structure and implementation entry points, see the [Agent Navigat
 - [Current Protocol](CURRENT-PROTOCOL.md) — active version 3 hash, wire format, typed metadata, discovery behavior, verdicts, capacity, and compatibility.
 - [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) — bounded carrier access, payload APIs, staging cleanup, measurements, and file boundary.
 - [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) — approved design, implementation details, test record, and video performance measurements for media code 3 (`VID-`).
-- [Web Application Guide](WEB-APPLICATION-GUIDE.md) — request contracts, response handling, payload previews, and requirement coverage.
+- [Web Application Guide](WEB-APPLICATION-GUIDE.md) — request contracts, response handling, payload previews, the encode wizard, requirement coverage, and the disconnected Three.js carrier-map design.
+- [Reliability Audit](RELIABILITY-AUDIT.md) — architecture, failure fixes, test matrix, browser fault-injection evidence, and remaining risks.
 
 ## Historical records and project status
 
-- [PyAV Migration Record](PYAV-MIGRATION-RECORD.md) — migration stages, user decisions, and measured implementation evidence. Current rules remain in the current guides.
-- [Protocol Version 1 History](PROTOCOL-V1-HISTORY.md) — earlier design decisions, rejected alternatives, measurements, and lessons.
-- [Location Confidentiality Plan](LOCATION-CONFIDENTIALITY-PLAN.md) — historical version 2 design and accepted trade-offs. Its current wire-format claims are superseded by Current Protocol; its analysis remains historical.
-- [Protocol Version 2 Stage Record](PROTOCOL-V2-STAGE-RECORD.md) — outcomes and measurements from the historical version 2 work.
+- [Protocol History](PROTOCOL-HISTORY.md) — v1 decisions, v2 design and stage outcomes, KISS reduction, and the move to v3.
+- [Repository History](REPOSITORY-HISTORY.md) — PyAV media migration and removal of imported legacy files and the obsolete `STG1` stack.
 - [Work Not Built](WORK-NOT-BUILT.md) — assignment work that remains to be demonstrated or assembled.
-- [KISS Reduction Specification](REDUCTION-SPEC.md) — reduction goals and constraints.
-- [KISS Reduction Record](KISS-REDUCTION-RECORD.md) — historical reduction outcome, measurements, decisions, and lessons.
-- [Merge Leftover Removal](MERGE-LEFTOVER-REMOVAL.md) — removed files, import evidence, authorship, and merge history.
 - [Agent Navigation Map](AGENT_MAP.md) — repository paths and Git boundaries.
 - [Assignment Specification Transcription](../docs/INF2005-ACW1-spec_v5-f2f.md) — visible assignment requirements transcribed from the supplied PDF; hidden prompt injection excluded.

@@ -24,7 +24,7 @@ to RGBA. The protocol carrier accepts only single-frame 8-bit or 16-bit RGB/RGBA
 PNG images. Its decoded image size cannot exceed 715,827,880 bytes; see [Current
 Protocol](AGENT_docs/CURRENT-PROTOCOL.md) for sample and context rules.
 
-Requires Python 3.10+.
+Requires Python 3.12+ because NumPy 2.5.3 requires it.
 
 ## Setup and run
 
@@ -40,29 +40,46 @@ python -m unittest -v
 python scripts/check-docs.py
 ```
 
+CI runs these commands on Python 3.12, 3.13, and 3.14. It also runs the
+dependency-free browser-request and capacity-helper tests; run them locally if
+Node is available:
+
+```sh
+node --test scripts/test-api-js.cjs scripts/test-capacity-js.cjs
+```
+
 The optional demonstration notebook additionally needs:
 
 ```sh
 python -m pip install -r requirements-notebook.txt
 ```
 
-The notebook is a demonstration only. It shows the main flows: PNG, RGBA
-and WAV encoding and verification, the failure verdicts, typed payloads,
-basic source conversion (JPEG to PNG, MP3 to WAV), and an 8-bit video
-example. It does not show every feature. The tests and the guides in
-`AGENT_docs/` cover the rest, for example 16-bit PNG, metadata that the
-output keeps, EXIF orientation and refused sources, high bit-depth and
-alpha video, the PNG and video payload-file functions, the size limits,
-and the web application. The library code, the tests, and those guides
-are the reference for API behaviour, not the notebook.
+The notebook is a human-readable, human-verifiable proof of the end-to-end flow.
+It runs the sender and receiver steps in order. Each step states what to expect
+and prints the evidence beside it, so a reader can check the result without
+reading library code. It demonstrates PNG (including 16-bit RGB), RGBA and WAV
+encoding and verification, failure verdicts, typed payloads, PNG/WAV payload-file
+flows, assignment payload sizes, all LSB counts from 1 through 8, JPEG-to-PNG and
+MP3-to-WAV conversion, and a short 8-bit video example. It also simulates
+low-space, audio-depth, RIFF-size, and video mux-space refusals without creating
+large files, and prints video limits and cost estimates. Party A-to-Party B
+transfer is a folder simulation; live email transfer remains for demo day.
+
+The notebook does not show every feature. Tests and the guides in `AGENT_docs/`
+cover details it omits, including the decoded-PNG size cap, metadata and EXIF
+handling, refused source formats, high-bit-depth and alpha video, video
+payload-file functions, and the web application. The notebook's storage and
+limit refusals are safe simulations, not tests at the real maximum sizes. The
+tests prove individual rules and edge cases. The library code, tests, and guides
+are the reference for exact API contracts.
 
 ## Web application flow
 
 Encoding requires:
 
-1. a still image (PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF), audio (WAV, MP3, AAC/M4A, FLAC, ALAC, or Ogg Vorbis/Opus), or video source with one video stream and zero or one audio stream; the output is lossless PNG, WAV, or FFV1/PCM Matroska (`.mkv`);
-2. either a UTF-8 message or one arbitrary payload file; its MIME and filename claims are generated automatically from the selected input and are read-only in the browser; the server ignores submitted claim overrides;
-3. an encrypted sender RSA private key and its password;
+1. a still PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF image; WAV with a `pcm_*` codec; MP3; AAC ADTS; M4A with AAC or ALAC; FLAC; Ogg with Vorbis or Opus; or video in MP4/MOV, Matroska/WebM, or AVI with one decodable video stream and zero or one audio stream. Audio-only Matroska/WebM is refused. The output is lossless PNG, WAV, or FFV1/PCM Matroska (`.mkv`);
+2. either a UTF-8 message or one arbitrary payload file, plus required team ID and sender values; its MIME and filename claims are generated automatically from the selected input and are read-only in the browser; the server ignores submitted claim overrides;
+3. a sender RSA private key; its password is optional. Leave it empty for an unencrypted key. Unencrypted keys are for demos only;
 4. the intended receiver's RSA public key;
 5. a packet start unit at or after the 2,048-unit RSA-2048 bootstrap span; and
 6. an LSB count from 1 through 8.
@@ -74,9 +91,11 @@ It constructs typed authenticated metadata, builds the full media hash, encrypts
 record, embeds the receiver bootstrap and packet, and returns the stego media plus
 the sender public key. Payload bytes are processed in bounded chunks.
 
-Verification accepts only the received PNG or WAV stego file, the trusted
-sender public key, and the intended receiver private key/password. The receiver bootstrap
-recovers the start unit, LSB count, record length, and AES session material.
+Verification accepts the received PNG, WAV, or Matroska video stego file, the
+trusted sender public key, and the intended receiver private key. Its password is
+optional; leave it empty for an unencrypted key. Unencrypted keys are for demos only.
+The receiver bootstrap recovers the start unit, LSB count, record length, and
+AES session material.
 The original cover and the previous shared start-location secret are not inputs.
 
 After an `Authentic` result, the protocol writes only the recovered payload to a
@@ -95,25 +114,39 @@ Normal exits remove them. A power loss or `SIGKILL` can leave unauthenticated
 plaintext in these private directories. After a crash, stop the server and
 manually delete `.stego-staging-*` directories under the instance folder.
 
-The local server has no fixed request-size cap by default. It checks free space
-before reading each encode or verify upload, and stores multipart streams and
-request temporary files under `instance/work`, not `/tmp` (a RAM-backed tmpfs on
-this host). A configured `MAX_CONTENT_LENGTH` still applies. Video backend limits
-are 4 GiB carrier units, 256 MiB per canonical decoded frame, a 2 GiB output,
-and 3 GiB free disk before encode (plus payload size for file payloads). It stores
+The local server has no fixed request-size cap by default. It requires
+`Content-Length` and keeps a shared 3 GiB free-space reserve before it reads an
+encode or verify upload. It stores multipart streams and request temporary files
+under `instance/work`, not `/tmp` (a RAM-backed tmpfs on this host). A configured
+`MAX_CONTENT_LENGTH` still applies. Converted audio can hold up to
+4,294,967,256 bytes of PCM data, the largest size that a standard WAV file can
+record. Allowed, but not advised. A WAV file larger than 2 GiB can fail to open
+in some older audio programs, because they read the WAV size field as a signed
+number. The application reads it correctly. Such a file also needs about 8 GiB
+of disk during encoding (converted copy plus output) and cannot be sent by
+email. Video backend limits are 512 Gi carrier units, 256 MiB per
+canonical decoded frame, a 1280 GiB (1.25 TiB) output, and a 3 GiB free-space
+reserve before encode (plus payload size for file payloads). Before each
+Matroska packet write, the encoder also checks room for that packet and 1 MiB of
+mux slack above the reserve. It stores
 encoded PNG, WAV, and MKV files in `instance/stego-outputs` and returns a download URL instead of sending
 the media as base64. These files also stay without an expiry. Delete them
 manually when they are no longer needed.
 
+Allowed, but not advised. The limits accept a 10-minute 4K video at 30 fps with 16-bit RGBA. This video has about 1.2 TB of uncompressed image data. The lossless MKV output can be close to that size. To verify the output, you must upload it again, and the upload needs the same space again. Processing can take many hours. A file of this size cannot be sent by email. For demonstrations, use short clips (30 seconds or less at 1080p). The application refuses the encode when free disk space falls below the 3 GiB reserve.
+
 ## Protocol API
 
 The public Python API includes `encode_png`, `verify_png`, `encode_wav`,
-`verify_wav`, `PngCarrier`, `WavCarrier`, and the optional source converters
-`open_image_source`, `open_audio_source`, `detect_source_family`, `encode_image`, and `encode_audio`.
-File-payload source helpers are also available. Source converters accept still
-JPEG, PNG, WebP, GIF, TIFF, BMP, and AVIF images, and audio with exactly one
-mono or stereo audio stream. They create temporary canonical PNG/WAV carriers;
-strict PNG and PCM WAV inputs bypass conversion. Converted snapshots are removed
+`verify_wav`, `PngCarrier`, `WavCarrier`, `VideoCarrier`, `encode_video`, and
+`verify_video`. It also includes the source helpers `open_image_source`,
+`open_audio_source`, `detect_source_family`, `encode_image`, and `encode_audio`,
+plus their payload-file variants. The core provides PNG, WAV, and video
+payload-file encode and verify functions. Source converters accept only the
+listed still-image signatures and the fixed audio/video container and codec
+allowlist above. Converted audio has one or two channels. They create temporary canonical PNG/WAV carriers;
+strict PNG and PCM WAV inputs bypass conversion. Strict PCM WAV carriers accept
+any positive channel count. Converted snapshots are removed
 when the context or encode call ends. CMYK images are refused because a CMYK ICC
 profile is not valid on an RGB PNG, and colour-managed conversion needs a library
 outside PyAV. See [Source conversion](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md#source-conversion).
@@ -157,8 +190,8 @@ version 1 and version 2 masked-media files are not accepted by the active
 version-3 web routes. A readable version 2 bootstrap returns `Cannot Verify`
 with `unsupported bootstrap version`. The separate legacy `STG1` implementation
 has been removed and is not interoperable with this protocol. See [Protocol
-Compatibility](AGENT_docs/CURRENT-PROTOCOL.md#limits-and-compatibility) and the [merge-leftover
-removal record](AGENT_docs/MERGE-LEFTOVER-REMOVAL.md).
+Compatibility](AGENT_docs/CURRENT-PROTOCOL.md#limits-and-compatibility) and [Repository
+History](AGENT_docs/REPOSITORY-HISTORY.md).
 
 ## Documentation
 
@@ -166,8 +199,10 @@ removal record](AGENT_docs/MERGE-LEFTOVER-REMOVAL.md).
 - [Documentation index](AGENT_docs/README.md)
 - [Agent navigation map](AGENT_docs/AGENT_MAP.md)
 - [Current protocol](AGENT_docs/CURRENT-PROTOCOL.md)
-- [PyAV migration record](AGENT_docs/PYAV-MIGRATION-RECORD.md)
+- [Protocol history](AGENT_docs/PROTOCOL-HISTORY.md)
+- [Repository history](AGENT_docs/REPOSITORY-HISTORY.md)
 - [Carrier and payload flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md)
 - [Video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md)
 - [Web application guide](AGENT_docs/WEB-APPLICATION-GUIDE.md)
+- [Three.js map status and design](AGENT_docs/WEB-APPLICATION-GUIDE.md#threejs-carrier-map)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)
