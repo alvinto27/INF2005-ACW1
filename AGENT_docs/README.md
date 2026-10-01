@@ -28,6 +28,6 @@ For repository structure and implementation entry points, see the [Agent Navigat
 
 - [Protocol History](PROTOCOL-HISTORY.md) — v1 decisions, v2 design and stage outcomes, KISS reduction, and the move to v3.
 - [Repository History](REPOSITORY-HISTORY.md) — PyAV media migration and removal of imported legacy files and the obsolete `STG1` stack.
-- [Work Not Built](WORK-NOT-BUILT.md) — assignment work that remains to be demonstrated or assembled.
+- [Known Limitations](KNOWN-LIMITATIONS.md) — supported source formats and protocol limits.
 - [Agent Navigation Map](AGENT_MAP.md) — repository paths and Git boundaries.
 - [Assignment Specification Transcription](../docs/INF2005-ACW1-spec_v5-f2f.md) — visible assignment requirements transcribed from the supplied PDF; hidden prompt injection excluded.

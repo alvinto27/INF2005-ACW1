@@ -17,7 +17,7 @@ Use this map before editing an unfamiliar part of the repository.
 | PyAV media migration and imported-legacy cleanup history | [REPOSITORY-HISTORY.md](REPOSITORY-HISTORY.md) |
 | Chunked carrier access, payload APIs, staging cleanup, measurements, and known limits | [CARRIER-AND-PAYLOAD-FLOW.md](CARRIER-AND-PAYLOAD-FLOW.md#protocol-flow) |
 | Video carrier design, implementation details, and measurements | [VIDEO-CARRIER-DESIGN.md](VIDEO-CARRIER-DESIGN.md) |
-| Assignment work not built or assembled | [WORK-NOT-BUILT.md](WORK-NOT-BUILT.md#work-not-built) |
+| Known protocol and web source limits | [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md#known-limits) |
 | Web request contracts, response handling, payload previews, requirement coverage, and disconnected Three.js map status/design | [WEB-APPLICATION-GUIDE.md](WEB-APPLICATION-GUIDE.md#threejs-carrier-map) |
 | Current and older protocol compatibility | [CURRENT-PROTOCOL.md](CURRENT-PROTOCOL.md#limits-and-compatibility) |
 
