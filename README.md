@@ -18,6 +18,56 @@ with a decoded image size limit of 715,827,880 bytes.
 
 Requires Python 3.12+ because NumPy 2.5.3 requires it.
 
+## For markers
+
+### Quick start
+
+Linux and macOS:
+
+```sh
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+python run.py
+```
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python run.py
+```
+
+Open `http://127.0.0.1:5000`. The encode page is `/`; the verify page is `/verify`.
+
+### Expected test output
+
+- `python -m unittest` → `Ran 309 tests ... OK` (no tests skipped).
+- `node --test scripts/test-api-js.cjs scripts/test-capacity-js.cjs` → 15 tests pass.
+
+### Folder guide
+
+| Path | Contents |
+| --- | --- |
+| `stego/` | Protocol and carrier library. |
+| `stego_web/` | Flask application, web pages, and browser code. |
+| `run.py` | Local Flask application entry point. |
+| `test_*.py` | Python protocol, carrier, and web tests. |
+| `notebooks/` | End-to-end demonstration notebook. |
+| `presentation/` | Technical-design slides and PDF export. |
+| `demo/` | Instructions for files supplied in the separate demonstration ZIP. |
+| `AGENT_docs/` | Protocol, implementation, and requirement guides. |
+| `docs/` | Assignment specification. |
+| `scripts/` | Documentation checker and JavaScript tests. |
+
+### Requirement coverage
+
+For requirement evidence, see the [requirement coverage table](AGENT_docs/WEB-APPLICATION-GUIDE.md#requirement-coverage).
+
+**Expected verdicts:** `Authentic`, `Tampered`, `Signature Invalid`, `Payload Missing`, `Wrong Start Location`, `Cannot Decrypt`, and `Cannot Verify`. See [verification verdicts](AGENT_docs/CURRENT-PROTOCOL.md#verification-verdicts).
+
 ## Setup and run
 
 ```sh
@@ -55,7 +105,7 @@ flows, assignment payload sizes, all LSB counts from 1 through 8, JPEG-to-PNG an
 MP3-to-WAV conversion, and a short 8-bit video example. It also simulates
 low-space, audio-depth, RIFF-size, and video mux-space refusals without creating
 large files, and prints video limits and cost estimates. Party A-to-Party B
-transfer is a folder simulation; live email transfer remains for demo day.
+transfer is a folder simulation.
 
 The notebook does not show every feature. Tests and the guides in `AGENT_docs/`
 cover details it omits, including the decoded-PNG size cap, metadata and EXIF
@@ -177,9 +227,6 @@ History](AGENT_docs/REPOSITORY-HISTORY.md).
 
 ## Documentation
 
-- [Agent instructions](AGENTS.md)
-- [Documentation index](AGENT_docs/README.md)
-- [Agent navigation map](AGENT_docs/AGENT_MAP.md)
 - [Current protocol](AGENT_docs/CURRENT-PROTOCOL.md)
 - [Protocol history](AGENT_docs/PROTOCOL-HISTORY.md)
 - [Repository history](AGENT_docs/REPOSITORY-HISTORY.md)
@@ -189,3 +236,6 @@ History](AGENT_docs/REPOSITORY-HISTORY.md).
 - [Three.js map status and design](AGENT_docs/WEB-APPLICATION-GUIDE.md#threejs-carrier-map)
 - [Technical-design Reveal.js presentation](presentation/README.md)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)
+- [Documentation index](AGENT_docs/README.md)
+- [Agent instructions](AGENTS.md)
+- [Agent navigation map](AGENT_docs/AGENT_MAP.md)
