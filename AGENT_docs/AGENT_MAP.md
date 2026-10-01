@@ -47,6 +47,7 @@ Use this map before editing an unfamiliar part of the repository.
 | Masked-media protocol and chunked-carrier tests | [test_stego.py](../test_stego.py), [test_video.py](../test_video.py) |
 | Flask integration and current protocol tests | [test_webapp.py](../test_webapp.py) and [test_stego.py](../test_stego.py) |
 | Sample media: the notebook's PNG cover. Git ignores every other file in `samples/`; put local demo media there | [Banana.png](../samples/Banana.png) |
+| Assignment demonstration files supplied in a separate ZIP; folder layout and verification steps | [demo/README.md](../demo/README.md) |
 | Required runtime and test dependencies (Pillow is test/notebook-only) | [requirements.txt](../requirements.txt) |
 | Optional demonstration-notebook dependency | [requirements-notebook.txt](../requirements-notebook.txt) |
 | Documentation checker | [scripts/check-docs.py](../scripts/check-docs.py) |
