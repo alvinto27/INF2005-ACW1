@@ -9,10 +9,10 @@ FFV1/PCM Matroska (`.mkv`) before embedding.
 
 The protocol encrypts the complete payload record with AES-256-GCM, authenticates
 the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
-the intended receiver with RSA-OAEP. [Current Protocol](AGENT_docs/CURRENT-PROTOCOL.md)
+the intended receiver with RSA-OAEP. [Protocol](docs/protocol.md)
 defines the media hash and verification rules. Container and ancillary metadata
 are outside the authenticity check; output metadata behavior is in [Carrier and
-Payload Flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md#metadata-in-the-output).
+payload flow](docs/carrier-and-payload-flow.md#metadata-in-the-output).
 The protocol carrier accepts single-frame 8-bit or 16-bit RGB/RGBA PNG images,
 with a decoded image size limit of 715,827,880 bytes.
 
@@ -60,15 +60,14 @@ Open `http://127.0.0.1:5000`. The encode page is `/`; the verify page is `/verif
 | `notebooks/` | End-to-end demonstration notebook. |
 | `presentation/` | Technical-design slides and PDF export. |
 | `demo/` | Instructions for files supplied in the separate demonstration ZIP. |
-| `AGENT_docs/` | Protocol, implementation, and requirement guides. |
-| `docs/` | Assignment specification. |
+| `docs/` | Design and protocol guides, assignment brief. |
 | `scripts/` | Documentation checker and JavaScript tests. |
 
 ### Requirement coverage
 
-For requirement evidence, see the [requirement coverage table](AGENT_docs/WEB-APPLICATION-GUIDE.md#requirement-coverage).
+For requirement evidence, see the [requirement coverage table](docs/web-application.md#requirement-coverage).
 
-**Expected verdicts:** `Authentic`, `Tampered`, `Signature Invalid`, `Payload Missing`, `Wrong Start Location`, `Cannot Decrypt`, and `Cannot Verify`. See [verification verdicts](AGENT_docs/CURRENT-PROTOCOL.md#verification-verdicts).
+**Expected verdicts:** `Authentic`, `Tampered`, `Signature Invalid`, `Payload Missing`, `Wrong Start Location`, `Cannot Decrypt`, and `Cannot Verify`. See [verification verdicts](docs/protocol.md#verification-verdicts).
 
 ## Setup and run
 
@@ -109,7 +108,7 @@ low-space, audio-depth, RIFF-size, and video mux-space refusals without creating
 large files, and prints video limits and cost estimates. Party A-to-Party B
 transfer is a folder simulation.
 
-The notebook does not show every feature. Tests and the guides in `AGENT_docs/`
+The notebook does not show every feature. Tests and the guides in `docs/`
 cover details it omits, including the decoded-PNG size cap, metadata and EXIF
 handling, refused source formats, high-bit-depth and alpha video, video
 payload-file functions, and the web application. The notebook's storage and
@@ -164,9 +163,9 @@ encode or verify upload. It stores multipart streams and request temporary files
 under `instance/work`, not `/tmp` (a RAM-backed tmpfs on this host). A configured
 `MAX_CONTENT_LENGTH` still applies. A WAV file larger than 2 GiB can fail to open
 in some older audio programs because they read the WAV size field as signed;
-the application reads it correctly. See the [Web Application Guide](AGENT_docs/WEB-APPLICATION-GUIDE.md) for request
+the application reads it correctly. See the [Web Application Guide](docs/web-application.md) for request
 and storage behavior. Video resource limits and large-file warnings are in the [video
-carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md#output-and-limits).
+carrier design](docs/video-carrier.md#output-and-limits).
 Encoded PNG, WAV, and MKV files are stored in `instance/stego-outputs` and
 returned by download URL, not as base64. Files do not expire; delete them when
 they are no longer needed.
@@ -185,7 +184,7 @@ strict PNG and PCM WAV inputs bypass conversion. Strict PCM WAV carriers accept
 any positive channel count. Converted snapshots are removed
 when the context or encode call ends. CMYK images are refused because a CMYK ICC
 profile is not valid on an RGB PNG, and colour-managed conversion needs a library
-outside PyAV. See [Source conversion](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md#source-conversion).
+outside PyAV. See [Source conversion](docs/carrier-and-payload-flow.md#source-conversion).
 
 Verification requires the sender public key and receiver private key. The
 file-backed carriers provide bounded range reads, chunk iteration, and
@@ -197,7 +196,7 @@ The video API includes `VideoCarrier`, `encode_video`, `verify_video`,
 web app also accepts supported video covers and verifies `.mkv` outputs. Video
 encode writes lossless FFV1 video and PCM audio to Matroska; this output can be
 much larger than the compressed input and browsers do not play it inline.
-See the [video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md#output-and-limits)
+See the [video carrier design](docs/video-carrier.md#output-and-limits)
 for carrier-unit, canonical frame-byte, output-size, and disk-space limits. PyAV is a
 required install dependency in `requirements.txt`; PNG, WAV, and video I/O use PyAV.
 Pillow is used only by tests and the demonstration notebook. The public
@@ -224,18 +223,16 @@ version 1 and version 2 masked-media files are not accepted by the active
 version-3 web routes. A readable version 2 bootstrap returns `Cannot Verify`
 with `unsupported bootstrap version`. The separate legacy `STG1` implementation
 has been removed and is not interoperable with this protocol. See [Protocol
-Compatibility](AGENT_docs/CURRENT-PROTOCOL.md#limits-and-compatibility) and [Repository
-History](AGENT_docs/REPOSITORY-HISTORY.md).
+Compatibility](docs/protocol.md#limits-and-compatibility) and [Repository
+History](docs/history/repository-history.md).
 
 ## Documentation
 
-- [Current protocol](AGENT_docs/CURRENT-PROTOCOL.md)
-- [Protocol history](AGENT_docs/PROTOCOL-HISTORY.md)
-- [Repository history](AGENT_docs/REPOSITORY-HISTORY.md)
-- [Carrier and payload flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md)
-- [Video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md)
-- [Web application guide](AGENT_docs/WEB-APPLICATION-GUIDE.md)
-- [Technical-design Reveal.js presentation](presentation/README.md)
-- [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)
-- [Documentation index](AGENT_docs/README.md)
-- [Agent navigation map](AGENT_docs/AGENT_MAP.md)
+- [Protocol](docs/protocol.md)
+- [Web application](docs/web-application.md)
+- [Carrier and payload flow](docs/carrier-and-payload-flow.md)
+- [Video carrier](docs/video-carrier.md)
+- [Known limitations](docs/known-limitations.md)
+- [Protocol history](docs/history/protocol-history.md) and [repository history](docs/history/repository-history.md)
+- [Technical-design presentation](presentation/README.md)
+- [Assignment brief](docs/assignment/INF2005-ACW1-spec_v5-f2f.md)

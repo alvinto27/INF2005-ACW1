@@ -1,6 +1,6 @@
 # Protocol History
 
-> Historical record. Current rules live in CURRENT-PROTOCOL.md, CARRIER-AND-PAYLOAD-FLOW.md, and WEB-APPLICATION-GUIDE.md. The full original text is in git history at commit c412ad7.
+> Historical record. Current rules are in [Protocol](../protocol.md), [Carrier and Payload Flow](../carrier-and-payload-flow.md), and [Web Application](../web-application.md). The full original text is in git history at commit c412ad7.
 
 ## Version 1: integrity protocol
 
@@ -445,7 +445,7 @@ needing migration; inventing v3 then would have been needless. The later transit
 separate protocol change: commit `3e6c34a` (“Move to protocol version 3 with full media hash and
 RGBA PNG covers”, 2026-09-24). It expanded hash coverage and added RGBA support without undoing
 receiver-gated encryption, RSA-OAEP bootstrap, AES-GCM, RSA-PSS, or typed metadata. The v3 wire
-format and current rules are documented in [Current Protocol](CURRENT-PROTOCOL.md); v1/v2 artifacts
+format and current rules are documented in [Protocol](../protocol.md); v1/v2 artifacts
 are not accepted by the active verifier.
 
 The stage 4c empty-packet test set also exercised 24 positive cases (8 LSB depths × 3 legal

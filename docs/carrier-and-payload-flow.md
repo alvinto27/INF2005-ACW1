@@ -1,6 +1,6 @@
 # Carrier and Payload Flow
 
-**Status:** File-backed carrier access, payload streaming, and the Flask disk boundary are implemented. This file is the current source of truth for bounded carrier/payload processing, staging cleanup, memory measurements, and file API entry points. The protocol format and verdicts are in [Current Protocol](CURRENT-PROTOCOL.md).
+**Status:** File-backed carrier access, payload streaming, and the Flask disk boundary are implemented. This file is the current source of truth for bounded carrier/payload processing, staging cleanup, memory measurements, and file API entry points. The protocol format and verdicts are in [Protocol](protocol.md).
 
 ## Carrier interface and pass order
 
@@ -57,13 +57,13 @@ The version-3 carrier protocol and its verifier do not change. Verification stil
 
 ## Video carrier backend
 
-`VideoCarrier` is the file-backed media-code-3 backend in `stego/video.py`. It performs a bounded scan, then reopens and decodes for range reads, hashing, and rewriting. It exposes ordered RGB low-byte and audio-low-byte carrier units, plus fixed timing, RGB high-byte, alpha, and audio-high-byte data. It supports canonical integer video depths from 8 through 16 bits, with or without alpha; see [Current Protocol](CURRENT-PROTOCOL.md#video-plus-audio-media-code-3). PyAV is a required dependency in `requirements.txt` and is imported at module load. PNG, WAV, and video media I/O use PyAV.
+`VideoCarrier` is the file-backed media-code-3 backend in `stego/video.py`. It performs a bounded scan, then reopens and decodes for range reads, hashing, and rewriting. It exposes ordered RGB low-byte and audio-low-byte carrier units, plus fixed timing, RGB high-byte, alpha, and audio-high-byte data. It supports canonical integer video depths from 8 through 16 bits, with or without alpha; see [Protocol](protocol.md#video-plus-audio-media-code-3). PyAV is a required dependency in `requirements.txt` and is imported at module load. PNG, WAV, and video media I/O use PyAV.
 
 Only video sources that set `requires_output_check=True` use the additive `CarrierSource.open_rewritten_output(path)` hook. `CarrierEncoding.check_output(source)` verifies output context, embedded transforms, unit/fixed-byte counts, and the masked hash. Core `_rewrite_checked()` owns the sequence: rewrite, open and validate the output reader, close it, then call `finish()`. Any failure removes the incomplete output. Existing PNG/WAV sources use the default no-check behavior.
 
 `encode_video()` writes one FFV1 video stream at the selected canonical format and optional PCM s16le audio to a same-directory `.stego-staging-*` Matroska file. A bounded audio-only PCM spool beside the output lets the writer mux audio packets up to each video frame's time; it checks free space before creating the spool and removes it on success or failure. The writer still hashes and embeds carrier units in protocol order: all video units, then all audio units. It checks the ordered audio transform against the spool before finishing. The 8-bit no-alpha path remains `bgr0`. `encode_video_from_payload_path()` uses a private same-directory `.stego-staging-*` directory. Both publish with `os.replace` only after read-back checks and `finish()`. No video spool or second remux stage is used. Failure leaves the destination unpublished and removes staging files.
 
-PASS 0 counts carrier units incrementally and checks each canonical frame's byte size before staging. The limits are 512 Gi carrier units, 256 MiB per canonical frame, and 1280 GiB of Matroska output. The payload-path API reserves space for its payload file as well as the 3 GiB free-space reserve. Before each Matroska packet write, the encoder checks for the reserve, that packet's size, and 1 MiB of mux slack. The output-size cap is still checked after each packet. A failed check removes staging and does not publish the output. See [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) for the resolution and duration examples. Audio remains limited to mono or stereo under the channel-identity rule in [Current Protocol](CURRENT-PROTOCOL.md#video-plus-audio-media-code-3). Tests patch the free-space requirement so they do not depend on host disk capacity.
+PASS 0 counts carrier units incrementally and checks each canonical frame's byte size before staging. The limits are 512 Gi carrier units, 256 MiB per canonical frame, and 1280 GiB of Matroska output. The payload-path API reserves space for its payload file as well as the 3 GiB free-space reserve. Before each Matroska packet write, the encoder checks for the reserve, that packet's size, and 1 MiB of mux slack. The output-size cap is still checked after each packet. A failed check removes staging and does not publish the output. See [Video Carrier](video-carrier.md) for the resolution and duration examples. Audio remains limited to mono or stereo under the channel-identity rule in [Protocol](protocol.md#video-plus-audio-media-code-3). Tests patch the free-space requirement so they do not depend on host disk capacity.
 
 ## Protocol flow
 
@@ -227,4 +227,4 @@ Flask has no fixed request-size cap by default. Before reading an encode or veri
 
 ## Web application guide
 
-For Flask request handling, upload storage, verification responses, and payload downloads, see the [Web Application Guide](WEB-APPLICATION-GUIDE.md).
+For Flask request handling, upload storage, verification responses, and payload downloads, see the [Web Application Guide](web-application.md).

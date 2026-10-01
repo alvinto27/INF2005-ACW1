@@ -33,4 +33,4 @@ Open `http://127.0.0.1:8000/?print-pdf`, use the browser print dialog, select la
 
 `stego-slides.pdf` is a committed export. Export it again after you change the slides.
 
-The slide content describes protocol version 3. Update it together with `AGENT_docs/CURRENT-PROTOCOL.md` if the protocol changes.
+The slide content describes protocol version 3. Update it together with [`docs/protocol.md`](../docs/protocol.md) if the protocol changes.

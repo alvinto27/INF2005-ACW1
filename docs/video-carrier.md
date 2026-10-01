@@ -2,7 +2,7 @@
 
 **Status: Implemented in the library, demonstration notebook, and Flask web app. Protocol version 3 is unchanged.**
 
-The video-plus-audio carrier uses media code 3 with `VID-`, protocol version 3, and Matroska output. The current context is 32 bytes; development files with the older 30-byte context are not supported. The carrier supports canonical integer video depths from 8 through 16 bits, with or without alpha. Eight-bit output without alpha uses FFV1 `bgr0`; other formats use matching canonical FFV1 output. Audio uses PCM s16le. Carrier processing is streamed, and encoding checks the staged output before publishing it. Video is optional in the assignment. See [Current Protocol](CURRENT-PROTOCOL.md) and [Carrier and Payload Flow](CARRIER-AND-PAYLOAD-FLOW.md) for hash, carrier, and payload rules.
+The video-plus-audio carrier uses media code 3 with `VID-`, protocol version 3, and Matroska output. The current context is 32 bytes; development files with the older 30-byte context are not supported. The carrier supports canonical integer video depths from 8 through 16 bits, with or without alpha. Eight-bit output without alpha uses FFV1 `bgr0`; other formats use matching canonical FFV1 output. Audio uses PCM s16le. Carrier processing is streamed, and encoding checks the staged output before publishing it. Video is optional in the assignment. See [Protocol](protocol.md) and [Carrier and Payload Flow](carrier-and-payload-flow.md) for hash, carrier, and payload rules.
 
 This design builds on the PyAV work by **smn-sit10 / Sitt Min Naing**, commit `c56e0ea` (“Add video frame and audio steganography support”).
 

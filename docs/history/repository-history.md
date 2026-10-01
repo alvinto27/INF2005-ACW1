@@ -1,6 +1,6 @@
 # Repository History
 
-> Historical record. Current rules live in CURRENT-PROTOCOL.md, CARRIER-AND-PAYLOAD-FLOW.md, and WEB-APPLICATION-GUIDE.md. The full original text is in git history at commit c412ad7.
+> Historical record. Current rules are in [Protocol](../protocol.md), [Carrier and Payload Flow](../carrier-and-payload-flow.md), and [Web Application](../web-application.md). The full original text is in git history at commit c412ad7.
 
 ## PyAV media migration
 
@@ -90,7 +90,7 @@ Also removed: seven legacy services (`cover_media.py`, `crypto_service.py`, `enc
 `payload_builder.py`, `start_location.py`, `steganography.py`, `verification_pipeline.py`), their
 `models.py` and `exceptions.py`, the dedicated 31-test `test_payload_protocol.py`, standalone
 `FR1_FR5.py`, and root duplicate `INF2005-ACW1-spec_v5-f2f - Copy (1).pdf`. The duplicate was
-412,841 bytes and byte-identical to `docs/INF2005-ACW1-spec_v5-f2f.pdf` (`cmp` returned 0);
+412,841 bytes and byte-identical to `docs/assignment/INF2005-ACW1-spec_v5-f2f.pdf` (`cmp` returned 0);
 it had no links. `services/__init__.py` was kept but trimmed to a docstring because no package-level
 imports remained.
 
