@@ -1,72 +1,82 @@
-# Web Application Guide
+# Web application
 
-This guide helps teammates and markers run and understand the local Flask application. It covers the browser workflows, request handling, verification reports, payload previews, storage, and requirement coverage; the [protocol guide](protocol.md) explains the wire format and cryptography, and [carrier and payload flow](carrier-and-payload-flow.md) explains file processing.
+This guide explains how the local Flask application behaves: what the two pages do, what each route accepts and returns, how recovered payloads are previewed safely, where files are stored, and where each assignment requirement is met. The [protocol guide](protocol.md) covers the wire format and cryptography, and [carrier and payload flow](carrier-and-payload-flow.md) covers how files are read and written.
 
-## Entry points
+## How the code fits together
 
-`run.py` creates the Flask app from `stego_web`. Routes in `stego_web/routes.py` use `stego_web/services/current_protocol.py`; the adapter calls the public file-backed APIs from `stego`. PyAV is required for runtime image, audio, and video I/O; Pillow is not used by the application. The browser verification controller is `stego_web/static/verify.js`. The main encode wizard is `stego_web/static/app.js`.
+`run.py` creates the Flask app from `stego_web`. The routes in `stego_web/routes.py` call `stego_web/services/current_protocol.py`, a thin adapter over the public file-based API in `stego`. All cryptographic and integrity decisions stay in the `stego` library; the web layer only validates inputs and turns results into JSON. PyAV handles all image, audio, and video input and output at runtime; the application does not use Pillow. In the browser, `stego_web/static/app.js` drives the encode wizard and `stego_web/static/verify.js` drives the verify page.
 
-## Interface and accessibility
+## The two pages
 
-`GET /` serves the encoding page with a dark navigation bar, blue-lit hero,
-four protocol diagrams, and a light workspace. `GET /verify` is a separate
-receiver page: its outer canvas is white and its inner form workspace is blue.
-Both pages fill the browser width without an outer frame. Navigation between
-them uses a short fade over a white veil, then reveals the destination workspace.
-The navigation remains a standard link when JavaScript is unavailable, and the
-fade is skipped for reduced motion. The encode page links to `/verify` in its
-header and hero, not below the encode workspace. The diagrams depict carrier
-embedding, receiver-gated encryption, signature and media-hash checks, and the
-verification verdict. They are inline decorative SVGs with scroll-triggered
-motion; they require no image downloads or WebGL. Reduced-motion users see them
-without animation.
+**The encode page (`GET /`)** has a dark navigation bar, a hero section, four animated diagrams, and a light workspace that holds the wizard. The diagrams show carrier embedding, receiver-only encryption, the signature and media-hash checks, and the final verdict. They are inline, decorative SVGs, so they need no image downloads or WebGL. The page links to `/verify` from its header and hero.
 
-The encode page has six steps: Input, Sender, Receiver, Layout, Protect, and
-Export. Step 4 uses the capacity result to set a start-unit slider for the
-selected LSB count. A number box stays in sync for exact values and sends
-`start_unit`. The slider range runs from the bootstrap span to the latest legal
-start that fits. In Protect, the server hashes preserved RGB units, RGBA alpha,
-and declared PCM sample bytes with the chosen geometry before encryption and
-signing. A separate `/verify` page handles receiver-side verification.
+**The verify page (`GET /verify`)** is for the receiver. It has a white outer page with a blue form workspace.
 
-The existing form field names, request contracts, key-generation controls,
-media previews, downloads, and verdicts remain unchanged. The layout uses four
-feature columns on desktop, two on tablets, and one on phones; workspace forms
-and media previews also stack on narrow screens.
+Both pages use the full browser width. Moving between them plays a short fade; without JavaScript the link still works as a normal link, and the fade is skipped for users who prefer reduced motion.
 
-A skip link leads to the form on each page. Native file controls remain keyboard
-accessible, the current wizard step is exposed with `aria-current`, and step
-changes move focus to the new heading. Form labels, visible focus outlines,
-live progress messages, and text verdicts support keyboard and screen-reader
-use. CSS and the optional GSAP motion layer respect reduced-motion preferences.
-If GSAP is unavailable, the existing local motion helper keeps interactions
-functional. Both templates load GSAP 3.15 from `https://cdn.jsdelivr.net` (an
-external request; the rest of the app is local). Without network access or when
-reduced motion is enabled, `motion.js` skips GSAP and the workflow still works.
-JavaScript is required for the workflow; a `noscript` notice explains this.
-Exported media and recovered payloads remain on disk until deleted.
+### The encode wizard
 
-Both pages use the local `api.js` request boundary for JSON response validation,
-status-specific messages, connection failures, and timeouts. Encode and key
-generation keep controls retryable after failure; encode freezes its form inputs
-while a request is in flight. The browser validates successful response fields
-and same-origin download URLs before showing success. Non-video encode requests
-time out after five minutes; video encode after one hour; key generation after
-one minute; verification after two minutes or 30 minutes for MKV.
+The wizard has six steps: Input, Sender, Receiver, Layout, Protect, and Export.
+
+- In **Layout**, the capacity result sets the range of a start-unit slider for the chosen LSB count. The range runs from the end of the bootstrap area to the latest start that still fits. A number box beside the slider stays in sync and is what the form actually sends as `start_unit`.
+- In **Protect**, the server hashes the preserved media data (the masked RGB units, RGBA alpha, and the PCM sample bytes) using the chosen layout, then encrypts and signs the record.
+
+On desktop, the feature diagrams sit in four columns, dropping to two on tablets and one on phones. Forms and media previews also stack on narrow screens.
+
+### Accessibility
+
+Each page has a skip link to its form. File inputs are the browser's native controls, so they work from the keyboard. The current wizard step is marked with `aria-current`, and changing step moves focus to the new heading. Labels, visible focus outlines, live progress messages, and text verdicts (not just colours) support keyboard and screen-reader users.
+
+### Animation and the one external request
+
+Animations use GSAP 3.15, loaded from `https://cdn.jsdelivr.net`. This is the only request the app makes outside your machine. If GSAP cannot load, or reduced motion is turned on, `motion.js` skips it and a small local helper keeps everything working. The workflow does need JavaScript itself, and a `noscript` notice says so.
+
+### Requests from the browser
+
+Both pages send requests through `api.js`. It checks that each JSON response has the expected shape, turns HTTP status codes and connection failures into readable messages, and applies time limits:
+
+| Request | Time limit |
+| --- | --- |
+| Encode (image or audio) | 5 minutes |
+| Encode (video) | 1 hour |
+| Key generation | 1 minute |
+| Verify | 2 minutes, or 30 minutes for MKV |
+
+While an encode is running, its form inputs are frozen. If encode or key generation fails, the controls stay usable so you can try again. Before showing success, the browser checks the response fields and that each download link points back to the same server.
 
 ## Encode request
 
-`POST /encode` accepts a still PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF image; WAV with a `pcm_*` codec; MP3; AAC ADTS; M4A in a MOV/MP4-family container with AAC or ALAC; FLAC; Ogg with Vorbis or Opus; or video in MP4/MOV, Matroska/WebM, or AVI with one decodable video stream and zero or one audio stream. Audio-only Matroska/WebM is refused. The cover file picker uses the same allowlist as the server. It also accepts either a message or payload file, required `team_id` and `sender` values, optional additional metadata, the sender private key and optional password, the receiver public key, a start unit, and an LSB count from 1 through 8. The payload MIME and filename claims are generated from the selected message or file. The browser displays them as read-only fields; the server ignores any submitted `payload_mime` or `payload_name` values and infers its own claims before signing them. Each sender or receiver key file can be up to 64 KiB.
+`POST /encode` creates a stego file. The cover can be:
 
-The password is optional. Leave it empty for an unencrypted private key. A non-empty password must contain at least 8 characters and is used exactly as entered. Unencrypted private keys are for demos only: anyone with the file can use the key.
+- a still image: PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF;
+- audio: WAV with a `pcm_*` codec, MP3, AAC (ADTS), M4A (a MOV/MP4-family container) with AAC or ALAC, FLAC, or Ogg with Vorbis or Opus; or
+- video: MP4/MOV, Matroska/WebM, or AVI, with one decodable video stream and zero or one audio stream. Audio-only Matroska/WebM is refused.
 
-Flask saves each request's uploads and working files under `STEGO_WORK_DIR`, which defaults to `instance/work`. On systems where `/tmp` is RAM-backed, storing uploads and video snapshots there can consume memory, so the application keeps them on the instance filesystem. The request deletes its temporary directory after success or failure. PyAV multipart file streams are also created in the work directory. The PNG encoder writes an intermediate `.stego-staging-*.png` beside the output and removes it after the write, keeping it on the instance filesystem. PNG uses a signature path. The source gate checks WAV's codec and inspects PyAV streams for other accepted inputs before `detect_source_family()` selects an adapter. Strict PNG and PCM WAV carriers bypass conversion and keep their current ancillary data. Key PEMs remain byte inputs.
+The browser's file picker uses the same list as the server. Along with the cover, the request carries:
 
-Image and audio source-conversion limits and temporary-storage checks are described in [Carrier and Payload Flow](carrier-and-payload-flow.md#source-conversion).
+- either a text message or a payload file;
+- `team_id` and `sender` (both required), plus optional extra metadata;
+- the sender's private key and its optional password;
+- the receiver's public key; and
+- a start unit and an LSB count from 1 to 8.
 
-Allowed, but not advised. A WAV file larger than 2 GiB can fail to open in some older audio programs, because they read the WAV size field as a signed number. The application reads it correctly. Such a file also needs about 8 GiB of disk during encoding (converted copy plus output) and cannot be sent by email.
+Each key file can be up to 64 KiB. The payload's MIME type and file name are filled in from the chosen message or file and shown as read-only fields. The server ignores any `payload_mime` or `payload_name` the browser sends and works out its own values before signing them, so the signed claims cannot be set by hand.
 
-The adapter calls `open_image_source()` or `open_audio_source()`, then passes the yielded `carrier_source` to the PNG or WAV file API. The video API builds its own `VideoCarrier` for validation, counting, and bounded reads. Video encode writes lossless FFV1/PCM Matroska and reports the source as converted. Its resource limits are in [Video Carrier](video-carrier.md#output-and-limits). The response contains `source_converted`, container-based `source_format`, output `file_size`, and a `stego_url`, file details, sender public key, record summary, capacity, geometry, and preserved-bit measurements; it does not contain stego bytes or private keys. `GET /download/<id>.<ext>` checks the token and extension before serving the file. MKV is served as an attachment because browsers do not play the FFV1 Matroska output inline.
+The key password is optional; leave it empty for an unencrypted private key. A non-empty password must be at least 8 characters and is used exactly as typed. Unencrypted private keys are for demos only, because anyone who has the file can use the key.
+
+### What happens to the upload
+
+Flask saves each request's uploads and working files in `STEGO_WORK_DIR`, which defaults to `instance/work`. Werkzeug's multipart upload streams go there too. We keep them on the instance filesystem rather than in `/tmp`, because on some systems `/tmp` lives in RAM and a large upload or video snapshot would use up memory. The request deletes its temporary folder whether it succeeds or fails. The PNG encoder writes a temporary `.stego-staging-*.png` beside the output and removes it once the write is done.
+
+The server then decides how to read the cover. PNG files are recognised by their file signature, WAV files by their codec, and other formats by inspecting their PyAV streams; `detect_source_family()` then picks the image, audio, or video adapter. Strict PNG and PCM WAV covers skip conversion and keep their existing ancillary data. Everything else is converted first, as described in [Carrier and Payload Flow](carrier-and-payload-flow.md#source-conversion), which also lists the conversion limits and temporary-storage checks.
+
+For images and audio, the adapter calls `open_image_source()` or `open_audio_source()` and passes the resulting `carrier_source` to the PNG or WAV file API. Video works differently: the video API builds its own `VideoCarrier` to validate, count, and read the source in bounded chunks, then writes lossless FFV1/PCM Matroska. Video sources are therefore always reported as converted. The video resource limits are in [Video Carrier](video-carrier.md#output-and-limits).
+
+A note on large audio: a converted WAV larger than 2 GiB is allowed, but not advised. Some older audio programs cannot open it, because they read the WAV size field as a signed number (StegoVerify reads it correctly). Such a file also needs about 8 GiB of free disk during encoding, for the converted copy plus the output, and is too large to send by email.
+
+### The response
+
+The JSON response includes `source_converted`, `source_format` (based on the container), the output `file_size`, a `stego_url`, file details, the sender's public key, a record summary, capacity, the layout, and preserved-bit measurements. It never contains the stego bytes or any private key. `GET /download/<id>.<ext>` checks the token and the extension before serving the file. MKV files are always served as downloads, because browsers cannot play FFV1 Matroska inline.
 
 ## Capacity request
 
@@ -85,7 +95,7 @@ The route stores no output carrier or payload. It removes the uploaded cover cop
 
 ### Early capacity check in the wizard
 
-When the user leaves Input, the browser sends one capacity request with the cover and the payload description, not the payload bytes. It keeps the result while these inputs stay unchanged. On Layout, the LSB slider comes first. The result sets the start-unit slider's minimum to the bootstrap span and its maximum to the latest legal start for that LSB. The number box stays in sync and supports exact values when the slider is coarse. The page hides the status line when the selected start fits. If an LSB change makes the start too large, the page moves it and shows `Start moved to <n>, the latest start that fits at LSB <k>.` If no start fits at the selected LSB, it disables both start controls and suggests the smallest LSB that fits with `Does not fit at LSB <k>. Try LSB <m>.` `/encode` remains the final authority.
+When the user leaves the Input step, the browser sends one capacity request with the cover and a description of the payload, not the payload itself. It reuses that result until one of those inputs changes. On the Layout step, the user picks the LSB count first. The result then sets the start-unit slider's range, from the bootstrap span up to the latest start that fits at that LSB count. The number box beside it allows exact values when the slider is too coarse. While the chosen start fits, no status message is shown. If an LSB change makes the start too large, the page moves it and shows `Start moved to <n>, the latest start that fits at LSB <k>.` If no start fits at the selected LSB, it disables both start controls and suggests the smallest LSB that fits with `Does not fit at LSB <k>. Try LSB <m>.` `/encode` still has the final say.
 
 | Condition | HTTP status | Body |
 | --- | --- | --- |
@@ -95,7 +105,7 @@ When the user leaves Input, the browser sends one capacity request with the cove
 | The request exceeds a configured size limit or a disk-space guard refuses the upload copy | 413 | JSON error |
 | A storage or read failure occurs | 500 | Generic JSON error; the server logs the exception |
 
-A capacity result is an estimate, not an encode result. The client supplies the file size, and the cover can change after the request. `/encode` remains authoritative: it performs key checks, creates the payload record, and writes and validates the encoded carrier.
+A capacity result is only an estimate. The browser reports the payload size itself, and the cover could change after the check. `/encode` is the real authority: it checks the keys, builds the payload record, and writes and validates the stego file.
 
 ## Decode request
 
@@ -106,11 +116,9 @@ A capacity result is an estimate, not an encode result. The client supplies the 
 - `receiver_private_key`: the intended receiver's RSA-2048 private PEM, encrypted or unencrypted; and
 - `receiver_key_password`: optional; leave it empty for an unencrypted private key.
 
-A non-empty password must contain at least 8 characters and is used exactly as entered. Unencrypted private keys are for demos only: anyone with the file can use the key.
+The same password rules apply as for encoding, and each key file can be up to 64 KiB.
 
-The sender public key and receiver private key files can each be up to 64 KiB.
-
-The request does not include media type, LSB count, start unit, record length, a shared location secret, or the original cover. The bootstrap supplies geometry and AES session material. Flask stores the upload in the work directory and calls `verify_png_to_payload_path`, `verify_wav_to_payload_path`, or `verify_video_to_payload_path` based on the carrier family.
+Notice what the request does *not* include: the media type, the LSB count, the start unit, the record length, a shared secret, or the original cover. The receiver does not need to know any of these, because the bootstrap supplies the layout and the AES session key. Flask stores the upload in the work directory and calls `verify_png_to_payload_path`, `verify_wav_to_payload_path`, or `verify_video_to_payload_path` based on the carrier family.
 
 The route uses these HTTP status codes:
 
@@ -128,11 +136,19 @@ Too little free space for file-backed decode staging returns HTTP 200 with verdi
 
 A readable version 2 bootstrap returns `Cannot Verify` with detail `unsupported bootstrap version`; the decoder does not retry with an older format.
 
-Verification reads the bootstrap, validates recovered fields and bounds, reads the packet at that location, checks padding, verifies RSA-PSS before decryption, opens AES-GCM, parses the record, and checks the v3 media hash last. It reads one bootstrap and does not search for alternative packets. Cryptographic and integrity decisions remain in `stego/core.py`; Flask validates inputs and serializes the result.
+Verification runs in a fixed order:
+
+1. Read and open the bootstrap, then check that its fields and bounds make sense.
+2. Read the packet at the recovered location and check its padding.
+3. Verify the RSA-PSS signature, before any decryption.
+4. Decrypt with AES-GCM and parse the record.
+5. Check the version 3 media hash last.
+
+There is exactly one bootstrap, and the verifier never searches for another packet. All cryptographic and integrity decisions are made in `stego/core.py`; Flask only validates inputs and turns the result into JSON.
 
 ## Result and payload handling
 
-The `/encode` JSON response keeps its existing fields and adds:
+These `/encode` response fields describe the source and the payload claims:
 
 | Field | Meaning |
 | --- | --- |
@@ -144,9 +160,9 @@ The `/encode` JSON response keeps its existing fields and adds:
 
 The browser shows a short conversion note, for example: “Your JPEG source was converted to a lossless PNG before embedding.”
 
-`/decode` reports include verdict and detail, carrier type and size, protocol version, recovered start unit and LSB count, signature and integrity state, sender-key fingerprint, preserved-bit count and ratio, and authenticated record fields.
+A `/decode` report includes the verdict and its detail, carrier type and size, protocol version, recovered start unit and LSB count, signature and integrity state, sender-key fingerprint, preserved-bit count and ratio, and authenticated record fields.
 
-A `null` field means that verification did not reach that step or did not recover that value. `null` differs from `false`. When a later step fails, the fields that verification recovered before the failure stay set:
+A `null` field means verification did not reach that step or did not recover that value, which is different from `false`. If a later step fails, the fields recovered before the failure are still filled in:
 
 | Field | Set when |
 | --- | --- |
@@ -158,9 +174,9 @@ A `null` field means that verification did not reach that step or did not recove
 
 For example, `Signature Invalid`, `Cannot Decrypt`, and `Tampered` keep `frame_version` 3, the start location, the LSB count, and the preserved bits. `Payload Missing` and the 400 and service-level `Cannot Verify` responses have `frame_version` `null`. The browser shows the bootstrap as opened only when `frame_version` is not `null`.
 
-Only an `Authentic` result includes `payload_url` and parsed typed metadata. The library atomically publishes authenticated payload bytes to `instance/recovered-payloads`; the route writes a small sidecar containing `download_name`, `serve_mime`, and `preview_allowed`. If sidecar creation fails, the payload is removed. The response contains a URL, not payload bytes or Base64.
+Only an `Authentic` result includes a `payload_url` and the parsed payload metadata. The library writes the authenticated payload to `instance/recovered-payloads` in one atomic step, and the route saves a small sidecar file beside it with `download_name`, `serve_mime`, and `preview_allowed`. If the sidecar cannot be written, the payload is deleted. The response carries a link to the payload, never the payload bytes or a Base64 copy.
 
-The service reads at most a 4 KiB prefix to recognize preview types; it does not decode uploaded media. It allows inline preview only when the metadata is unambiguous, the declared MIME agrees with recognized bytes, and the MIME is in this allowlist:
+To decide whether a payload can be previewed, the service reads at most its first 4 KiB; it never decodes the media. It allows an inline preview only when the metadata is unambiguous, the declared MIME agrees with recognized bytes, and the MIME is in this allowlist:
 
 | Preview | MIME types |
 | --- | --- |
@@ -169,18 +185,13 @@ The service reads at most a 4 KiB prefix to recognize preview types; it does not
 | Audio | `audio/wav`, `audio/mpeg`, `audio/ogg`, `audio/flac`, `audio/mp4`, `audio/webm` |
 | Video | `video/mp4`, `video/webm`, `video/ogg` |
 
-The browser uses native image, audio, and video elements for allowed media. Text
-previews are limited to 1 MiB; larger authenticated text remains downloadable.
-Text preview reads are bounded and time out after 30 seconds, with a retry
-control if they fail. WebM is conservatively sniffed as `video/webm`; an
-audio-only WebM claim does not match that sniff and stays download-only.
-Matroska, SVG, HTML, XML, PDF, and other non-allowlisted types remain
-download-only. A signed false MIME claim does not change the cryptographic
-verdict; the payload is saved but not rendered. The browser inserts response
-text with `textContent`, prevents duplicate submits, and handles JSON and
-transport failures.
+Allowed media is shown with the browser's own image, audio, and video elements. Text previews are capped at 1 MiB; longer authenticated text can still be downloaded. Reading a text preview is bounded and times out after 30 seconds, with a retry button if it fails.
 
-`GET /payload/<id>` validates the token and sidecar, sets a safe MIME type and download name, and applies `nosniff`, a restrictive Content Security Policy, and `Cache-Control: no-store`. Files have no expiry. Recovered payloads are plaintext on disk; anyone who can read the instance folder can read them. Use host-level access controls outside a trusted localhost deployment.
+WebM is always sniffed as `video/webm`, to be on the safe side, so a payload that claims to be audio-only WebM does not match and stays download-only. Matroska, SVG, HTML, XML, PDF, and any other type not in the table are download-only too.
+
+A false MIME claim that the sender signed does not change the cryptographic verdict, since the signature only proves who made the claim. The payload is saved but not rendered. The browser also inserts all response text with `textContent` (never as HTML), blocks duplicate submits, and handles malformed JSON and network failures.
+
+`GET /payload/<id>` validates the token and sidecar, sets a safe MIME type and download name, and applies `nosniff`, a restrictive Content Security Policy, and `Cache-Control: no-store`. Files never expire. Recovered payloads are stored as plain, unencrypted files, so anyone who can read the `instance/` folder can read them. Running the app anywhere other than a trusted localhost would need operating-system access controls on that folder.
 
 ## Errors and storage
 
@@ -193,9 +204,13 @@ The `POST /encode` status rules are:
 | Upload exceeds a configured request limit, fails the request free-space guard, or fails the per-upload free-space check before a route copies it | 413 | JSON error |
 | Storage or unexpected server failure | 500 | Generic JSON error without filesystem details; server logs the exception |
 
-Source refusals that return 400 include CMYK images, animated images, floating-point or over-16-bit images, the image decoded-byte cap, converted PCM size limit, unsupported video pixel formats, more than two audio channels in converted sources, unsupported lossless audio sample depths, and extra video/audio/subtitle/data streams. The fixed source allowlist also refuses AIFF, WMA, audio-only Matroska/WebM, JPEG XL, HEIC/HEIF, JPEG 2000, PPM, TGA, EXR, and other unlisted formats with a specific or generic source-format reason. A decode failure in an allowed format says the file could not be decoded and may be damaged. Strict PCM WAV carriers accept any positive channel count. Video backend messages are returned for carrier-unit, frame-byte, free-space, and output-size limit failures. The source converter turns RGB PNG `tRNS` colour-key transparency into RGBA alpha. The strict PNG adapter still refuses that input when it is used directly. Unsupported or unreadable files return HTTP 400. `/decode` accepts PNG, PCM WAV, and Matroska video. Its status codes are in the table in [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug statuses such as 404, 405, and 413 are retained.
+Source files refused with HTTP 400 include CMYK images, animated images, floating-point or over-16-bit images, the image decoded-byte cap, converted PCM size limit, unsupported video pixel formats, more than two audio channels in converted sources, unsupported lossless audio sample depths, and extra video/audio/subtitle/data streams. The fixed source allowlist also refuses AIFF, WMA, audio-only Matroska/WebM, JPEG XL, HEIC/HEIF, JPEG 2000, PPM, TGA, EXR, and other unlisted formats with a specific or generic source-format reason. A decode failure in an allowed format says the file could not be decoded and may be damaged. Strict PCM WAV carriers accept any positive channel count. Video backend messages are returned for carrier-unit, frame-byte, free-space, and output-size limit failures. The source converter turns RGB PNG `tRNS` colour-key transparency into RGBA alpha. The strict PNG adapter still refuses that input when it is used directly.
 
-The default `MAX_CONTENT_LENGTH` is `None`; deployments and tests can configure a fixed request cap. Before Flask reads an encode, decode, or capacity body, it requires `Content-Length`; a missing header returns 411. It compares the declared length with free space in `STEGO_WORK_DIR` minus the shared 3 GiB reserve. An upload that does not fit returns 413 with `upload is larger than the free disk space allows`. Werkzeug's multipart file streams, route request directories (`inf2005-encode-*`, `inf2005-capacity-*`, and `inf2005-stego-*`), and converted source snapshots use `STEGO_WORK_DIR`. The default is `instance/work`, on the same filesystem as outputs. On systems where `/tmp` is RAM-backed, storing uploads there can consume memory. Key files have a 64 KiB limit. Other uploads have no fixed application size cap by default, but the free-space guard, configured `MAX_CONTENT_LENGTH`, and backend limits still apply. Backend video limits are:
+`/decode` accepts PNG, PCM WAV, and Matroska video; its status codes are listed under [Decode request](#decode-request). If the route cannot store the sidecar for an `Authentic` payload, it removes the payload and returns HTTP 500 with verdict `Cannot Verify`. Unexpected errors are logged and return a generic HTTP 500. Werkzeug's own statuses, such as 404, 405, and 413, are passed through unchanged.
+
+### Upload size and disk space
+
+By default `MAX_CONTENT_LENGTH` is `None`, so there is no fixed request size cap, although tests and deployments can set one. Before Flask reads an encode, decode, or capacity body, it requires `Content-Length`; a missing header returns 411. It compares the declared length with free space in `STEGO_WORK_DIR` minus the shared 3 GiB reserve. An upload that does not fit returns 413 with `upload is larger than the free disk space allows`. Werkzeug's multipart file streams, route request directories (`inf2005-encode-*`, `inf2005-capacity-*`, and `inf2005-stego-*`), and converted source snapshots use `STEGO_WORK_DIR`. The default is `instance/work`, on the same filesystem as the outputs (see [What happens to the upload](#what-happens-to-the-upload) for why). Key files have a 64 KiB limit. Other uploads have no fixed application size cap by default, but the free-space guard, configured `MAX_CONTENT_LENGTH`, and backend limits still apply. The video backend has these limits:
 
 | Limit | Value | Refusal |
 | --- | ---: | --- |
@@ -205,11 +220,15 @@ The default `MAX_CONTENT_LENGTH` is `None`; deployments and tests can configure 
 | Free disk before encode | 3 GiB reserve, plus payload size for payload-file encoding | `insufficient free disk space for video output`, HTTP 400 |
 | Free disk before each mux write | 3 GiB reserve, packet size, and 1 MiB mux slack | `insufficient free disk space for video output`, HTTP 400 |
 
-Image and audio output checks run before the output write. The PNG check uses twice the PNG bound for the encoder temporary and final PNG; payload-file encoding also includes the payload size. The WAV check uses the source file size. These checks keep the shared 3 GiB reserve. Video encoding checks free space before each Matroska packet write. It requires the 3 GiB reserve, the packet size, and 1 MiB of mux slack. A failed check closes and removes the staged output; the route returns HTTP 400 and does not publish a file. The output-size limit is still checked after each packet. For large-video resource limits and recommended demonstration sizes, see [Video Carrier](video-carrier.md#output-and-limits).
+For images and audio, the free-space check runs once, before the output is written. The PNG check uses twice the PNG bound for the encoder temporary and final PNG; payload-file encoding also includes the payload size. The WAV check uses the source file size. These checks keep the shared 3 GiB reserve. Video encoding checks free space before each Matroska packet write. It requires the 3 GiB reserve, the packet size, and 1 MiB of mux slack. A failed check closes and removes the staged output; the route returns HTTP 400 and does not publish a file. The output-size limit is still checked after each packet. For large-video resource limits and recommended demonstration sizes, see [Video Carrier](video-carrier.md#output-and-limits).
+
+### Cleanup and long-running jobs
 
 The optional fixed request cap and the upload free-space guard return 413. `create_app(test_config)` can override the work directory and request cap. `TemporaryDirectory` removes request files and source snapshots on normal success or failure; there is no stale-directory sweeper. A client disconnect or timeout does not cancel a running Flask/PyAV job. The application has no job-cancellation or idempotency-key support. The browser never retries encode or decode POST requests automatically; a manual retry can start a second job and create another output. Encoded carriers and recovered payloads remain in their output directories until users delete them. Private `.stego-staging-*` directories are removed on normal exits. Power loss or `SIGKILL` can leave request or unauthenticated plaintext staging; stop the server and remove these directories manually after a crash. See [Carrier and Payload Flow](carrier-and-payload-flow.md#cleanup-rule).
 
-`/keys/generate` is a local setup helper for sender or receiver keys. Its `key_password` field is optional; an empty value returns an unencrypted private key. A non-empty password must have at least 8 characters. The browser warns that an unencrypted private key is for demos only because anyone with the file can use it. Deployment beyond trusted localhost still needs key storage and access controls, key rotation, transport protection, and auditing.
+### Key generation
+
+`/keys/generate` is a local setup helper for sender or receiver keys. Its `key_password` field is optional; an empty value returns an unencrypted private key. A non-empty password must have at least 8 characters. The browser warns that an unencrypted private key is for demos only, because anyone with the file can use it. Running this beyond a trusted localhost would still need key storage and access controls, key rotation, transport protection, and auditing.
 
 ## Requirement coverage
 
@@ -228,8 +247,8 @@ The optional fixed request cap and the upload free-space guard return 413. `crea
 | FR10 verdict generation | Implemented | Protocol verdicts are returned without weaker web-specific substitutes. |
 | FR11 positive and negative cases | Demonstrated and tested | The notebook shows positive PNG/WAV runs and negative image/audio verdicts, capacity refusals, all LSB counts, and file-payload cases. Tests add wrong-key, tampering, MIME mismatch, invalid-input, upload-limit, and other edge coverage. |
 | FR12 evidence and reproducibility | Implemented | Setup instructions, automated tests, the GUI, and an executable notebook give repeatable evidence. The demonstration files, verdict screenshots, and assignment-only keys go in [demo/](../demo/README.md), with steps to reproduce each verdict. |
-| FR13 innovation | Candidate implemented | Receiver-gated location confidentiality and encrypted typed payloads are available; the team must finalize its explanation. |
+| FR13 innovation | Implemented | Only the intended receiver can find the payload, because its location and depth are sealed in an RSA-OAEP bootstrap. The whole record, including typed file payloads, is encrypted, and an optional lossless video carrier is supported. |
 
 ## Tests and limits
 
-Run `python -m unittest -v`. `test_webapp.py` covers the Flask request/response pipeline; `test_stego.py` covers protocol, image/audio source conversion, and negative verdicts; `test_video.py` covers the video carrier. A wrong receiver key and an absent payload intentionally share one result. Authenticity depends on the sender public key supplied by the receiver. PNG ancillary chunks and WAV chunks outside declared samples are not covered; overwritten LSBs cannot be recovered or authenticated. Version 3 media-hash limits are listed in [Protocol](protocol.md#limits-and-compatibility).
+Run `python -m unittest -v`. `test_webapp.py` covers the Flask request/response pipeline; `test_stego.py` covers protocol, image/audio source conversion, and negative verdicts; `test_video.py` covers the video carrier. A wrong receiver key and a missing payload give the same result, because without the right key an encrypted bootstrap cannot be told apart from ordinary cover bits. Authenticity depends on the sender public key supplied by the receiver. PNG ancillary chunks and WAV chunks outside declared samples are not covered; overwritten LSBs cannot be recovered or authenticated. Version 3 media-hash limits are listed in [Protocol](protocol.md#limits-and-compatibility).
