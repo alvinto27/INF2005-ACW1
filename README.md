@@ -194,6 +194,7 @@ History](AGENT_docs/REPOSITORY-HISTORY.md).
 
 ## Documentation
 
+- [Technical-design Reveal.js presentation](presentation/README.md)
 - [Agent instructions](AGENTS.md)
 - [Documentation index](AGENT_docs/README.md)
 - [Agent navigation map](AGENT_docs/AGENT_MAP.md)

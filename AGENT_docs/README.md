@@ -23,6 +23,7 @@ For repository structure and implementation entry points, see the [Agent Navigat
 - [Video Carrier Design](VIDEO-CARRIER-DESIGN.md) — approved design, implementation details, test record, and video performance measurements for media code 3 (`VID-`).
 - [Web Application Guide](WEB-APPLICATION-GUIDE.md) — request contracts, response handling, payload previews, the encode wizard, requirement coverage, and the disconnected Three.js carrier-map design.
 - [Reliability Audit](RELIABILITY-AUDIT.md) — architecture, failure fixes, test matrix, browser fault-injection evidence, and remaining risks.
+- [Technical-design presentation](../presentation/README.md) — offline Reveal.js deck covering protocol geometry, cryptography, masked hashing, capacity, carrier adapters, verification, and limits.
 
 ## Historical records and project status
 
