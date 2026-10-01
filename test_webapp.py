@@ -1792,13 +1792,6 @@ class WebApplicationTests(unittest.TestCase):
         path.write_bytes(b"a" * (1024 * 1024))
         self.assertTrue(CurrentProtocolService()._verified_payload(payload, path)["preview_allowed"])
 
-    def test_inactive_layout_estimate_returns_controlled_failure(self) -> None:
-        """The disconnected map API must not raise or mislabel its failure as bad input."""
-        response = self.client.post("/layout/estimate", data={})
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.get_json()["ok"], False)
-        self.assertIn("manual start unit", response.get_json()["error"])
-
     def test_duplicate_file_and_form_fields_are_rejected(self) -> None:
         """Multipart duplicates must not silently choose an arbitrary first value."""
         duplicate = self.client.post(
@@ -2293,7 +2286,7 @@ class WebApplicationTests(unittest.TestCase):
         """Read the complete multipart upload when no size limit is set."""
         content = b"the complete cover upload"
         with self.client.application.test_request_context(
-            "/layout/estimate",
+            "/encode",
             method="POST",
             data={"cover": (io.BytesIO(content), "cover.png")},
             content_type="multipart/form-data",

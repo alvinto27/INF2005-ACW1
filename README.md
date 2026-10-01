@@ -44,7 +44,7 @@ Open `http://127.0.0.1:5000`. The encode page is `/`; the verify page is `/verif
 
 ### Expected test output
 
-- `python -m unittest` → `Ran 309 tests ... OK` (no tests skipped).
+- `python -m unittest` → `Ran 308 tests ... OK` (no tests skipped).
 - `node --test scripts/test-api-js.cjs scripts/test-capacity-js.cjs` → 15 tests pass.
 
 ### Folder guide
@@ -233,7 +233,6 @@ History](AGENT_docs/REPOSITORY-HISTORY.md).
 - [Carrier and payload flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md)
 - [Video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md)
 - [Web application guide](AGENT_docs/WEB-APPLICATION-GUIDE.md)
-- [Three.js map status and design](AGENT_docs/WEB-APPLICATION-GUIDE.md#threejs-carrier-map)
 - [Technical-design Reveal.js presentation](presentation/README.md)
 - [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)
 - [Documentation index](AGENT_docs/README.md)

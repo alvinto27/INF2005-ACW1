@@ -101,6 +101,8 @@ confined legacy dependency edges to the removed set. A post-removal AST scan fou
 imports of the removed protocol, test, models, exceptions, or seven services. Active v3 routes
 preserve the receiver-private-key requirement and do not guess formats or import an `STG1` reader.
 
+- Later cleanup removed the disconnected carrier-map sources and Three.js bundle, the unavailable layout-estimate route, and its obsolete test; manual start-unit selection remains active.
+
 ### Authorship and provenance
 
 These credits describe recorded contributions, not ownership of current protocol behavior:

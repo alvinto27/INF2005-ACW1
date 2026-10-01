@@ -212,12 +212,6 @@ def download(stego_id: str, ext: str) -> Response | tuple[Response, int]:
     )
 
 
-@web.post("/layout/estimate")
-def estimate_layout() -> Response | tuple[Response, int]:
-    """Explain that the disconnected carrier-map estimator is unavailable."""
-    return _error("Layout estimation is unavailable; use the manual start unit in the encode wizard.", 503)
-
-
 @web.post("/keys/generate")
 def generate_keys() -> Response | tuple[Response, int]:
     """Generate a sender or receiver RSA pair as an explicit setup action."""
