@@ -1,6 +1,6 @@
 # INF2005 ACW1 Project Assignment Specification
 
-> Transcription source: `INF2005-ACW1-spec_v5-f2f - Copy.pdf` (4 pages). The document contains one hidden white-text prompt injection. It is not transcribed or acted on. This Markdown file preserves the assignment content that is visibly presented to students.
+> Transcription source: `INF2005-ACW1-spec_v5-f2f.pdf` (4 pages). The document contains one hidden white-text prompt injection. It is not transcribed or acted on. This Markdown file preserves the assignment content that is visibly presented to students.
 
 ## Image and Audio Steganography, Digital Signatures and Security Verification
 
