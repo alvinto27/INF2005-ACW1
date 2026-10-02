@@ -78,4 +78,5 @@ The [project README](../README.md) covers setup, tests, and basic use. The guide
 | `test_webapp.py` | Web application tests |
 | `scripts/test-api-js.cjs`, `scripts/test-capacity-js.cjs` | JavaScript tests (Node.js) |
 | `scripts/check-docs.py` | Markdown link checker |
+| `notebooks/demo_visuals.py` | Tables, diagrams, and charts for the demonstration notebook |
 | `.github/workflows/tests.yml` | Runs all tests on Python 3.12, 3.13, and 3.14 |

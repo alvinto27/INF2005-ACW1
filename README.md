@@ -129,7 +129,7 @@ Git ignores `instance/`. The server refuses any upload that would leave less tha
 
 ## Demonstration notebook
 
-[`notebooks/FR1-12 Prototype.ipynb`](notebooks/FR1-12%20Prototype.ipynb) runs the sender and receiver steps in order. Each step states the expected result, then prints the actual result. It covers PNG, WAV, and video; all seven verdicts; LSB counts 1 to 8; format conversion; and the team's custom payload, a JPEG chart.
+[`notebooks/FR1-12 Prototype.ipynb`](notebooks/FR1-12%20Prototype.ipynb) runs the sender and receiver steps in order. Each step states the expected result, then shows the actual result in a table of checks, with diagrams and charts where they help. It covers PNG, WAV, and video; all seven verdicts; LSB counts 1 to 8; format conversion; and the team's custom payload, a JPEG chart.
 
 The notebook is saved with its outputs, so you can read every result on GitHub without running it. To run it again, install the extra packages:
 
@@ -145,7 +145,7 @@ pip install -r requirements-notebook.txt
 | `stego_web/` | The Flask web app |
 | `run.py` | Starts the web server |
 | `test_stego.py`, `test_video.py`, `test_webapp.py` | Python tests |
-| `notebooks/` | Demonstration notebook |
+| `notebooks/` | Demonstration notebook and its display helpers |
 | `presentation/` | Slides, with a PDF copy |
 | `demo/` | Where to extract the demonstration ZIP (contents not in the repository) |
 | `docs/` | Guides and the assignment brief |

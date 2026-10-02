@@ -2,3 +2,5 @@
 ipykernel==7.3.0
 # Runs the notebook from the command line.
 nbconvert==7.17.1
+# Draws the notebook's diagrams and charts.
+matplotlib==3.11.2
