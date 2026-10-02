@@ -30,8 +30,8 @@ Verification does not need the original cover file.
 | Setup and tests | [Quick start](#quick-start), [Tests](#tests) |
 | Requirement coverage | [Web application guide](docs/web-application.md#requirement-coverage) |
 | Demonstration files and keys | [`demo/`](demo/README.md) |
-| End-to-end walkthrough | [Notebook](#demonstration-notebook) |
-| Design | [Slides](presentation/README.md), [guides](#documentation) |
+| End-to-end walkthrough | [Notebook](notebooks/FR1-12%20Prototype.ipynb) ([how to run](#demonstration-notebook)) |
+| Design | [Slides (PDF)](presentation/stego-slides.pdf), [guides](#documentation) |
 | Known limitations | [Known limitations](docs/known-limitations.md) |
 
 ## Quick start
@@ -115,7 +115,7 @@ Git ignores `instance/`. The server refuses any upload that would leave less tha
 
 ## Demonstration notebook
 
-`notebooks/FR1-12 Prototype.ipynb` runs the sender and receiver steps in order. Each step states the expected result, then prints the actual result. It covers PNG, WAV, and video; all seven verdicts; LSB counts 1 to 8; and format conversion. It needs extra packages:
+[`notebooks/FR1-12 Prototype.ipynb`](notebooks/FR1-12%20Prototype.ipynb) runs the sender and receiver steps in order. Each step states the expected result, then prints the actual result. It covers PNG, WAV, and video; all seven verdicts; LSB counts 1 to 8; and format conversion. It needs extra packages:
 
 ```sh
 pip install -r requirements-notebook.txt
@@ -153,5 +153,14 @@ See [known limitations](docs/known-limitations.md) for the full list.
 | [Carrier and payload flow](docs/carrier-and-payload-flow.md) | How files are read, converted, and written |
 | [Video carrier](docs/video-carrier.md) | How video works and its limits |
 | [Known limitations](docs/known-limitations.md) | What the app does not check or support |
-| [History](docs/history/protocol-history.md) | Earlier protocol versions |
-| [Assignment brief](docs/assignment/INF2005-ACW1-spec_v5-f2f.md) | The supplied specification |
+| [Protocol history](docs/history/protocol-history.md) | Earlier protocol versions and the decisions behind them |
+| [Repository history](docs/history/repository-history.md) | The move to PyAV and the removal of old code |
+| [Assignment brief](docs/assignment/INF2005-ACW1-spec_v5-f2f.md) | The supplied specification ([PDF](docs/assignment/INF2005-ACW1-spec_v5-f2f.pdf)) |
+
+Other material:
+
+| Item | Contents |
+| --- | --- |
+| [Slides (PDF)](presentation/stego-slides.pdf) | Technical-design presentation. [How to run the live slides](presentation/README.md). |
+| [Demonstration notebook](notebooks/FR1-12%20Prototype.ipynb) | Sender and receiver steps with expected and actual results |
+| [Demonstration files](demo/README.md) | Covers, stego files, keys, and verdict screenshots |
