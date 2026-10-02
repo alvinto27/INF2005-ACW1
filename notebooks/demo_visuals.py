@@ -11,7 +11,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import HTML, display
 from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Rectangle
+from matplotlib.transforms import Bbox
 
 PASS_COLOUR = "#1a7f37"
 FAIL_COLOUR = "#cf222e"
@@ -140,6 +142,47 @@ def show_table(title: str, columns: list[str], rows: list[list[object]]) -> None
     display(HTML(_table_html(title, columns, [[_cell_html(value) for value in row] for row in rows])))
 
 
+FRAME_COLOUR = "#57606a"
+PANEL_FRAME_COLOUR = "#8c959f"
+
+
+def _frame(figure: Figure, rectangle: Bbox, padding: float, colour: str, width: float) -> None:
+    """Add a rounded frame around a display-space rectangle, with padding in pixels."""
+    corners = figure.transFigure.inverted().transform(
+        [[rectangle.x0 - padding, rectangle.y0 - padding], [rectangle.x1 + padding, rectangle.y1 + padding]]
+    )
+    (x0, y0), (x1, y1) = corners
+    figure.add_artist(FancyBboxPatch(
+        (x0, y0), x1 - x0, y1 - y0, boxstyle="round,pad=0,rounding_size=0.006",
+        transform=figure.transFigure, facecolor="none", edgecolor=colour, linewidth=width, clip_on=False,
+    ))
+
+
+def _show_framed(figure: Figure, panels: list[Axes] | None = None) -> None:
+    """Show a figure inside a frame. When ``panels`` is given, also frame each panel.
+
+    The frames separate figures that appear one after another, and the panels inside one figure.
+    """
+    renderer = figure.canvas.get_renderer()
+    panel_boxes = [axis.get_tightbbox(renderer) for axis in panels or []]
+    if len(panel_boxes) > 1:
+        positions = [axis.get_position() for axis in panels or []]
+        if len({round(position.x0, 3) for position in positions}) == 1:
+            # Stacked panels: give every frame the same width.
+            left, right = min(box.x0 for box in panel_boxes), max(box.x1 for box in panel_boxes)
+            panel_boxes = [Bbox([[left, box.y0], [right, box.y1]]) for box in panel_boxes]
+        elif len({round(position.y0, 3) for position in positions}) == 1:
+            # Side-by-side panels: give every frame the same height.
+            bottom, top = min(box.y0 for box in panel_boxes), max(box.y1 for box in panel_boxes)
+            panel_boxes = [Bbox([[box.x0, bottom], [box.x1, top]]) for box in panel_boxes]
+    whole = figure.get_tightbbox(renderer).transformed(figure.dpi_scale_trans)
+    for box in panel_boxes:
+        _frame(figure, box, 6, PANEL_FRAME_COLOUR, 1.0)
+    _frame(figure, Bbox.union([whole, *panel_boxes]), 16 if panel_boxes else 10, FRAME_COLOUR, 1.6)
+    plt.show()
+    plt.close(figure)
+
+
 def _box(axis: Axes, x: float, y: float, width: float, height: float, text: str, colour: str, text_colour: str = "#1f2328", size: float = 10) -> None:
     """Draw a rounded box with centred text, with (x, y) as the box centre."""
     axis.add_patch(FancyBboxPatch(
@@ -175,8 +218,7 @@ def draw_flow_diagram() -> None:
     _arrow(axis, (10.9, 1.9), (10.95, 1.9))
     axis.text(6.9, 0.45, "The original cover never travels. B needs only the stego file and the two keys.", ha="center", fontsize=9, color="#57606a")
     axis.set_title("How a message travels", fontsize=12, loc="left")
-    plt.show()
-    plt.close(figure)
+    _show_framed(figure)
 
 
 def draw_verification_pipeline() -> None:
@@ -196,8 +238,7 @@ def draw_verification_pipeline() -> None:
     _arrow(axis, (11.07, 2.45), (11.45, 2.45))
     _box(axis, 12.0, 2.45, 1.0, 0.9, "All pass:\nAuthentic", "#dafbe1", text_colour=PASS_COLOUR, size=9)
     axis.set_title("Verification runs these checks in order and stops at the first failure", fontsize=12, loc="left")
-    plt.show()
-    plt.close(figure)
+    _show_framed(figure)
 
 
 def draw_check_grid(rows: list[tuple[str, int | None, str]]) -> None:
@@ -226,8 +267,7 @@ def draw_check_grid(rows: list[tuple[str, int | None, str]]) -> None:
             axis.text(2.1 + column + 0.5, row + 0.5, mark, ha="center", va="center", color="white", fontsize=12, fontweight="bold")
         axis.text(2.1 + len(step_labels) + 0.15, row + 0.5, verdict, ha="left", va="center", fontsize=9.5, fontweight="bold", color=VERDICT_COLOURS.get(verdict, "#1f2328"))
     axis.set_title("Green = passed, red = first failed check, grey = not run", fontsize=10, loc="left", color="#57606a")
-    plt.show()
-    plt.close(figure)
+    _show_framed(figure)
 
 
 def draw_carrier_layout(title: str, total_units: int, bootstrap_units: int, start_unit: int, footprint: int, lsb_count: int) -> None:
@@ -266,8 +306,7 @@ def draw_carrier_layout(title: str, total_units: int, bootstrap_units: int, star
         labels=[f"Bootstrap: units 0 to {bootstrap_units - 1:,}, lowest bit only", f"Packet: {lsb_count} low bit(s) per unit", "Not written; covered by the media hash"],
         loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, -0.12), fontsize=9,
     )
-    plt.show()
-    plt.close(figure)
+    _show_framed(figure, [whole, zoom])
 
 
 def draw_bit_grid(cover_values: np.ndarray, stego_values: np.ndarray, lsb_count: int) -> None:
@@ -300,8 +339,7 @@ def draw_bit_grid(cover_values: np.ndarray, stego_values: np.ndarray, lsb_count:
     axis.text(14, -0.6, "Stego bits", ha="center", fontsize=10, fontweight="bold")
     axis.text(9, -0.6, "→", ha="center", fontsize=14)
     axis.set_title(f"First {count} packet units. Blue columns: the {lsb_count} low bit(s) that may change. Red: bits that changed. High bits never change.", fontsize=10, loc="left")
-    plt.show()
-    plt.close(figure)
+    _show_framed(figure)
 
 
 def plot_lsb_sweep(rows: list[tuple[str, int, int, int, str]]) -> None:
@@ -329,9 +367,8 @@ def plot_lsb_sweep(rows: list[tuple[str, int, int, int, str]]) -> None:
         axis.grid(alpha=0.3)
     axes[0].legend()
     axes[1].legend()
-    figure.tight_layout()
-    plt.show()
-    plt.close(figure)
+    figure.tight_layout(w_pad=3.5)
+    _show_framed(figure, list(axes))
 
 
 def plot_wav_change(cover: np.ndarray, stego: np.ndarray, bootstrap_units: int, start_unit: int, footprint: int) -> None:
@@ -357,8 +394,7 @@ def plot_wav_change(cover: np.ndarray, stego: np.ndarray, bootstrap_units: int, 
     change_axis.set_ylabel("Change")
     change_axis.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8)
     change_axis.grid(alpha=0.3)
-    plt.show()
-    plt.close(figure)
+    _show_framed(figure, [wave_axis, change_axis])
 
 
 def plot_byte_bars(title: str, items: list[tuple[str, int]], highlight: str = "") -> None:
@@ -377,5 +413,4 @@ def plot_byte_bars(title: str, items: list[tuple[str, int]], highlight: str = ""
     for side in ("right", "top"):
         axis.spines[side].set_visible(False)
     figure.tight_layout()
-    plt.show()
-    plt.close(figure)
+    _show_framed(figure)
