@@ -129,7 +129,9 @@ Git ignores `instance/`. The server refuses any upload that would leave less tha
 
 ## Demonstration notebook
 
-[`notebooks/FR1-12 Prototype.ipynb`](notebooks/FR1-12%20Prototype.ipynb) runs the sender and receiver steps in order. Each step states the expected result, then prints the actual result. It covers PNG, WAV, and video; all seven verdicts; LSB counts 1 to 8; and format conversion. It needs extra packages:
+[`notebooks/FR1-12 Prototype.ipynb`](notebooks/FR1-12%20Prototype.ipynb) runs the sender and receiver steps in order. Each step states the expected result, then prints the actual result. It covers PNG, WAV, and video; all seven verdicts; LSB counts 1 to 8; format conversion; and the team's custom payload, a JPEG chart.
+
+The notebook is saved with its outputs, so you can read every result on GitHub without running it. To run it again, install the extra packages:
 
 ```sh
 pip install -r requirements-notebook.txt
