@@ -30,7 +30,7 @@ Verification needs the stego file, the sender's public key, and the receiver's p
 | --- | ---: | --- | --- |
 | PNG | 1 | Low byte of each R, G, and B value, in row-major order (3 units per pixel) | 8-bit RGBA: alpha bytes. 16-bit: RGB high bytes, then 16-bit alpha values (little-endian) |
 | WAV | 2 | Low byte of each PCM sample | All other bytes of each sample |
-| Video | 3 | Low byte of each R, G, and B value, then low byte of each 16-bit audio sample | Frame timestamps, RGB high bytes, alpha, audio start time, audio high bytes. See [video carrier](video-carrier.md#carrier-and-context). |
+| Video | 3 | Low byte of each R, G, and B value, then low byte of each 16-bit audio sample | Frame timestamps, RGB high bytes, alpha, audio start time, audio high bytes. See [video carrier](video-carrier.md#carrier-units-and-fixed-bytes). |
 
 For 16-bit values, the "low byte" is the low-order byte of the number, whatever the byte order in the file. Alpha is never a carrier unit.
 
