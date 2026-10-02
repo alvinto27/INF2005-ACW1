@@ -272,7 +272,7 @@ def draw_check_grid(rows: list[tuple[str, int | None, str]]) -> None:
 
 def draw_carrier_layout(title: str, total_units: int, bootstrap_units: int, start_unit: int, footprint: int, lsb_count: int) -> None:
     """Draw where the bootstrap and the packet sit in the carrier, to scale and zoomed in."""
-    figure, (whole, zoom) = plt.subplots(2, 1, figsize=(12, 3.4), gridspec_kw={"hspace": 1.1})
+    figure, (whole, zoom) = plt.subplots(2, 1, figsize=(12, 4.0), gridspec_kw={"hspace": 1.6})
     for axis in (whole, zoom):
         axis.set_yticks([])
         for side in ("left", "right", "top"):
@@ -285,6 +285,7 @@ def draw_carrier_layout(title: str, total_units: int, bootstrap_units: int, star
     whole.set_ylim(0, 1)
     whole.set_title(f"{title}: the whole carrier ({total_units:,} units, to scale; narrow regions are widened so that they are visible)", fontsize=10, loc="left")
     whole.ticklabel_format(axis="x", style="plain")
+    whole.set_xlabel("Carrier unit index")
     whole.xaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"{int(value):,}"))
     margin = max(footprint, 40)
     low, high = max(0, start_unit - margin), min(total_units, start_unit + footprint + margin)
@@ -354,16 +355,27 @@ def plot_lsb_sweep(rows: list[tuple[str, int, int, int, str]]) -> None:
         axes[0].plot(k_values, [row[2] for row in cover_rows], marker=marker, label=cover_name)
         axes[1].plot(k_values, [row[3] for row in cover_rows], marker=marker, label=cover_name)
     k_range = np.arange(1, 9)
-    axes[2].bar(k_range, 2 ** k_range - 1, color=PACKET_COLOUR)
+    largest_changes = 2 ** k_range - 1
+    axes[2].bar(k_range, largest_changes, color=PACKET_COLOUR)
+    for k, change in zip(k_range, largest_changes):
+        axes[2].text(k, change, f"±{change}", ha="center", va="bottom", fontsize=8)
+    axes[2].set_ylim(0, 290)
     titles = (
         "Units used by the packet\n(more bits per unit = fewer units)",
         "Units actually changed\n(some new bits equal the old bits)",
         "Largest change to one unit\n(2^k − 1)",
     )
-    for axis, title in zip(axes, titles):
+    y_labels = (
+        "Footprint (carrier units)",
+        "Carrier units with a new value",
+        "Largest change in value",
+    )
+    for axis, title, y_label in zip(axes, titles, y_labels):
         axis.set_title(title, fontsize=10)
         axis.set_xlabel("k (LSB count)")
+        axis.set_ylabel(y_label)
         axis.set_xticks(k_range)
+        axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"{int(value):,}"))
         axis.grid(alpha=0.3)
     axes[0].legend()
     axes[1].legend()
@@ -373,11 +385,12 @@ def plot_lsb_sweep(rows: list[tuple[str, int, int, int, str]]) -> None:
 
 def plot_wav_change(cover: np.ndarray, stego: np.ndarray, bootstrap_units: int, start_unit: int, footprint: int) -> None:
     """Chart a WAV cover against its stego copy: a waveform close-up and the per-sample change."""
-    figure, (wave_axis, change_axis) = plt.subplots(2, 1, figsize=(12, 5.6), gridspec_kw={"hspace": 0.55})
+    figure, (wave_axis, change_axis) = plt.subplots(2, 1, figsize=(12, 6.0), gridspec_kw={"hspace": 0.75})
     window = np.arange(start_unit, min(start_unit + 60, len(cover)))
     wave_axis.plot(window, cover[window], color="#57606a", linewidth=2.5, label="Cover")
     wave_axis.plot(window, stego[window], color=PACKET_COLOUR, linewidth=1.2, linestyle="--", label="Stego")
     wave_axis.set_title(f"Samples {window[0]:,} to {window[-1]:,}, inside the packet: the two waves overlap", fontsize=10, loc="left")
+    wave_axis.set_xlabel("Sample index")
     wave_axis.set_ylabel("Sample value")
     wave_axis.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0))
     wave_axis.grid(alpha=0.3)
@@ -391,7 +404,7 @@ def plot_wav_change(cover: np.ndarray, stego: np.ndarray, bootstrap_units: int, 
     change_axis.set_xlim(0, span)
     change_axis.set_title(f"Stego minus cover for samples 0 to {span - 1:,}; samples outside the shaded areas are unchanged", fontsize=10, loc="left")
     change_axis.set_xlabel("Sample index")
-    change_axis.set_ylabel("Change")
+    change_axis.set_ylabel("Stego minus cover\n(sample value)")
     change_axis.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8)
     change_axis.grid(alpha=0.3)
     _show_framed(figure, [wave_axis, change_axis])
@@ -410,6 +423,7 @@ def plot_byte_bars(title: str, items: list[tuple[str, int]], highlight: str = ""
     axis.set_xlim(0, max(values) * 1.3)
     axis.xaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"{value / 1_000_000:.1f} MB"))
     axis.set_title(title, fontsize=11, loc="left")
+    axis.set_xlabel("Size (1 MB = 1,000,000 bytes)")
     for side in ("right", "top"):
         axis.spines[side].set_visible(False)
     figure.tight_layout()
