@@ -14,7 +14,7 @@ This page collects what StegoVerify does not do, so that a reader can judge its 
 
 ## Refused source formats
 
-- Only a fixed list of image, audio, and video formats is accepted (see the [README](../README.md#encoding-protecting-a-file)). JPEG XL, HEIC/HEIF, JPEG 2000, PPM, TGA, EXR, AIFF, WMA, audio-only Matroska/WebM, and every other format outside that list are refused. AVIF is recognised by an `avif` or `avis` major or compatible ISO-BMFF brand, so an AVIF file whose major brand is `mif1` is still accepted.
+- Only a fixed list of image, audio, and video formats is accepted (see the [README](../README.md#encode)). JPEG XL, HEIC/HEIF, JPEG 2000, PPM, TGA, EXR, AIFF, WMA, audio-only Matroska/WebM, and every other format outside that list are refused. AVIF is recognised by an `avif` or `avis` major or compatible ISO-BMFF brand, so an AVIF file whose major brand is `mif1` is still accepted.
 - CMYK images are refused. A CMYK ICC profile is not valid on an RGB PNG, and PyAV has no colour-managed CMYK-to-RGB conversion, so we refuse these images rather than produce wrong colours.
 - Animated images, floating-point or deeper-than-16-bit images, and converted audio with more than two channels are also refused.
 
