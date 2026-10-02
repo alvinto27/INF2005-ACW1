@@ -6,19 +6,13 @@ The slides use Reveal.js 5.2.1, which is included in `vendor/reveal/`, so they w
 
 ## Run
 
-From the repository root, on Windows (using the project's virtual environment):
-
-```powershell
-.\.venv\Scripts\python.exe -m http.server 8000 --directory presentation
-```
-
-On Linux or macOS, run:
+From the repository root:
 
 ```sh
-python3 -m http.server 8000 --directory presentation
+python -m http.server 8000 --directory presentation
 ```
 
-Open `http://127.0.0.1:8000`.
+Use `python3` on Linux or macOS. Then open `http://127.0.0.1:8000`. The server needs no extra packages.
 
 ## Controls
 
