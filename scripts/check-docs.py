@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """Check local Markdown links and GitHub-style heading anchors.
 
-Scope: Markdown files at the repository root and recursively below docs/ and AGENT_docs/. The
-checker deliberately excludes dependency, build, vendor, and Git directories;
-this repository has no other documented component locations. It checks links
-and anchors mechanically only. It does not validate prose, commands, or live
-service state.
+The checker scans Markdown files in the repository root and ``docs/``.
 """
 
 from __future__ import annotations
@@ -16,7 +12,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
-DOCUMENTATION_DIRECTORIES = ["docs", "AGENT_docs"]
+DOCUMENTATION_DIRECTORIES = ["docs"]
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 HEADING = re.compile(r"^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$")
 

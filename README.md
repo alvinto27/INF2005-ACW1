@@ -1,208 +1,174 @@
-# INF2005-ACW1
+# StegoVerify — INF2005 ACW1
 
-This project is a localhost Flask application for encrypting, signing, embedding,
-decoding, and verifying payloads with protocol version 3 from the `stego`
-package. The primary carriers are 8-bit or 16-bit RGB/RGBA PNG and uncompressed
-PCM WAV. The library and Flask web app also support a video carrier. The web app
-accepts common image and audio sources and rewrites video covers to lossless
-FFV1/PCM Matroska (`.mkv`) before embedding.
+StegoVerify is a local Flask web app for INF2005 ACW1. It embeds an encrypted, signed payload (a text message or a file) in an image, audio file, or video. The receiver extracts the payload and checks whether the media was changed after embedding.
 
-The protocol encrypts the complete payload record with AES-256-GCM, authenticates
-the ciphertext and embedding geometry with RSA-PSS, and encrypts a bootstrap to
-the intended receiver with RSA-OAEP. The version 3 full media hash covers PNG RGB low-byte units and the fixed
-high-byte and alpha values; the masked low byte and other bytes of each declared
-PCM sample; and video frame units, fixed bytes, and audio, as [Current Protocol](AGENT_docs/CURRENT-PROTOCOL.md)
-defines, including 16-bit sample and fixed-byte order. PNG ancillary chunks and WAV chunks outside the
-declared samples are not covered. Strict PNG and PCM WAV rewrites keep their
-supported metadata as described in [Carrier and Payload Flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md#metadata-in-the-output).
-Converted sources keep only metadata that applies to their canonical pixels or
-samples. Metadata is not covered by the media hash, so a change to it does not
-change the verdict. The strict PNG encoder sets an existing PNG `tIME` to the
-encode time and drops `sBIT` and `hIST`. It refuses an RGB PNG with a `tRNS`
-colour key. The source converter (`encode_image` and the web app) accepts that input and converts transparency
-to RGBA. The protocol carrier accepts only single-frame 8-bit or 16-bit RGB/RGBA
-PNG images. Its decoded image size cannot exceed 715,827,880 bytes; see [Current
-Protocol](AGENT_docs/CURRENT-PROTOCOL.md) for sample and context rules.
+## How it works
 
-Requires Python 3.12+ because NumPy 2.5.3 requires it.
+```text
+ SENDER                                     RECEIVER
+ 1. Encrypt the payload    (AES-256-GCM)    1. Open the bootstrap   (own private key)
+ 2. Sign it                (RSA-PSS)        2. Check the signature  (sender's public key)
+ 3. Encrypt the bootstrap  (RSA-OAEP)       3. Decrypt the payload
+ 4. Write both into the cover's LSBs        4. Re-check the media fingerprint
+              │                             5. Give one verdict
+              │                                          ▲
+              └──────────────► stego file ───────────────┘
+```
 
-## Setup and run
+Terms used above:
+
+- **LSB (least-significant bit):** the lowest bit of a pixel colour value or audio sample. The payload is written into the lowest 1 to 8 bits.
+- **Bootstrap:** a short record at the start of the cover, encrypted with the receiver's public key. It holds the payload's start position, the number of LSBs used, and the AES key.
+- **Media fingerprint:** a SHA-256 hash of the cover, computed without the bits that embedding changes. It is stored inside the signed payload. If the media changes later, the hash does not match and the verdict is `Tampered`.
+
+Verification does not need the original cover file.
+
+## Quick links
+
+| Topic | Link |
+| --- | --- |
+| Setup and tests | [Quick start](#quick-start), [Tests](#tests) |
+| Known behaviours | [Known behaviours](#known-behaviours) |
+| Requirement coverage | [Web application guide](docs/web-application.md#requirement-coverage) |
+| Demonstration files and keys | Supplied as a separate ZIP; see [`demo/`](demo/README.md) |
+| End-to-end walkthrough | [Notebook](notebooks/stegoverify-demo.ipynb) ([how to run](#demonstration-notebook)) |
+| Design | [Slides (PDF)](presentation/stego-slides.pdf), [guides](#documentation) |
+| Known limitations | [Known limitations](docs/known-limitations.md) |
+
+## Quick start
+
+You need **Python 3.12 or later**.
+
+Linux and macOS:
 
 ```sh
-python -m pip install -r requirements.txt
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
 python run.py
 ```
 
-Open `http://127.0.0.1:5000`. Run all automated checks with:
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python run.py
+```
+
+Open <http://127.0.0.1:5000>. The encode page is `/` and the verify page is `/verify`. The server listens on localhost only.
+
+## Known behaviours
+
+| What you see | Why, and what to do |
+| --- | --- |
+| A stego video shows a yellow-green tint in VLC on Windows | VLC's default Direct3D11 output displays this format wrongly. The file is correct. In VLC, set **Tools > Preferences > Video > Output** to **OpenGL**. |
+| The browser downloads the `.mkv` instead of playing it | Browsers cannot play lossless FFV1 video. Open the file in VLC or another desktop player. |
+| A video output is much larger than the input, and encoding is slow | Output is lossless, at about 40 MB per second of 1080p video. Use clips of 30 seconds or less. |
+| An older stego file gives `Cannot Verify` with `unsupported bootstrap version` | Only files made by protocol version 3 can be verified. |
+| Editing PNG text, WAV `LIST` chunks, or video tags still gives `Authentic` | The check covers the image, sound, and video content, not metadata. |
+| The page animations do not play | The animation library loads from the internet. Offline, or with reduced motion turned on, the pages still work without animation. |
+
+See [known limitations](docs/known-limitations.md) for the full list.
+
+## Tests
+
+| Command | Expected result |
+| --- | --- |
+| `python -m unittest` | `Ran 308 tests ... OK`. If the FFmpeg command-line tool is not installed, one test is skipped: `OK (skipped=1)`. |
+| `node --test scripts/test-api-js.cjs scripts/test-capacity-js.cjs` | 15 tests pass. Needs Node.js only. |
+| `python scripts/check-docs.py` | 0 broken links in the docs. |
+
+GitHub Actions runs all three on Python 3.12, 3.13, and 3.14.
+
+## Using the app
+
+### Encode
+
+1. Select the cover and the payload (a text message or a file).
+2. Load the sender's private key, or generate a sender key pair.
+3. Load the receiver's public key, or generate a receiver key pair.
+4. Set the start unit and the LSB count (1 to 8). The page shows whether the payload fits.
+5. Select **Encrypt, sign and export**.
+6. Download the stego file.
+
+| Cover type | Accepted formats | Output |
+| --- | --- | --- |
+| Image | PNG, JPEG, WebP, AVIF, BMP, TIFF, GIF (still images) | PNG |
+| Audio | WAV, MP3, AAC, M4A, FLAC, Ogg | WAV |
+| Video | MP4, MOV, MKV, WebM, AVI | MKV |
+
+The output is always lossless, because lossy formats such as JPEG and MP3 would change the embedded bits when saved. Video output is therefore much larger than the input, and browsers cannot play it.
+
+### Verify
+
+Upload the stego file, the sender's public key, and the receiver's private key. The page shows one verdict. If the verdict is `Authentic`, the payload can be previewed or downloaded.
+
+| Verdict | Meaning |
+| --- | --- |
+| `Authentic` | All checks passed. The media is unchanged. |
+| `Tampered` | The signature is fine, but the media was changed. |
+| `Signature Invalid` | Wrong sender key, or the hidden data was altered or moved. |
+| `Payload Missing` | Your key cannot open the bootstrap: wrong key, or nothing is hidden. |
+| `Wrong Start Location` | The hidden data points outside the file. |
+| `Cannot Decrypt` | The encrypted record failed its integrity check. |
+| `Cannot Verify` | The file cannot be read as a stego file. |
+
+The [protocol guide](docs/protocol.md#verification-verdicts) gives the exact conditions.
+
+### Where files go
+
+| Folder | Contents | Deleted automatically? |
+| --- | --- | --- |
+| `instance/work/` | Temporary files for each request | Yes, when the request ends |
+| `instance/stego-outputs/` | Stego files you created | No |
+| `instance/recovered-payloads/` | Payloads from `Authentic` results, stored unencrypted | No |
+
+Git ignores `instance/`. The server refuses any upload that would leave less than 3 GiB of free disk space.
+
+## Demonstration notebook
+
+[`notebooks/stegoverify-demo.ipynb`](notebooks/stegoverify-demo.ipynb) runs the sender and receiver steps in order. Each step states the expected result, then shows the actual result in a table of checks, with diagrams and charts where they help. It covers PNG, WAV, and video; all seven verdicts; LSB counts 1 to 8; format conversion; and the team's custom payload, a JPEG chart.
+
+The notebook is saved with its outputs, so you can read every result on GitHub without running it. To run it again, install the extra packages:
 
 ```sh
-python -m unittest -v
-python scripts/check-docs.py
+pip install -r requirements-notebook.txt
 ```
 
-CI runs these commands on Python 3.12, 3.13, and 3.14. It also runs the
-dependency-free browser-request and capacity-helper tests; run them locally if
-Node is available:
+## Project layout
 
-```sh
-node --test scripts/test-api-js.cjs scripts/test-capacity-js.cjs
-```
-
-The optional demonstration notebook additionally needs:
-
-```sh
-python -m pip install -r requirements-notebook.txt
-```
-
-The notebook is a human-readable, human-verifiable proof of the end-to-end flow.
-It runs the sender and receiver steps in order. Each step states what to expect
-and prints the evidence beside it, so a reader can check the result without
-reading library code. It demonstrates PNG (including 16-bit RGB), RGBA and WAV
-encoding and verification, failure verdicts, typed payloads, PNG/WAV payload-file
-flows, assignment payload sizes, all LSB counts from 1 through 8, JPEG-to-PNG and
-MP3-to-WAV conversion, and a short 8-bit video example. It also simulates
-low-space, audio-depth, RIFF-size, and video mux-space refusals without creating
-large files, and prints video limits and cost estimates. Party A-to-Party B
-transfer is a folder simulation; live email transfer remains for demo day.
-
-The notebook does not show every feature. Tests and the guides in `AGENT_docs/`
-cover details it omits, including the decoded-PNG size cap, metadata and EXIF
-handling, refused source formats, high-bit-depth and alpha video, video
-payload-file functions, and the web application. The notebook's storage and
-limit refusals are safe simulations, not tests at the real maximum sizes. The
-tests prove individual rules and edge cases. The library code, tests, and guides
-are the reference for exact API contracts.
-
-## Web application flow
-
-Encoding requires:
-
-1. a still PNG, JPEG, WebP, AVIF, BMP, TIFF, or GIF image; WAV with a `pcm_*` codec; MP3; AAC ADTS; M4A with AAC or ALAC; FLAC; Ogg with Vorbis or Opus; or video in MP4/MOV, Matroska/WebM, or AVI with one decodable video stream and zero or one audio stream. Audio-only Matroska/WebM is refused. The output is lossless PNG, WAV, or FFV1/PCM Matroska (`.mkv`);
-2. either a UTF-8 message or one arbitrary payload file, plus required team ID and sender values; its MIME and filename claims are generated automatically from the selected input and are read-only in the browser; the server ignores submitted claim overrides;
-3. a sender RSA private key; its password is optional. Leave it empty for an unencrypted key. Unencrypted keys are for demos only;
-4. the intended receiver's RSA public key;
-5. a packet start unit at or after the 2,048-unit RSA-2048 bootstrap span; and
-6. an LSB count from 1 through 8.
-
-The server validates the inputs, converts non-strict sources once to a canonical
-PNG or WAV snapshot in the request temporary directory, and saves uploaded payload
-files to a private request-scoped temporary file (or writes a short message there).
-It constructs typed authenticated metadata, builds the full media hash, encrypts and signs the payload
-record, embeds the receiver bootstrap and packet, and returns the stego media plus
-the sender public key. Payload bytes are processed in bounded chunks.
-
-Verification accepts the received PNG, WAV, or Matroska video stego file, the
-trusted sender public key, and the intended receiver private key. Its password is
-optional; leave it empty for an unencrypted key. Unencrypted keys are for demos only.
-The receiver bootstrap recovers the start unit, LSB count, record length, and
-AES session material.
-The original cover and the previous shared start-location secret are not inputs.
-
-After an `Authentic` result, the protocol writes only the recovered payload to a
-private temporary file, then publishes it in `instance/recovered-payloads` and
-returns a download URL. It checks MIME signatures and text UTF-8 in bounded reads.
-The browser previews text, PNG, JPEG, GIF, WebP, AVIF, BMP, WAV, MP3, Ogg,
-FLAC, MP4, and WebM only when the signed MIME claim agrees with a bounded
-signature check of the recovered bytes. Video payloads use a native controls
-player. SVG, HTML, XML, PDF, Matroska, and other non-allowlisted formats remain
-download-only. The verify JSON returns a URL, not payload bytes. These recovered
-files stay without an expiry. Delete them manually. Anyone
-who can read the server's instance folder can read the recovered payloads.
-
-Payload verification uses temporary files under `.stego-staging-*` directories.
-Normal exits remove them. A power loss or `SIGKILL` can leave unauthenticated
-plaintext in these private directories. After a crash, stop the server and
-manually delete `.stego-staging-*` directories under the instance folder.
-
-The local server has no fixed request-size cap by default. It requires
-`Content-Length` and keeps a shared 3 GiB free-space reserve before it reads an
-encode or verify upload. It stores multipart streams and request temporary files
-under `instance/work`, not `/tmp` (a RAM-backed tmpfs on this host). A configured
-`MAX_CONTENT_LENGTH` still applies. Converted audio can hold up to
-4,294,967,256 bytes of PCM data, the largest size that a standard WAV file can
-record. Allowed, but not advised. A WAV file larger than 2 GiB can fail to open
-in some older audio programs, because they read the WAV size field as a signed
-number. The application reads it correctly. Such a file also needs about 8 GiB
-of disk during encoding (converted copy plus output) and cannot be sent by
-email. Video backend limits are 512 Gi carrier units, 256 MiB per
-canonical decoded frame, a 1280 GiB (1.25 TiB) output, and a 3 GiB free-space
-reserve before encode (plus payload size for file payloads). Before each
-Matroska packet write, the encoder also checks room for that packet and 1 MiB of
-mux slack above the reserve. It stores
-encoded PNG, WAV, and MKV files in `instance/stego-outputs` and returns a download URL instead of sending
-the media as base64. These files also stay without an expiry. Delete them
-manually when they are no longer needed.
-
-Allowed, but not advised. The limits accept a 10-minute 4K video at 30 fps with 16-bit RGBA. This video has about 1.2 TB of uncompressed image data. The lossless MKV output can be close to that size. To verify the output, you must upload it again, and the upload needs the same space again. Processing can take many hours. A file of this size cannot be sent by email. For demonstrations, use short clips (30 seconds or less at 1080p). The application refuses the encode when free disk space falls below the 3 GiB reserve.
-
-## Protocol API
-
-The public Python API includes `encode_png`, `verify_png`, `encode_wav`,
-`verify_wav`, `PngCarrier`, `WavCarrier`, `VideoCarrier`, `encode_video`, and
-`verify_video`. It also includes the source helpers `open_image_source`,
-`open_audio_source`, `detect_source_family`, `encode_image`, and `encode_audio`,
-plus their payload-file variants. The core provides PNG, WAV, and video
-payload-file encode and verify functions. Source converters accept only the
-listed still-image signatures and the fixed audio/video container and codec
-allowlist above. Converted audio has one or two channels. They create temporary canonical PNG/WAV carriers;
-strict PNG and PCM WAV inputs bypass conversion. Strict PCM WAV carriers accept
-any positive channel count. Converted snapshots are removed
-when the context or encode call ends. CMYK images are refused because a CMYK ICC
-profile is not valid on an RGB PNG, and colour-managed conversion needs a library
-outside PyAV. See [Source conversion](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md#source-conversion).
-
-Verification requires the sender public key and receiver private key. The
-file-backed carriers provide bounded range reads, chunk iteration, and
-sequential rewrites. `WavCarrier` reads whole PCM frames, so carrier working
-memory does not grow with the WAV size.
-
-The video API includes `VideoCarrier`, `encode_video`, `verify_video`,
-`encode_video_from_payload_path`, and `verify_video_to_payload_path`. The Flask
-web app also accepts supported video covers and verifies `.mkv` outputs. Video
-encode writes lossless FFV1 video and PCM audio to Matroska; this output can be
-much larger than the compressed input and browsers do not play it inline.
-See the [video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md#output-and-limits)
-for carrier-unit, canonical frame-byte, output-size, and disk-space limits. PyAV is a
-required install dependency in `requirements.txt`; PNG, WAV, and video I/O use PyAV.
-Pillow is used only by tests and the demonstration notebook. The public
-`CarrierSource` abstraction and `prepare_carrier_encoding` /
-`decode_carrier_source` entry points support backend-level operations. The public
-`lsb_range_transform` helper prepares LSB changes for a carrier range. Whole-array
-carrier APIs and whole-file WAV loading helpers are not public; the
-`MAX_WAV_FRAME_BYTES` limit has been removed. For example:
-
-```python
-layout, payload = encode_png(
-    "cover.png",
-    "stego.png",
-    sender_private_key,
-    receiver_public_key,
-    2048,
-    3,
-    b"message",
-    b"mime=text/plain;name=message.txt",
-)
-result = verify_png("stego.png", sender_public_key, receiver_private_key)
-```
-
-All serialised protocol integers use unsigned 64-bit big-endian fields. Existing
-version 1 and version 2 masked-media files are not accepted by the active
-version-3 web routes. A readable version 2 bootstrap returns `Cannot Verify`
-with `unsupported bootstrap version`. The separate legacy `STG1` implementation
-has been removed and is not interoperable with this protocol. See [Protocol
-Compatibility](AGENT_docs/CURRENT-PROTOCOL.md#limits-and-compatibility) and [Repository
-History](AGENT_docs/REPOSITORY-HISTORY.md).
+| Path | Contents |
+| --- | --- |
+| `stego/` | Protocol library (usable from Python without the web app) |
+| `stego_web/` | The Flask web app |
+| `run.py` | Starts the web server |
+| `test_stego.py`, `test_video.py`, `test_webapp.py` | Python tests |
+| `notebooks/` | Demonstration notebook and its display helpers |
+| `presentation/` | Slides, with a PDF copy |
+| `demo/` | Where to extract the demonstration ZIP (contents not in the repository) |
+| `docs/` | Guides and the assignment brief |
+| `scripts/` | Link checker and JavaScript tests |
 
 ## Documentation
 
-- [Agent instructions](AGENTS.md)
-- [Documentation index](AGENT_docs/README.md)
-- [Agent navigation map](AGENT_docs/AGENT_MAP.md)
-- [Current protocol](AGENT_docs/CURRENT-PROTOCOL.md)
-- [Protocol history](AGENT_docs/PROTOCOL-HISTORY.md)
-- [Repository history](AGENT_docs/REPOSITORY-HISTORY.md)
-- [Carrier and payload flow](AGENT_docs/CARRIER-AND-PAYLOAD-FLOW.md)
-- [Video carrier design](AGENT_docs/VIDEO-CARRIER-DESIGN.md)
-- [Web application guide](AGENT_docs/WEB-APPLICATION-GUIDE.md)
-- [Three.js map status and design](AGENT_docs/WEB-APPLICATION-GUIDE.md#threejs-carrier-map)
-- [Assignment specification](docs/INF2005-ACW1-spec_v5-f2f.md)
+| Guide | What it covers |
+| --- | --- |
+| [Docs index](docs/README.md) | Glossary and code map |
+| [Protocol](docs/protocol.md) | The hidden data format, the cryptography, and the verdicts |
+| [Web application](docs/web-application.md) | What each page and route does |
+| [Carrier and payload flow](docs/carrier-and-payload-flow.md) | How files are read, converted, and written |
+| [Video carrier](docs/video-carrier.md) | How video works and its limits |
+| [Known limitations](docs/known-limitations.md) | What the app does not check or support |
+| [Protocol history](docs/history/protocol-history.md) | Earlier protocol versions and the decisions behind them |
+| [Repository history](docs/history/repository-history.md) | The move to PyAV and the removal of old code |
+| [Assignment brief](docs/assignment/INF2005-ACW1-spec_v5-f2f.md) | The supplied specification ([PDF](docs/assignment/INF2005-ACW1-spec_v5-f2f.pdf)) |
+
+Other material:
+
+| Item | Contents |
+| --- | --- |
+| [Slides (PDF)](presentation/stego-slides.pdf) | Technical-design presentation. [How to run the live slides](presentation/README.md). |
+| [Demonstration notebook](notebooks/stegoverify-demo.ipynb) | Sender and receiver steps with expected and actual results |
+| [Demonstration files](demo/README.md) | Covers, stego files, keys, and verdict screenshots, supplied as a separate ZIP |

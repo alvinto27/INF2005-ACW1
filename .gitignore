@@ -4,3 +4,13 @@ __pycache__/
 instance/
 /samples/*
 !/samples/Banana.png
+!/samples/emissions_graph.jpg
+
+# Demonstration files are supplied separately as a ZIP, not published here
+/demo/*
+!/demo/README.md
+
+# Local development tooling
+AGENTS.md
+/.githooks/
+/scripts/install-hooks.sh

@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="StegoVerify protocol v3 technical design presentation">
+  <title>StegoVerify — Technical Design</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="vendor/reveal/reveal.css">
+  <link rel="stylesheet" href="deck.css">
+</head>
+<body>
+  <a class="skip-link" href="#deck-start">Skip to slides</a>
+  <div class="deck-chrome" aria-hidden="true">
+    <div class="deck-brand">
+      <svg viewBox="0 0 32 32"><path d="m16 2 12 7v14l-12 7L4 23V9Z M4 9l12 7 12-7 M16 16v14 M10 5v14l12 7 M22 5v14l-12 7"/></svg>
+      <span>StegoVerify</span>
+    </div>
+    <div class="deck-protocol"><i></i> PROTOCOL V3 / TECHNICAL DESIGN</div>
+  </div>
+
+  <div class="reveal">
+    <div class="slides" id="deck-start">
+      <section class="title-slide dark" data-background-color="#05070b">
+        <div class="title-grid">
+          <div>
+            <p class="eyebrow blue">INF2005 / ACW1 / 2026</p>
+            <h1>Masked-Media<br><span>Protocol v3</span></h1>
+            <p class="lede">A receiver-gated, signed and encrypted masked-media protocol for image, audio and video carriers.</p>
+            <div class="pill-row">
+              <span>AES-256-GCM</span><span>RSA-2048</span><span>SHA-256</span><span>1–8 LSB</span>
+            </div>
+          </div>
+          <div class="hero-stack" aria-label="Protocol layer illustration">
+            <div class="iso iso-back"></div>
+            <div class="iso iso-carrier"><span>PROTECTED MEDIA</span><b>RGB · PCM · FRAME</b></div>
+            <div class="iso iso-packet"><span>ENCRYPTED PACKET</span><b>CIPHERTEXT + SIGNATURE</b></div>
+            <div class="iso iso-key"><span>RECEIVER GATE</span><b>RSA-OAEP</b></div>
+            <div class="hero-axis">ENCRYPT → SIGN → EMBED → VERIFY</div>
+          </div>
+        </div>
+        <aside class="notes">Open with the security promise, not the implementation. The carrier can be shared normally. Only the intended receiver can discover the packet geometry and decrypt the payload, while the trusted sender key proves origin.</aside>
+      </section>
+
+      <section class="light">
+        <div class="slide-head"><p class="eyebrow">01 / SECURITY CONTRACT</p><span class="section-tag">WHY</span></div>
+        <h2>Security Properties and <span>Trust Model</span></h2>
+        <div class="contract-grid">
+          <article class="contract-card">
+            <span class="card-no">01</span><div class="contract-icon lock-icon"></div>
+            <h3>Confidential payload</h3><p>The complete record—not only the user bytes—is encrypted with AES-256-GCM.</p>
+          </article>
+          <article class="contract-card fragment">
+            <span class="card-no">02</span><div class="contract-icon receiver-icon"></div>
+            <h3>Intended receiver</h3><p>RSA-OAEP hides the packet location, depth, length and AES session material.</p>
+          </article>
+          <article class="contract-card fragment">
+            <span class="card-no">03</span><div class="contract-icon signature-icon"></div>
+            <h3>Trusted sender</h3><p>RSA-PSS authenticates the ciphertext, carrier interpretation and embedding geometry.</p>
+          </article>
+          <article class="contract-card fragment">
+            <span class="card-no">04</span><div class="contract-icon hash-icon"></div>
+            <h3>Media integrity</h3><p>A reproducible masked SHA-256 hash detects changes without needing the original cover.</p>
+          </article>
+        </div>
+        <p class="bottom-line fragment">Payload bytes are released only when every reachable check produces <strong>Authentic</strong>.</p>
+        <aside class="notes">Frame the four independent security goals. A useful Q&amp;A distinction: the sender public key must still be trusted out of band; the protocol does not provide a PKI.</aside>
+      </section>
+
+      <section class="dark architecture-slide" data-background-color="#070b14">
+        <div class="slide-head"><p class="eyebrow blue">02 / SYSTEM ARCHITECTURE</p><span class="section-tag dark-tag">LOCALHOST</span></div>
+        <h2>Application and <span>Protocol Architecture</span></h2>
+        <div class="architecture">
+          <div class="arch-node browser"><small>INTERFACE</small><strong>Browser GUI</strong><span>Encode · Compare · Verify</span></div>
+          <div class="arch-arrow fragment">MULTIPART HTTP <b>↓</b></div>
+          <div class="arch-node flask fragment"><small>BOUNDARY</small><strong>Flask service</strong><span>Validate · Convert · Stage</span></div>
+          <div class="arch-arrow fragment">FILE-BACKED API <b>↓</b></div>
+          <div class="arch-node core fragment"><small>PROTOCOL V3</small><strong>Stego core</strong><span>Layout · Hash · Encrypt · Sign</span></div>
+          <div class="backend-rail fragment">
+            <div><i class="image-glyph"></i><strong>PNG</strong><span>RGB low bytes</span></div>
+            <div><i class="wave-glyph"></i><strong>WAV</strong><span>PCM sample low bytes</span></div>
+            <div><i class="film-glyph"></i><strong>MKV</strong><span>FFV1 + PCM</span></div>
+          </div>
+        </div>
+        <p class="micro-note">No database · no cloud API · no original cover required at verification</p>
+        <aside class="notes">PyAV performs media I/O, cryptography supplies RSA/AES/SHA, and NumPy performs packed LSB transforms. Runtime data stays under the Flask instance directory.</aside>
+      </section>
+
+      <section class="light">
+        <div class="slide-head"><p class="eyebrow">03 / CARRIER ABSTRACTION</p><span class="section-tag">MEDIA-NEUTRAL CORE</span></div>
+        <h2>One Protocol, <span>Three Carrier Adapters</span></h2>
+        <div class="media-grid">
+          <article class="media-card image-card">
+            <header><span>01</span><strong>PNG</strong><em>IMAGE</em></header>
+            <div class="pixel-grid" aria-label="RGB pixel grid">
+              <i class="r"></i><i class="g"></i><i class="b"></i><i class="r"></i><i class="g"></i><i class="b"></i><i class="r"></i><i class="g"></i><i class="b"></i><i class="r"></i><i class="g"></i><i class="b"></i>
+            </div>
+            <p><b>Carrier unit:</b> low byte of R, G or B.<br><b>Order:</b> row-major, R → G → B.<br><b>Fixed data:</b> alpha and 16-bit high bytes.</p>
+          </article>
+          <article class="media-card audio-card fragment">
+            <header><span>02</span><strong>WAV</strong><em>AUDIO</em></header>
+            <div class="sample-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <p><b>Carrier unit:</b> low byte of each PCM sample.<br><b>Order:</b> declared interleaved samples.<br><b>Fixed data:</b> every other sample byte.</p>
+          </article>
+          <article class="media-card video-card fragment">
+            <header><span>03</span><strong>MKV</strong><em>OPTIONAL VIDEO</em></header>
+            <div class="frame-strip"><i></i><i></i><i></i><b>+</b><span class="mini-wave"></span></div>
+            <p><b>Carrier unit:</b> RGB low bytes, then s16 audio low bytes.<br><b>Fixed data:</b> timing, high bytes and alpha.<br><b>Output:</b> lossless FFV1 + PCM.</p>
+          </article>
+        </div>
+        <aside class="notes">The protocol core sees carrier units and fixed bytes, not pixels or sample frames. This separation is why the same cryptographic protocol works across media.</aside>
+      </section>
+
+      <section class="bit-slide dark" data-background-color="#071026">
+        <div class="slide-head"><p class="eyebrow blue">04 / LSB REPLACEMENT</p><span class="section-tag dark-tag">BIT LEVEL</span></div>
+        <h2>Embedding Data Through <span>LSB Replacement</span></h2>
+        <div class="bit-demo">
+          <div class="bit-copy"><p class="label">ORIGINAL CARRIER UNIT</p><div class="byte-row"><i>1</i><i>1</i><i>0</i><i>1</i><i>0</i><i class="low">1</i><i class="low">0</i><i class="low">1</i></div><code>0xD5</code></div>
+          <div class="bit-operator"><span>packet bits</span><b>011</b><i>↓</i></div>
+          <div class="bit-copy"><p class="label">STEGO CARRIER UNIT / k=3</p><div class="byte-row"><i>1</i><i>1</i><i>0</i><i>1</i><i>0</i><i class="written">0</i><i class="written">1</i><i class="written">1</i></div><code>0xD3</code></div>
+        </div>
+        <div class="equation-panel fragment"><code>stego = (carrier &amp; ~((1 &lt;&lt; k) - 1)) | packet_field</code><span>Bytes become bits MSB-first; the packet field occupies the low <b>k</b> bits.</span></div>
+        <div class="tradeoff fragment"><span>1 LSB</span><div><i></i></div><strong>lower distortion</strong><b>↔</b><strong>higher capacity</strong><div class="full"><i></i></div><span>8 LSB</span></div>
+        <aside class="notes">At k=8, every bit of a packet-region carrier unit is replaced. The fixed bootstrap still always uses one LSB per unit.</aside>
+      </section>
+
+      <section class="light geometry-slide">
+        <div class="slide-head"><p class="eyebrow">05 / TWO-PART EMBEDDED STRUCTURE</p><span class="section-tag">GEOMETRY</span></div>
+        <h2>Fixed Bootstrap, <span>Relocatable Packet</span></h2>
+        <div class="carrier-ruler">
+          <div class="ruler-ticks"><span>0</span><span>2,048</span><span>start_unit</span><span>total_units</span></div>
+          <div class="ruler-body">
+            <div class="bootstrap-region"><strong>BOOTSTRAP</strong><small>2,048 units · 1 LSB</small></div>
+            <div class="gap-region"><span>UNTOUCHED / AVAILABLE GAP</span></div>
+            <div class="packet-region"><strong>PACKET</strong><small>footprint units · k LSB</small></div>
+            <div class="tail-region"></div>
+          </div>
+          <div class="ruler-bracket start-bracket">receiver decrypts this position</div>
+        </div>
+        <div class="geometry-cards">
+          <article class="fragment"><span>PUBLIC SHAPE</span><strong>Bootstrap location</strong><p>Always begins at unit 0. Its existence may be observable.</p></article>
+          <article class="fragment"><span>PRIVATE GEOMETRY</span><strong>Packet location + depth</strong><p>Recovered only by opening the RSA-OAEP bootstrap.</p></article>
+          <article class="fragment"><span>TAMPER BINDING</span><strong>Signed start unit</strong><p>Relocating a packet produces <em>Signature Invalid</em>.</p></article>
+        </div>
+        <aside class="notes">This is the primary innovation. It provides location confidentiality, not invisibility of the fixed bootstrap itself.</aside>
+      </section>
+
+      <section class="dark" data-background-color="#070b14">
+        <div class="slide-head"><p class="eyebrow blue">06 / RECEIVER BOOTSTRAP</p><span class="section-tag dark-tag">RSA-OAEP</span></div>
+        <h2>Receiver-Only <span>Packet Discovery</span></h2>
+        <div class="binary-layout bootstrap-layout">
+          <div style="--w:1"><span>version</span><b>u8</b><em>1</em></div>
+          <div style="--w:1"><span>lsb_count</span><b>u8</b><em>1</em></div>
+          <div style="--w:2"><span>start_unit</span><b>u64</b><em>8</em></div>
+          <div style="--w:2"><span>ciphertext_length</span><b>u64</b><em>8</em></div>
+          <div class="key-field" style="--w:5"><span>session_key</span><b>256-bit AES key</b><em>32</em></div>
+          <div style="--w:3"><span>aead_nonce</span><b>96-bit nonce</b><em>12</em></div>
+        </div>
+        <div class="transform-line"><span>62-byte plaintext</span><b>RSA-2048 OAEP / SHA-256</b><span>256-byte envelope</span><i>→ 2,048 carrier bits</i></div>
+        <div class="aad-note fragment"><small>AES-GCM AAD / 18 BYTES</small><code>version || lsb_count || start_unit || ciphertext_length</code><p>The geometry recovered from the bootstrap must also authenticate under the payload encryption.</p></div>
+        <aside class="notes">Clarify a common misconception: the bootstrap is encrypted directly with RSA-OAEP. The 18 geometry bytes are additional authenticated data for the payload’s AES-GCM operation.</aside>
+      </section>
+
+      <section class="light record-slide">
+        <div class="slide-head"><p class="eyebrow">07 / PAYLOAD RECORD</p><span class="section-tag">ENCRYPTED AS ONE</span></div>
+        <h2>Encrypted <span>Payload Record Layout</span></h2>
+        <div class="record-stack">
+          <div><span>media_id_length</span><b>u8</b></div><div class="wide"><span>media_id</span><b>IMG/AUD/VID + 128-bit random ID</b></div>
+          <div><span>timestamp</span><b>u64 UTC</b></div><div><span>nonce</span><b>16 bytes</b></div>
+          <div class="hash-record"><span>media_hash</span><b>SHA-256 / 32 bytes</b></div>
+          <div><span>user_length</span><b>u64</b></div><div class="payload-record"><span>user_payload</span><b>arbitrary bytes</b></div>
+          <div><span>metadata_length</span><b>u64</b></div><div class="wide"><span>metadata</span><b>UTF-8 typed claims</b></div>
+        </div>
+        <div class="record-facts">
+          <div><strong>109 B</strong><span>record overhead with generated ID and empty metadata</span></div>
+          <div><strong>+16 B</strong><span>AES-GCM authentication tag</span></div>
+          <div><strong>+256 B</strong><span>RSA-PSS signature</span></div>
+          <div class="total"><strong>381 B</strong><span>minimum packet overhead before user payload</span></div>
+        </div>
+        <aside class="notes">Typed metadata is not a new wrapper. Raw file bytes stay in user_payload. The web convention adds flow, team, sender, inferred MIME and a safe filename.</aside>
+      </section>
+
+      <section class="dark crypto-slide" data-background-color="#061029">
+        <div class="slide-head"><p class="eyebrow blue">08 / CRYPTOGRAPHIC CHOREOGRAPHY</p><span class="section-tag dark-tag">THREE DISTINCT JOBS</span></div>
+        <h2>Separate Cryptographic <span>Security Roles</span></h2>
+        <div class="crypto-flow">
+          <div class="crypto-source"><span>PAYLOAD RECORD</span><strong>plaintext</strong></div>
+          <div class="crypto-step aes fragment"><small>CONFIDENTIALITY + AUTHENTICATION</small><strong>AES-256-GCM</strong><code>key 32 B · nonce 12 B · tag 16 B</code></div>
+          <div class="crypto-output"><span>CIPHERTEXT</span><strong>signed bytes</strong></div>
+          <div class="crypto-branch fragment"><i></i><div><small>SENDER PROOF</small><strong>RSA-PSS / SHA-256</strong><span>fixed 32-byte salt</span></div><b>256 B signature</b></div>
+          <div class="crypto-branch lower fragment"><i></i><div><small>RECEIVER ACCESS</small><strong>RSA-OAEP / SHA-256</strong><span>encrypts geometry + AES material</span></div><b>256 B envelope</b></div>
+        </div>
+        <p class="security-order fragment"><span>VERIFY SIGNATURE</span><b>→</b><span>DECRYPT GCM</span><b>→</b><span>CHECK MEDIA HASH</span><b>→</b><span>RELEASE</span></p>
+        <aside class="notes">The signature is checked before decryption. AES-GCM protects the record and binds the bootstrap geometry. RSA-OAEP determines who can discover and open the packet.</aside>
+      </section>
+
+      <section class="light signed-slide">
+        <div class="slide-head"><p class="eyebrow">09 / SIGNING BOUNDARY</p><span class="section-tag">RSA-PSS</span></div>
+        <h2>Exactly What the <span>Sender Signs</span></h2>
+        <div class="signing-ribbon">
+          <div class="domain"><span>DOMAIN</span><b>INF2005-ACW1\0SIGN\0</b></div>
+          <div><span>INTERPRETATION</span><b>version · media_code · k</b></div>
+          <div><span>GEOMETRY</span><b>total · start · footprint · length</b></div>
+          <div><span>MEDIA CONTEXT</span><b>dimensions / PCM format / video timing shape</b></div>
+          <div class="cipher"><span>CONTENT</span><b>complete AES-GCM ciphertext + tag</b></div>
+        </div>
+        <div class="attack-grid">
+          <article class="fragment"><span>MOVE PACKET</span><strong>start changes</strong><i>→</i><b>Signature Invalid</b></article>
+          <article class="fragment"><span>SWAP MEDIA TYPE</span><strong>context changes</strong><i>→</i><b>Signature Invalid</b></article>
+          <article class="fragment"><span>EDIT CIPHERTEXT</span><strong>signed bytes change</strong><i>→</i><b>Signature Invalid</b></article>
+        </div>
+        <aside class="notes">The signature input uses the implementation’s v3 constant, not a received version value, giving downgrade protection.</aside>
+      </section>
+
+      <section class="hash-slide dark" data-background-color="#070b14">
+        <div class="slide-head"><p class="eyebrow blue">10 / MASKED-MEDIA HASH</p><span class="section-tag dark-tag">NO ORIGINAL COVER</span></div>
+        <h2>Integrity Without the <span>Original Cover</span></h2>
+        <div class="hash-visual">
+          <div class="unit-stream">
+            <p>UNIT STREAM</p>
+            <div><i>10110110</i><i class="boot">1011011<span>0</span></i><i>00101101</i><i class="packet">11010<span>000</span></i><i>10101001</i></div>
+            <small>clear 1 bootstrap LSB · clear k packet LSBs</small>
+          </div>
+          <div class="digest-node"><span>SHA-256</span><b>unit_digest</b></div>
+          <div class="fixed-stream">
+            <p>FIXED-BYTE STREAM</p>
+            <div><i>PNG α</i><i>RGB high</i><i>PCM high</i><i>ticks</i></div>
+            <small>media data the embedder never modifies</small>
+          </div>
+          <div class="digest-node"><span>SHA-256</span><b>fixed_digest</b></div>
+          <div class="final-hash fragment"><small>DOMAIN + MEDIA CODE + GEOMETRY + COUNTS</small><strong>SHA-256</strong><code>media_hash / 32 bytes</code></div>
+        </div>
+        <p class="mask-rule fragment">Same logical media + different embedded bits ⇒ same masked hash.<br>Changed preserved media ⇒ <b>Tampered</b>.</p>
+        <aside class="notes">PNG ancillary chunks and WAV bytes outside declared samples are excluded. State this limitation honestly if asked.</aside>
+      </section>
+
+      <section class="light capacity-slide">
+        <div class="slide-head"><p class="eyebrow">11 / CAPACITY + DISTORTION</p><span class="section-tag">INTERACTIVE</span></div>
+        <h2>LSB Depth Controls <span>Capacity and Distortion</span></h2>
+        <div class="capacity-workbench">
+          <div class="k-control">
+            <p class="label">SELECT PACKET LSB DEPTH</p>
+            <div class="k-buttons" role="group" aria-label="LSB depth"><button class="active" type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button><button type="button" data-k="4">4</button><button type="button" data-k="5">5</button><button type="button" data-k="6">6</button><button type="button" data-k="7">7</button><button type="button" data-k="8">8</button></div>
+            <div class="k-scale"><span>subtle</span><span>maximum capacity</span></div>
+          </div>
+          <div class="capacity-metrics">
+            <article><small>EXAMPLE PACKET</small><strong>448 B</strong><span>3,584 bits</span></article>
+            <article><small>FOOTPRINT</small><strong id="footprint-value">3,584</strong><span>carrier units</span></article>
+            <article><small>PACKET UNIT BITS PRESERVED</small><strong id="preserved-value">87.5%</strong><span id="preserved-caption">7 of 8 bits</span></article>
+          </div>
+          <div class="footprint-track"><div id="footprint-fill"><span>packet footprint</span></div><i>same packet / fewer units as k increases</i></div>
+        </div>
+        <div class="capacity-equations">
+          <code>footprint = ceil(((ciphertext_length + 256) × 8) / k)</code>
+          <code>max payload = floor((total_units − start_unit) × k / 8) − overhead</code>
+        </div>
+        <aside class="notes">Invite the evaluator to choose k. The example uses the notebook’s 448-byte packet. At k=8 its footprint is 448 units, but no packet-unit carrier bits remain preserved.</aside>
+      </section>
+
+      <section class="dark encode-slide" data-background-color="#071026">
+        <div class="slide-head"><p class="eyebrow blue">12 / ENCODE PIPELINE</p><span class="section-tag dark-tag">FAIL CLOSED</span></div>
+        <h2>Validated <span>Two-Pass Encoding</span></h2>
+        <div class="pipeline">
+          <article><span>01</span><div><small>VALIDATE</small><strong>Carrier + keys + capacity</strong><p>Calculate complete geometry before writing media.</p></div></article>
+          <article class="fragment"><span>02</span><div><small>PASS 1</small><strong>Masked-media hash</strong><p>Hash original units with future write regions cleared.</p></div></article>
+          <article class="fragment"><span>03</span><div><small>BUILD</small><strong>Encrypt + sign + seal</strong><p>Stage ciphertext; create PSS signature and OAEP envelope.</p></div></article>
+          <article class="fragment"><span>04</span><div><small>PASS 2</small><strong>Re-read + embed</strong><p>Write bootstrap and packet while confirming source stability.</p></div></article>
+          <article class="fragment"><span>05</span><div><small>COMMIT</small><strong>Atomic publication</strong><p>Remove partial output on any error; video adds read-back proof.</p></div></article>
+        </div>
+        <div class="publication-rule fragment"><i></i><span>Source changed between passes?</span><b>ABORT</b><span>Output differs after video mux?</span><b>ABORT</b></div>
+        <aside class="notes">PNG and WAV use two core content passes. Video adds a validation/count pass and a post-mux read-back pass because containers can transform timing and representation.</aside>
+      </section>
+
+      <section class="light verify-slide">
+        <div class="slide-head"><p class="eyebrow">13 / VERIFY PIPELINE</p><span class="section-tag">ORDER MATTERS</span></div>
+        <h2>Proof Before <span>Plaintext Release</span></h2>
+        <div class="verify-path">
+          <div class="v-step"><span>01</span><strong>Read fixed bootstrap</strong><small>units 0–2,047</small></div><i>→</i>
+          <div class="v-step"><span>02</span><strong>Open with receiver key</strong><small>recover geometry + AES</small></div><i>→</i>
+          <div class="v-step"><span>03</span><strong>Read packet</strong><small>validate bounds + padding</small></div><i>→</i>
+          <div class="v-step"><span>04</span><strong>Verify RSA-PSS</strong><small>before decryption</small></div><i>→</i>
+          <div class="v-step"><span>05</span><strong>Open AES-GCM</strong><small>parse authenticated record</small></div><i>→</i>
+          <div class="v-step"><span>06</span><strong>Recompute media hash</strong><small>full carrier pass</small></div>
+        </div>
+        <div class="release-gate fragment"><div><span>ALL CHECKS PASS</span><strong>AUTHENTIC</strong></div><i>→</i><div class="payload-release"><span>ATOMIC RELEASE</span><strong>PAYLOAD</strong></div></div>
+        <p class="receiver-inputs"><b>Receiver provides only:</b> stego media · trusted sender public key · receiver private key</p>
+        <aside class="notes">No original cover, LSB depth, start location or AES key is entered by the receiver. A file-backed verification stages plaintext privately and publishes only the authenticated payload range.</aside>
+      </section>
+
+      <section class="dark verdict-slide" data-background-color="#070b14">
+        <div class="slide-head"><p class="eyebrow blue">14 / VERDICT SEMANTICS</p><span class="section-tag dark-tag">DIAGNOSTIC, NOT VAGUE</span></div>
+        <h2>Defined Outcomes for <span>Every Failure Stage</span></h2>
+        <div class="verdict-map">
+          <article class="good"><span>ALL GATES</span><strong>Authentic</strong><p>Signature, GCM and media hash agree.</p></article>
+          <article><span>RECEIVER GATE</span><strong>Payload Missing</strong><p>Bootstrap cannot be opened.</p></article>
+          <article><span>GEOMETRY</span><strong>Wrong Start Location</strong><p>Packet overlaps or exceeds carrier.</p></article>
+          <article><span>SENDER PROOF</span><strong>Signature Invalid</strong><p>PSS rejects signed bytes or layout.</p></article>
+          <article><span>RECORD AUTH</span><strong>Cannot Decrypt</strong><p>GCM tag rejects signed ciphertext.</p></article>
+          <article class="warn"><span>MEDIA INTEGRITY</span><strong>Tampered</strong><p>Signed record valid; media hash differs.</p></article>
+          <article><span>FORMAT / READ</span><strong>Cannot Verify</strong><p>Malformed, unsupported or incomplete.</p></article>
+        </div>
+        <aside class="notes">A wrong receiver key and a pristine carrier intentionally share Payload Missing. This avoids distinguishing “wrong person” from “nothing here.”</aside>
+      </section>
+
+      <section class="light streaming-slide">
+        <div class="slide-head"><p class="eyebrow">15 / STREAMING + STORAGE</p><span class="section-tag">BOUNDED DATA FLOW</span></div>
+        <h2>Bounded-Memory <span>File Processing</span></h2>
+        <div class="stream-diagram">
+          <div class="stream-source"><span>PAYLOAD FILE</span><b>arbitrary size</b></div>
+          <div class="chunk-rail"><i></i><i></i><i></i><i></i><i></i><small>1 MiB chunks</small></div>
+          <div class="stream-process"><span>AES-GCM</span><b>encrypt / decrypt</b></div>
+          <div class="chunk-rail"><i></i><i></i><i></i><i></i><i></i><small>staged ranges</small></div>
+          <div class="private-stage"><span>PRIVATE STAGING</span><b>mode 0700 / files 0600</b></div>
+          <div class="atomic-arrow">AUTHENTIC ONLY <b>→</b></div>
+          <div class="published"><span>ATOMIC MOVE</span><b>recovered payload</b></div>
+        </div>
+        <div class="storage-notes">
+          <article><strong>3 GiB reserve</strong><span>Upload and output operations keep shared free-space headroom.</span></article>
+          <article><strong>Failure-safe</strong><span>No partial carrier or unauthenticated payload is published.</span></article>
+          <article><strong>Crash caveat</strong><span>SIGKILL or power loss can leave private staging for manual cleanup.</span></article>
+        </div>
+        <aside class="notes">Bytes APIs use memory staging; file APIs use private on-disk staging. Temporary disk use still scales with encrypted and decrypted payload size.</aside>
+      </section>
+
+      <section class="dark conversion-slide" data-background-color="#071026">
+        <div class="slide-head"><p class="eyebrow blue">16 / SOURCE CANONICALISATION</p><span class="section-tag dark-tag">ENCODE-SIDE CONVENIENCE</span></div>
+        <h2>Canonical Carriers From <span>Common Media Sources</span></h2>
+        <div class="conversion-map">
+          <div class="format-cloud images"><small>STILL IMAGE SOURCES</small><span>JPEG</span><span>WebP</span><span>AVIF</span><span>BMP</span><span>TIFF</span><span>GIF</span></div>
+          <div class="convert-arrow"><b>PyAV</b><i>→</i><small>one canonical snapshot</small></div>
+          <div class="canonical"><strong>PNG</strong><span>8/16-bit RGB(A)</span></div>
+          <div class="format-cloud audio"><small>AUDIO SOURCES</small><span>MP3</span><span>AAC</span><span>FLAC</span><span>ALAC</span><span>Vorbis</span><span>Opus</span></div>
+          <div class="convert-arrow"><b>PyAV</b><i>→</i><small>decoded PCM samples</small></div>
+          <div class="canonical"><strong>WAV</strong><span>uncompressed PCM</span></div>
+          <div class="format-cloud video"><small>VIDEO SOURCE</small><span>one video stream</span><span>0–1 audio stream</span></div>
+          <div class="convert-arrow"><b>PyAV</b><i>→</i><small>lossless rewrite</small></div>
+          <div class="canonical"><strong>MKV</strong><span>FFV1 + PCM s16le</span></div>
+        </div>
+        <p class="canonical-warning">The protocol authenticates canonical decoded media—not the original compressed source bytes or encoder settings.</p>
+        <aside class="notes">Strict supported PNG and PCM WAV inputs bypass conversion and preserve their applicable metadata. Verification accepts canonical PNG/WAV and the produced Matroska output.</aside>
+      </section>
+
+      <section class="light boundary-slide">
+        <div class="slide-head"><p class="eyebrow">17 / AUTHENTICITY BOUNDARY</p><span class="section-tag">HONEST LIMITS</span></div>
+        <h2>What an <span>Authentic Verdict</span> Proves</h2>
+        <div class="boundary-grid">
+          <div class="inside">
+            <p>INSIDE THE BOUNDARY</p>
+            <ul><li>Encrypted payload + typed metadata</li><li>Sender-signed ciphertext and geometry</li><li>Preserved RGB and PCM sample data</li><li>PNG alpha and multi-byte fixed data</li><li>Canonical video pixels, audio and timing</li></ul>
+          </div>
+          <div class="boundary-ring"><span>AUTHENTIC</span><i>≠</i><b>UNCHANGED FILE BYTES</b></div>
+          <div class="outside">
+            <p>OUTSIDE THE BOUNDARY</p>
+            <ul><li>Overwritten cover LSBs</li><li>PNG ancillary and WAV non-sample chunks</li><li>Many container tags and display metadata</li><li>Real-world sender identity / PKI</li><li>Replay protection and key management</li></ul>
+          </div>
+        </div>
+        <aside class="notes">Authentic means the received carrier matches the protocol’s signed canonical interpretation. It is not a claim that every file byte is unchanged or that the public key belongs to a named person.</aside>
+      </section>
+
+      <section class="innovation-slide dark" data-background-color="#05070b">
+        <div class="slide-head"><p class="eyebrow blue">18 / PRIMARY INNOVATION</p><span class="section-tag dark-tag">RECEIVER-GATED LOCATION</span></div>
+        <h2>Encrypted Bootstrap <span>Protects Packet Geometry</span></h2>
+        <div class="innovation-grid">
+          <div>
+            <div class="baseline-vs">
+              <article><small>BASELINE</small><strong>Fixed or shared start</strong><p>Receiver must know, store or guess the packet position and depth.</p></article>
+              <i>→</i>
+              <article class="improved"><small>THIS DESIGN</small><strong>Encrypted discovery</strong><p>Receiver private key recovers the signed position, depth, length and session key.</p></article>
+            </div>
+          </div>
+          <div class="innovation-orbit">
+            <div class="orbit bootstrap-orbit"><span>FIXED BOOTSTRAP</span><b>observable</b></div>
+            <div class="orbit receiver-orbit"><span>RECEIVER KEY</span><b>opens</b></div>
+            <div class="orbit packet-orbit"><span>MOVABLE PACKET</span><b>confidential location</b></div>
+            <svg viewBox="0 0 420 420" aria-hidden="true"><circle cx="210" cy="210" r="165"/><circle cx="210" cy="210" r="102"/><path d="M92 94 210 210l120 105M210 45v165"/></svg>
+          </div>
+        </div>
+        <p class="innovation-limit">CONSCIOUS COMPROMISE / the bootstrap hides geometry and key material—not the possible existence of the protocol.</p>
+        <aside class="notes">This is practical because it removes the original cover and shared location secret from the receiver workflow while retaining arbitrary start selection.</aside>
+      </section>
+
+      <section class="light proof-slide">
+        <div class="slide-head"><p class="eyebrow">19 / EVIDENCE</p><span class="section-tag">TESTED BEHAVIOUR</span></div>
+        <h2>Evidence From <span>Tests and Demonstration</span></h2>
+        <div class="proof-stats">
+          <div><strong>308</strong><span>Python tests passed</span></div>
+          <div><strong>4</strong><span>browser-boundary tests passed</span></div>
+          <div><strong>1–8</strong><span>LSB depths round-trip</span></div>
+          <div><strong>7</strong><span>defined verification verdicts</span></div>
+        </div>
+        <div class="case-matrix">
+          <div class="case-head"><span>CASE</span><span>PNG</span><span>WAV</span><span>EXPECTED</span></div>
+          <div><span>Correct keys + unchanged media</span><b>✓</b><b>✓</b><strong class="ok">Authentic</strong></div>
+          <div><span>Preserved media bit changed</span><b>✓</b><b>✓</b><strong class="bad">Tampered</strong></div>
+          <div><span>Wrong sender public key</span><b>✓</b><b>✓</b><strong>Signature Invalid</strong></div>
+          <div><span>Wrong receiver private key</span><b>✓</b><b>✓</b><strong>Payload Missing</strong></div>
+          <div><span>Payload exceeds capacity</span><b>✓</b><b>✓</b><strong>Refused before write</strong></div>
+        </div>
+        <p class="evidence-note">Current workstation run · 1 October 2026 · no tests skipped</p>
+        <aside class="notes">This slide reflects the latest local run. The notebook additionally provides human-readable evidence for assignment payload sizes, Party A/B folders and the 1–8 LSB sweep.</aside>
+      </section>
+
+      <section class="final-slide dark" data-background-color="#05070b">
+        <div class="final-lockup">
+          <p class="eyebrow blue">PROTOCOL V3 / TECHNICAL DESIGN</p>
+          <h2>Protocol Verified.<br><span>Payload Released.</span></h2>
+          <div class="final-sequence"><span>receiver access</span><i>+</i><span>sender authenticity</span><i>+</i><span>media integrity</span></div>
+          <div class="final-verdict"><i></i><strong>AUTHENTIC</strong><span>release payload</span></div>
+          <p>Questions / live demonstration</p>
+        </div>
+        <aside class="notes">Transition directly to the live GUI. Recommended first demo: short Learning Objective in PNG, evaluator-selected LSB depth, non-default start, then Party B verification.</aside>
+      </section>
+    </div>
+  </div>
+
+  <script src="vendor/reveal/reveal.js"></script>
+  <script src="vendor/reveal/notes.js"></script>
+  <script src="deck.js"></script>
+</body>
+</html>

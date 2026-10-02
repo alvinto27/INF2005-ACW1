@@ -1,3 +1,0 @@
-three.js 0.180.0 (r180)
-Source: npm package three@0.180.0
-Files retained: build/three.module.min.js, examples/jsm/controls/OrbitControls.js, LICENSE
