@@ -31,7 +31,7 @@ Verification does not need the original cover file.
 | Known behaviours | [Known behaviours](#known-behaviours) |
 | Requirement coverage | [Web application guide](docs/web-application.md#requirement-coverage) |
 | Demonstration files and keys | Supplied as a separate ZIP; see [`demo/`](demo/README.md) |
-| End-to-end walkthrough | [Notebook](notebooks/FR1-12%20Prototype.ipynb) ([how to run](#demonstration-notebook)) |
+| End-to-end walkthrough | [Notebook](notebooks/stegoverify-demo.ipynb) ([how to run](#demonstration-notebook)) |
 | Design | [Slides (PDF)](presentation/stego-slides.pdf), [guides](#documentation) |
 | Known limitations | [Known limitations](docs/known-limitations.md) |
 
@@ -129,7 +129,7 @@ Git ignores `instance/`. The server refuses any upload that would leave less tha
 
 ## Demonstration notebook
 
-[`notebooks/FR1-12 Prototype.ipynb`](notebooks/FR1-12%20Prototype.ipynb) runs the sender and receiver steps in order. Each step states the expected result, then shows the actual result in a table of checks, with diagrams and charts where they help. It covers PNG, WAV, and video; all seven verdicts; LSB counts 1 to 8; format conversion; and the team's custom payload, a JPEG chart.
+[`notebooks/stegoverify-demo.ipynb`](notebooks/stegoverify-demo.ipynb) runs the sender and receiver steps in order. Each step states the expected result, then shows the actual result in a table of checks, with diagrams and charts where they help. It covers PNG, WAV, and video; all seven verdicts; LSB counts 1 to 8; format conversion; and the team's custom payload, a JPEG chart.
 
 The notebook is saved with its outputs, so you can read every result on GitHub without running it. To run it again, install the extra packages:
 
@@ -170,5 +170,5 @@ Other material:
 | Item | Contents |
 | --- | --- |
 | [Slides (PDF)](presentation/stego-slides.pdf) | Technical-design presentation. [How to run the live slides](presentation/README.md). |
-| [Demonstration notebook](notebooks/FR1-12%20Prototype.ipynb) | Sender and receiver steps with expected and actual results |
+| [Demonstration notebook](notebooks/stegoverify-demo.ipynb) | Sender and receiver steps with expected and actual results |
 | [Demonstration files](demo/README.md) | Covers, stego files, keys, and verdict screenshots, supplied as a separate ZIP |
