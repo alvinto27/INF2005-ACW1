@@ -28,6 +28,7 @@ Verification does not need the original cover file.
 | Topic | Link |
 | --- | --- |
 | Setup and tests | [Quick start](#quick-start), [Tests](#tests) |
+| Known behaviours | [Known behaviours](#known-behaviours) |
 | Requirement coverage | [Web application guide](docs/web-application.md#requirement-coverage) |
 | Demonstration files and keys | Supplied as a separate ZIP; see [`demo/`](demo/README.md) |
 | End-to-end walkthrough | [Notebook](notebooks/FR1-12%20Prototype.ipynb) ([how to run](#demonstration-notebook)) |
@@ -57,6 +58,19 @@ python run.py
 ```
 
 Open <http://127.0.0.1:5000>. The encode page is `/` and the verify page is `/verify`. The server listens on localhost only.
+
+## Known behaviours
+
+| What you see | Why, and what to do |
+| --- | --- |
+| A stego video shows a yellow-green tint in VLC on Windows | VLC's default Direct3D11 output displays this format wrongly. The file is correct. In VLC, set **Tools > Preferences > Video > Output** to **OpenGL**. |
+| The browser downloads the `.mkv` instead of playing it | Browsers cannot play lossless FFV1 video. Open the file in VLC or another desktop player. |
+| A video output is much larger than the input, and encoding is slow | Output is lossless, at about 40 MB per second of 1080p video. Use clips of 30 seconds or less. |
+| An older stego file gives `Cannot Verify` with `unsupported bootstrap version` | Only files made by protocol version 3 can be verified. |
+| Editing PNG text, WAV `LIST` chunks, or video tags still gives `Authentic` | The check covers the image, sound, and video content, not metadata. |
+| The page animations do not play | The animation library loads from the internet. Offline, or with reduced motion turned on, the pages still work without animation. |
+
+See [known limitations](docs/known-limitations.md) for the full list.
 
 ## Tests
 
@@ -134,14 +148,6 @@ pip install -r requirements-notebook.txt
 | `demo/` | Where to extract the demonstration ZIP (contents not in the repository) |
 | `docs/` | Guides and the assignment brief |
 | `scripts/` | Link checker and JavaScript tests |
-
-## Limits
-
-- Only files made by this version (protocol version 3) can be verified.
-- The check covers the image, sound, and video content, not metadata such as PNG text or video tags.
-- On Windows, VLC may show stego videos with a yellow-green tint. The file is fine. Set VLC's video output to OpenGL.
-
-See [known limitations](docs/known-limitations.md) for the full list.
 
 ## Documentation
 
