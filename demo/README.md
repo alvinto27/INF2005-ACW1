@@ -5,9 +5,9 @@ The demonstration files are supplied to markers as a separate ZIP, `Demos.zip`. 
 | ZIP detail | Value |
 | --- | --- |
 | File | `Demos.zip` |
-| Size | 201,178,668 bytes (about 192 MiB) |
-| Contents | 75 entries, all inside one top-level folder, `Demos/` |
-| SHA-256 | `3a6fd653e318b6076d9862dedf5534bcaf040a224ae7aea710fd2c928f121249` |
+| Size | 202,084,610 bytes (about 193 MiB) |
+| Contents | 78 entries, all inside one top-level folder, `Demos/` |
+| SHA-256 | `b86689dde3f5dfcd0f13e9f66ac1b03622647c51582c25c6dbd19d9686212184` |
 
 To use the ZIP, put it in this folder and extract it here. The files then appear under `demo/Demos/`.
 
@@ -18,7 +18,7 @@ To use the ZIP, put it in this folder and extract it here. The files then appear
 | Files | Password | Used for |
 | --- | --- | --- |
 | `sender-public-key.pem`, `sender-private-key.pem`, `receiver-public-key.pem`, `receiver-private-key.pem` | None | Every stego file in the ZIP |
-| `12345678-sender-public.pem`, `12345678-sender-private.pem`, `12345678-receiver-public.pem`, `12345678-receiver-private.pem` | `12345678` (private keys only; public keys have no password) | The wrong-key cases: E2, E3, and the second D4 screenshot |
+| `12345678-sender-public.pem`, `12345678-sender-private.pem`, `12345678-receiver-public.pem`, `12345678-receiver-private.pem` | `12345678` (private keys only; public keys have no password) | The wrong-key cases: E2 and E3 |
 
 `Key Instructions.txt` lists the same keys and passwords.
 
@@ -45,15 +45,16 @@ Some folders also hold an extra copy of the cover or payload under the original 
 
 ## Failure cases
 
-These folders hold screenshots only. Reproduce each one with the files from the folder shown.
+E1 holds an edited stego file. E2, E3, and E4 hold screenshots only. Reproduce each one with the files from the folder shown.
 
 | Folder | Stego file | Sender public key | Receiver private key | Result |
 | --- | --- | --- | --- | --- |
+| `(E1) Tampered` | `Tampered.png`, a stego PNG with the word "tampered" drawn on it | `sender-public-key.pem` | `receiver-private-key.pem` | `Tampered`: the signature is valid, but the full-media hash does not match |
 | `(E2) Signature Invalid` | A `stego.wav` | `12345678-sender-public.pem` (wrong sender) | `receiver-private-key.pem` | `Signature Invalid` |
 | `(E3) Cannot Verify` | A `stego.wav` | `sender-public-key.pem` | `12345678-receiver-private.pem`, password left empty | `Cannot Verify`: the private key is encrypted and needs a password |
 | `(E4) Payload Missing` | `spiderman.png` from D5 (the original cover, not a stego file) | `sender-public-key.pem` | `receiver-private-key.pem` | `Payload Missing` |
 
-`(D4) wav-mp3-stego/wrong-public-key-used.png` shows a second `Signature Invalid` result: the D4 `stego.wav` checked with `12345678-sender-public.pem` and `receiver-private-key.pem`.
+`(E1) Tampered/original image.jpg` is the cover before embedding. The stego file before the edit is not in the ZIP.
 
 ## Reproduce a result
 
