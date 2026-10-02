@@ -1,83 +1,52 @@
 # Protocol (version 3)
 
-This is the reference for StegoVerify's masked-media protocol, version 3. It covers the exact byte layout, how the media hash is computed, what is signed and encrypted, and what each verification verdict means. The first section gives the big picture; the rest is detailed enough to reimplement the format. For how the design got here, see the [protocol history](history/protocol-history.md#version-1-integrity-protocol).
+This guide defines the data that StegoVerify embeds and how it is checked. Terms such as *carrier unit*, *bootstrap*, and *fixed bytes* are defined in the [glossary](README.md#glossary). Earlier versions are described in the [protocol history](history/protocol-history.md#version-1-integrity-protocol).
 
 ## Overview
 
-A protected file carries two hidden objects:
+A stego file contains two embedded objects:
 
-- **The bootstrap** always sits at the start of the carrier, in the lowest bit of the first 2,048 carrier units. It is encrypted to the receiver with RSA-OAEP, and it holds the packet's start unit, its LSB count, its length, and a one-time AES-256-GCM session key.
-- **The packet** can sit anywhere after the bootstrap. It holds the encrypted payload record, followed by an RSA-PSS signature.
-
-Because the packet's position and depth are only stored inside the encrypted bootstrap, someone without the receiver's private key cannot tell where the packet is or read it. The packet has no public marker or header.
-
-The payload record includes a SHA-256 **media hash** of the cover. Before hashing, the hash masks out exactly the bits that embedding overwrites, so the sender and the receiver compute the same value. If anything else in the media changes, the hash no longer matches and the verdict is `Tampered`. The signature binds the ciphertext to the carrier's description and to the embedding layout. As a result, moving the packet or changing its depth breaks the signature, and copying the hidden data into a different file is caught by either the signature or the media hash.
-
-The protocol supports 8-bit and 16-bit RGB or RGBA PNG images, PCM WAV audio (using the low byte of each sample), and an optional video-plus-audio carrier (media code 3). Verification needs only the stego file, the sender's public key, and the receiver's private key. The original cover is not needed.
-
-The hash covers every media byte that embedding leaves untouched. It cannot protect the cover bits that embedding overwrote, and a valid signature proves which key signed the file, not which real-world person did. Files from protocol versions 1 and 2 are not readable by this version.
-
-## Hash rule and carrier interpretation
-
-The media hash combines two separate digests:
-
-1. `unit_digest` is SHA-256 over carrier units in order after clearing the lowest bit in the reserved bootstrap span and the lowest `lsb_count` bits in the packet footprint, including alignment padding.
-2. `fixed_digest` is SHA-256 over all media-data bytes that embedding does not change. For 8-bit RGBA PNG it includes alpha bytes in pixel order. For 16-bit PNG it includes the high byte of every RGB value in unit order, then, for RGBA, every 16-bit alpha value as little-endian bytes in pixel order. WAV fixed bytes are every non-carrier byte of each declared multi-byte PCM sample. Empty input uses the normal SHA-256 empty digest.
-
-The final hash is:
-
-```python
-media_hash = SHA256(
-    b"INF2005-ACW1\x00MEDIA-HASH-V3\x00"
-    + struct.pack(">BB", media_code, lsb_count)
-    + encode_protocol_field(total_units, "total_units")
-    + encode_protocol_field(fixed_byte_count, "fixed_byte_count")
-    + encode_protocol_field(start_unit, "start_unit")
-    + encode_protocol_field(footprint, "footprint")
-    + encode_protocol_field(bootstrap_span, "bootstrap_span")
-    + unit_digest
-    + fixed_digest
-)
+```text
+carrier units:  0 ............ 2047   ...   start_unit ............ start_unit + footprint   ...
+                [   bootstrap     ]         [            packet              ]
+                 1 LSB per unit              k LSBs per unit
+                 RSA-OAEP                    AES-256-GCM ciphertext + RSA-PSS signature
 ```
 
-All integer fields here use unsigned 64-bit big-endian encoding. The stream digests are 32 bytes each. Chunk boundaries do not affect either digest.
+| Object | Position | Contents | Protected by |
+| --- | --- | --- | --- |
+| Bootstrap | Units 0 to 2,047, lowest bit only | Start unit, LSB count, ciphertext length, AES key and nonce | RSA-OAEP with the receiver's public key |
+| Packet | From the start unit, using `k` bits per unit | Encrypted payload record, then the signature | AES-256-GCM, and an RSA-PSS signature by the sender |
 
-PNG input must be a single-frame, 8-bit or 16-bit RGB or RGBA image. Each pixel has three carrier units: the low byte of R, G, and B in row-major order. For 16-bit samples, each unit is the low-order byte of the numeric sample value, not the byte at the lower memory address. The fixed bytes for 16-bit images follow the order above. For 8-bit RGBA, the fixed bytes are the alpha bytes in pixel order. WAV carrier units are the low byte of each declared PCM sample. Other sample bytes are fixed data. PNG ancillary chunks and WAV chunks outside declared PCM samples are not hashed. The encoder output keeps them: it copies PNG ancillary chunks that stay true after embedding and every WAV byte outside the declared samples. It updates an existing PNG `tIME` to the encode time. It drops `sBIT`, `hIST`, an RGBA `tRNS`, and unknown chunks that are not safe to copy. The strict PNG adapter refuses to encode an RGB PNG with a `tRNS` colour key. The source converter can convert such an image to RGBA and keep the transparency as alpha. Because ancillary chunks are not hashed, a change to them does not change the verdict. This is a rule about the output file, not part of the wire format; see [Carrier and Payload Flow](carrier-and-payload-flow.md#metadata-in-the-output).
+- The packet has no public header. Its position and LSB count are only in the bootstrap, so they cannot be read without the receiver's private key.
+- The payload record contains a media hash of the carrier. The hash leaves out the bits that embedding changes, so the sender and receiver compute the same value.
+- The signature covers the ciphertext, the carrier description, and the packet position. Moving the packet or changing the LSB count makes the signature invalid.
 
-An 8-bit PNG media context is the 9-byte `struct.pack(">IIB", width, height, channel_count)`. A 16-bit PNG uses the 10-byte `struct.pack(">IIBB", width, height, channel_count, 16)`. Keeping the shorter context for 8-bit images means 8-bit files made before 16-bit support was added still verify. WAV context is `struct.pack(">HBIQ", channels, sample_width, frame_rate, frame_count)`.
+Verification needs the stego file, the sender's public key, and the receiver's private key. It does not need the original cover.
 
-The core protocol itself reads only strict PNG and PCM WAV carriers. The optional `stego.sources` encode helpers accept supported image and audio files, convert non-strict sources once into temporary canonical PNG/WAV carriers, then call the same protocol encoders. Strict carriers bypass conversion. This does not change verification, the wire format, or verdicts. See [Source conversion](carrier-and-payload-flow.md#source-conversion) for accepted formats, conversion limits, and cleanup.
+## Carriers
 
-### Video-plus-audio media code 3
+| Carrier | Media code | Carrier unit | Fixed bytes |
+| --- | ---: | --- | --- |
+| PNG | 1 | Low byte of each R, G, and B value, in row-major order (3 units per pixel) | 8-bit RGBA: alpha bytes. 16-bit: RGB high bytes, then 16-bit alpha values (little-endian) |
+| WAV | 2 | Low byte of each PCM sample | All other bytes of each sample |
+| Video | 3 | Low byte of each R, G, and B value, then low byte of each 16-bit audio sample | Frame timestamps, RGB high bytes, alpha, audio start time, audio high bytes. See [video carrier](video-carrier.md#carrier-and-context). |
 
-The optional video carrier uses media code **3** and media-ID prefix **`VID-`**. It keeps the version-3 wire format unchanged. Its 32-byte media context is `struct.pack(">IIQBBIHQ", width, height, frame_count, canonical_video_depth, video_channel_count, audio_sample_rate, audio_channels, audio_frames_per_channel)`. The video channel count is 3 without alpha and 4 with alpha. With no audio, all three audio fields are zero. The context signs the video depth and channel count, not channel identities. For a source pixel format, let `S` be the largest component bit depth, including alpha. Floating-point formats and formats with `S > 16` are refused. Otherwise, the carrier uses the smallest canonical depth `D >= S` from this table:
+For 16-bit values, the "low byte" is the low-order byte of the number, whatever the byte order in the file. Alpha is never a carrier unit.
 
-| Source depth `S` | No alpha `D` | Alpha `D` |
-| ---: | ---: | ---: |
-| 1–8 | 8 | 8 |
-| 9 | 9 | 10 |
-| 10 | 10 | 10 |
-| 11–12 | 12 | 12 |
-| 13–14 | 14 | 14 |
-| 15–16 | 16 | 16 |
+### PNG input rules
 
-The decoder converts each source frame to the selected canonical RGB or RGBA format. The encoder keeps the resulting canonical integer values, except for the selected RGB low bits; it does not normalize them to the full range of the canonical depth. The canonical values can differ from the source component values, for example after a YUV-to-RGB conversion or a 9-bit-to-10-bit promotion. A source depth or alpha-presence change during decode is refused. The video carrier accepts one audio channel with FC identity or unspecified identity, and two channels with FL, FR identities in that order or two unspecified identities. Matroska PCM records the channel count but not the channel mask, so this rule accepts the unspecified layouts produced by our own output. It treats unspecified one- and two-channel audio as mono and stereo. It refuses any other specified identity or channel order with `unsupported audio channel layout`; counts other than one or two return `unsupported audio channel count`.
+The PNG carrier accepts single-frame, 8-bit or 16-bit, RGB or RGBA images. The encode page converts other images to this form first (see [source conversion](carrier-and-payload-flow.md#source-conversion)).
 
-Video carrier units are the low byte of each canonical R, G, and B value, in row-major pixel order and frame presentation order. Alpha values are never carrier units. The fixed-byte digest receives each frame's signed big-endian i64 millisecond tick, then all RGB high bytes in R/G/B order when `D > 8`, then the alpha values (one byte at `D = 8`, otherwise two-byte little-endian values) when alpha is present. Audio carrier units follow all video units: they are the low byte of each decoded interleaved signed 16-bit little-endian sample. If audio exists, its fixed bytes follow video fixed bytes and contain one signed i64 audio-start tick followed by one high byte per audio sample. Chunk boundaries have no meaning and do not affect the hash.
+| Input | Result |
+| --- | --- |
+| Palette, grayscale, or grayscale-alpha | Refused: `PNG must be RGB or RGBA; palette and grayscale images are not supported` |
+| 1-, 2-, or 4-bit samples | Refused: `PNG must use 8-bit or 16-bit RGB or RGBA samples` |
+| Animated PNG | Refused: `animated PNG images are not supported` |
+| RGB with a `tRNS` colour key | Refused, because embedding could move pixels onto or off the key colour. Source conversion turns the key into an alpha channel instead. |
+| Decoded size over 715,827,880 bytes | Refused before decoding: `PNG decoded size exceeds configured limit` |
 
-Timestamp seconds are calculated exactly as `pts * time_base`. The first decoded video frame is time zero for each carrier read, including read-back after the Matroska muxer shifts timestamps. Canonical video timing contains frame-start presentation timestamps only. The last frame's display duration, stream duration, and container duration are not authenticated. The FFV1 stream's nominal `rate=25` is not signed; explicit frame-start ticks carry the canonical timing. Each frame-start timestamp and the audio-start offset from the video origin are rounded to the nearest millisecond, with ties away from zero. Missing, non-increasing, or colliding video ticks are refused. Audio continuity compares frame timestamps with the expected sample position. Audio frame timestamp deviations of at most half a millisecond (rounded up to a whole sample) are treated as container timestamp quantization. A real gap or overlap within that tolerance cannot be distinguished and is accepted; larger ones are refused. The reader converts audio to s16 without resampling or changing sample order; accepted channel identities follow the rule above.
-
-Video resource limits are defined in [Video Carrier](video-carrier.md).
-
-Video authenticity covers the signed context, decoded canonical RGB and alpha values, canonical timing ticks, decoded s16 sample bytes, audio timing, masked media hash, and embedded packet. It does not cover container bytes, title or other tags, chapters, subtitles, attachments, rotation/display matrix, display aspect metadata, colour primaries, transfer characteristics, colour range, or additional tracks. The carrier drops colour metadata; HDR PQ/HLG video may therefore display with incorrect colours in players. The video carrier drops tags and extra streams; a file with unsupported extra streams is refused rather than silently selected. Decoder threading uses FFmpeg automatic mode for speed and does not alter the protocol. Tested FFV1 decoding is lossless, and tested H.264/AAC decoding produced identical RGB/s16 and fixed bytes under automatic and single-slice thread settings. If any input decode differs between passes, its hash check fails; if read-back differs, output validation fails. Both failures stop encoding before publication.
-
-The encoder and verifier mask the same carrier regions before hashing. The hash therefore stays reproducible when only the bits used for embedding change. A start unit below the reserved bootstrap span is rejected.
-
-## Carrier units
-
-A PNG carrier unit is the low byte of one R, G, or B sample value; RGB and RGBA pixels have three units at both supported PNG depths. For 16-bit samples, this is the low byte of the numeric value, regardless of byte order in memory. A WAV carrier unit is one PCM sample's low byte, not one file byte. For multi-byte samples the other bytes are fixed data and are hashed. Capacity therefore scales by `1 / sample_width` compared with counting all sample bytes.
-
-The PNG adapter accepts only single-frame, 8-bit or 16-bit PNG images with the RGB or RGBA colour type. Palette, grayscale, grayscale-alpha, 1-, 2- and 4-bit, animated, and other PNG modes are refused. A non-PNG file keeps `UnSupportedFileType`. Unsupported colour type reports `PNG must be RGB or RGBA; palette and grayscale images are not supported`; an invalid sample depth reports `PNG must use 8-bit or 16-bit RGB or RGBA samples`; animation reports `animated PNG images are not supported`. The strict PNG adapter refuses RGB PNG with a `tRNS` colour key at either depth with the existing conversion message; the source converter instead turns this key into RGBA alpha. The decoded-byte limit is 715,827,880 bytes. The exact pre-decode refusal is `PNG decoded size exceeds configured limit: {bytes} bytes > {limit} bytes`. The byte count is width × height × channels × bytes per sample. FFmpeg `max_pixels` is also set from this limit as a second decoder guard. This gives these maximum pixel counts:
+The decoded size is width × height × channels × bytes per sample. This gives these pixel limits:
 
 | PNG format | Maximum pixels |
 | --- | ---: |
@@ -86,104 +55,153 @@ The PNG adapter accepts only single-frame, 8-bit or 16-bit PNG images with the R
 | 16-bit RGB | 119,304,646 |
 | 16-bit RGBA | 89,478,485 |
 
-## Wire format and signing
+### Media context
 
-The payload record, before encryption, is:
+The media context describes the carrier and is included in the signature.
 
-```text
-media_id_length  u8
-media_id         media_id_length bytes of UTF-8
-timestamp        u64, Unix seconds in UTC
-nonce            16 bytes
-media_hash       32 bytes
-user_length      u64
-user_payload     user_length arbitrary bytes
-metadata_length  u64
-metadata         metadata_length bytes of UTF-8
-```
+| Carrier | Format | Fields |
+| --- | --- | --- |
+| 8-bit PNG | `>IIB` (9 bytes) | width, height, channel count |
+| 16-bit PNG | `>IIBB` (10 bytes) | width, height, channel count, 16 |
+| WAV | `>HBIQ` | channels, sample width, frame rate, frame count |
+| Video | `>IIQBBIHQ` (32 bytes) | width, height, frame count, video depth, video channels, audio sample rate, audio channels, audio frames per channel |
 
-General lengths, positions, counters, and timestamps use unsigned 64-bit big-endian fields. Bounded enumerations and prefix lengths use u8. The generated 36-byte media identifier gives 109 bytes of record overhead before user payload and metadata. The complete record is encrypted as a whole using AES-256-GCM.
+8-bit PNG keeps the shorter 9-byte context so that 8-bit files made before 16-bit support still verify.
 
-The packet is `ciphertext || 256-byte RSA-PSS signature`, followed by zero alignment bits needed to fill the last carrier unit. The ciphertext length includes the 16-byte GCM tag. The signing input is:
+## Media hash
 
-```text
-SIGNING_DOMAIN
-|| version(u8) || media_code(u8) || lsb_count(u8)
-|| total_units(u64) || start_unit(u64) || footprint(u64)
-|| ciphertext_length(u64) || media_context || ciphertext
-```
+The media hash combines two SHA-256 digests:
 
-The signing version comes from `PROTOCOL_VERSION`, not received bootstrap data. RSA-PSS uses SHA-256 and a fixed 32-byte salt. The signer hashes the signing input in a stream and signs the digest with RSA-PSS over `Prehashed(SHA256())`; this gives the same signature as normal RSA-PSS/SHA-256 over the whole input, so the wire format does not change. The signature is checked before decryption. AES-GCM authenticates the ciphertext and additional data under the supplied session key and nonce; the protocol makes no key-commitment claim.
-
-The bootstrap plaintext is:
-
-```text
-version             u8
-lsb_count           u8
-start_unit          u64
-ciphertext_length   u64
-session_key         32 bytes
-aead_nonce          12 bytes
-```
-
-It is 62 bytes. Its GCM additional data is version, LSB count, start unit, and ciphertext length, totalling 18 bytes. The fixed RSA-2048 bootstrap span is 2,048 carrier units.
-
-The packet footprint is derived as:
+1. **`unit_digest`** covers all carrier units in order, with the embedded bits set to zero: the lowest bit in the bootstrap area, and the lowest `k` bits in the packet area (including padding).
+2. **`fixed_digest`** covers all fixed bytes in order.
 
 ```python
-packet_bits = (ciphertext_length + 256) * 8
-footprint = (packet_bits + lsb_count - 1) // lsb_count
-pad_bits = footprint * lsb_count - packet_bits
+media_hash = SHA256(
+    b"INF2005-ACW1\x00MEDIA-HASH-V3\x00"
+    + struct.pack(">BB", media_code, lsb_count)
+    + total_units + fixed_byte_count + start_unit + footprint + bootstrap_span   # each u64 big-endian
+    + unit_digest
+    + fixed_digest
+)
 ```
 
-## Typed payload metadata
+Chunk boundaries do not affect either digest. PNG ancillary chunks (such as text and `tIME`) and WAV chunks outside the samples are not hashed. The encoder copies most of them to the output; the rules are in [metadata in the output](carrier-and-payload-flow.md#metadata-in-the-output).
 
-Protocol version 3 encrypts the complete payload record, including `user_payload`. Typed-file demonstrations keep raw file bytes in `user_payload` and put the MIME claim and bare filename in the metadata field:
+## Payload record
+
+This is the plaintext before encryption. Lengths, positions, and timestamps are unsigned 64-bit big-endian.
+
+| Field | Size |
+| --- | --- |
+| `media_id_length` | u8 |
+| `media_id` | UTF-8, 36 bytes (for example `IMG-` + 32 hex characters) |
+| `timestamp` | u64, Unix seconds (UTC) |
+| `nonce` | 16 bytes |
+| `media_hash` | 32 bytes |
+| `user_length` | u64 |
+| `user_payload` | `user_length` bytes |
+| `metadata_length` | u64 |
+| `metadata` | UTF-8, `metadata_length` bytes |
+
+The fixed fields total 109 bytes. The whole record is encrypted with AES-256-GCM, which adds a 16-byte tag.
+
+### Payload metadata
+
+File payloads store the raw file in `user_payload`. The MIME type and file name go in `metadata` as `key=value` pairs separated by `;`:
 
 ```text
 kind=png;flow=typed-content;mime=image/png;name=generated.png
 ```
 
-This needs no extra wrapper around the payload. Entries use `;` and key/value pairs use `=`. MIME and filename values cannot contain either delimiter because the convention has no escaping. Web MIME sniffing, validation, preview, and safe file handling are described in the [Web Application Guide](web-application.md#result-and-payload-handling).
+There is no escaping, so values cannot contain `;` or `=`. The [web application guide](web-application.md#result-and-payload-handling) explains how these values are used for previews.
 
-## Payload discovery
+## Packet and signature
 
-The decoder reads one fixed bootstrap, opens it with the receiver private key, validates its fields and geometry, reads the packet at the recovered location, verifies RSA-PSS, opens AES-GCM, parses the record, then checks the version 3 media hash. It does not search for another packet after a failure. Relocating a packet causes signature verification to fail because the recovered start unit is signed. There is no candidate list, ambiguity branch, or guarantee that a carrier contains only one packet.
+```text
+packet = ciphertext || 256-byte RSA-PSS signature || zero padding to the end of the last unit
+```
 
-The fixed bootstrap span remains observable, but its fields and packet location require the receiver private key. A pristine carrier and a wrong receiver key both return `Payload Missing`.
+The signed data is:
 
-## Verification verdicts
+```text
+b"INF2005-ACW1\x00SIGN\x00"
+|| version (u8) || media_code (u8) || lsb_count (u8)
+|| total_units (u64) || start_unit (u64) || footprint (u64)
+|| ciphertext_length (u64) || media_context || ciphertext
+```
 
-| Verdict | Operational meaning |
+- RSA-PSS uses SHA-256 and a fixed 32-byte salt.
+- The data is hashed in chunks and signed as a prehashed digest. The signature is the same as signing the whole input directly.
+- The version comes from the verifier's own constant, not from the received bootstrap.
+- The signature is checked before decryption.
+
+The number of carrier units the packet uses (the footprint) is:
+
+```python
+packet_bits = (ciphertext_length + 256) * 8
+footprint   = ceil(packet_bits / lsb_count)
+pad_bits    = footprint * lsb_count - packet_bits
+```
+
+## Bootstrap
+
+| Field | Size |
 | --- | --- |
-| `Authentic` | Bootstrap and packet parse, padding is valid, RSA-PSS and AES-GCM verify, and the recomputed v3 media hash equals the stored hash. |
-| `Tampered` | The signature verifies, but the recomputed media hash differs from the signed stored hash. |
-| `Signature Invalid` | RSA-PSS verification fails for the extracted signature and reconstructed signing input. |
-| `Payload Missing` | The bootstrap cannot be opened with the supplied receiver private key, including a pristine carrier or wrong receiver key. |
-| `Wrong Start Location` | Valid geometry gives a footprint outside the carrier or overlapping the reserved bootstrap span. |
-| `Cannot Decrypt` | The signed ciphertext fails its AES-GCM authentication tag. |
-| `Cannot Verify` | The adapter rejects the file, the bootstrap is malformed, parsing or padding fails, or the carrier cannot be read completely during the hash pass. A readable version 2 bootstrap returns this verdict with detail `unsupported bootstrap version`. |
+| `version` | u8 |
+| `lsb_count` | u8 |
+| `start_unit` | u64 |
+| `ciphertext_length` | u64 |
+| `session_key` | 32 bytes |
+| `aead_nonce` | 12 bytes |
 
-## Capacity and measured sizes
+The plaintext is 62 bytes. The first four fields (18 bytes) are also used as AES-GCM additional data. RSA-2048 OAEP encryption gives 256 bytes, which fill the lowest bit of units 0 to 2,047. The start unit must be 2,048 or higher.
 
-For the generated 36-byte media ID, record overhead is 109 bytes. Adding the 16-byte GCM tag and 256-byte RSA-PSS signature gives 381 bytes before user payload. Capacity values below use empty metadata, start unit 2,048, and a 2,048-unit bootstrap span.
+## Verification
 
-| `k` | Banana PNG, 6,021,120 units | WAV, 32,000 samples |
+The verifier runs these steps in order and stops at the first failure:
+
+1. Read the bootstrap and decrypt it with the receiver's private key.
+2. Check the recovered fields and that the packet fits in the carrier.
+3. Read the packet and check its padding.
+4. Verify the RSA-PSS signature.
+5. Decrypt with AES-GCM and parse the record.
+6. Recompute the media hash and compare it with the stored one.
+
+There is only one bootstrap. The verifier does not search for other packets.
+
+### Verification verdicts
+
+| Verdict | Condition |
+| --- | --- |
+| `Authentic` | All six steps pass. |
+| `Tampered` | The signature is valid, but the recomputed media hash differs from the stored one. |
+| `Signature Invalid` | RSA-PSS verification fails. |
+| `Payload Missing` | The receiver's private key cannot decrypt the bootstrap. This happens with a wrong key and with a file that has no payload. |
+| `Wrong Start Location` | The recovered position puts the packet outside the carrier or over the bootstrap. |
+| `Cannot Decrypt` | The ciphertext fails its AES-GCM tag check. |
+| `Cannot Verify` | The file cannot be read, the bootstrap or record is malformed, the padding is wrong, or the carrier cannot be fully read during hashing. A version 2 bootstrap gives the detail `unsupported bootstrap version`. |
+
+## Capacity
+
+Each payload needs 381 bytes of overhead: the 109-byte record header, the 16-byte GCM tag, and the 256-byte signature. The table shows the largest payload with empty metadata and start unit 2,048.
+
+| `k` | Banana PNG (6,021,120 units) | WAV (32,000 samples) |
 | ---: | ---: | ---: |
-| 1 | 752,003 | 3,363 |
-| 2 | 1,504,387 | 7,107 |
-| 3 | 2,256,771 | 10,851 |
-| 8 | 6,018,691 | 29,571 |
+| 1 | 752,003 bytes | 3,363 bytes |
+| 2 | 1,504,387 bytes | 7,107 bytes |
+| 3 | 2,256,771 bytes | 10,851 bytes |
+| 8 | 6,018,691 bytes | 29,571 bytes |
 
-The bootstrap plaintext is 62 bytes and GCM additional data is 18 bytes. Minimum carrier units for `k=1/2/3/8` are 5,096 / 3,572 / 3,064 / 2,429. The notebook demonstration record is 176 bytes, ciphertext 192 bytes, and packet 448 bytes. Capacity helpers reject carriers that cannot hold the mandatory protocol object; zero user capacity means the complete object fits exactly.
+The smallest carrier that can hold an empty payload has 5,096, 3,572, 3,064, or 2,429 units for `k` = 1, 2, 3, or 8.
 
 ## Limits and compatibility
 
-- Media-code-3 video carriers produced before the 8–16-bit context change used an experimental 30-byte context. They are development files. The current 32-byte interpretation does not verify them, and they are not part of the supported compatibility set.
-- Overwritten cover LSBs are destroyed and cannot be recovered or authenticated. Padding checks are format checks, not cryptographic checks.
-- With `k=8` and a full-carrier footprint, carrier-unit bits provide no integrity evidence. RGBA alpha and non-LSB bytes of multi-byte WAV samples remain covered by the fixed stream.
-- Transparent RGBA pixel colour can change even when alpha is zero. The strict PNG adapter refuses an RGB PNG with a `tRNS` colour key, because embedding can move pixels onto or off the key colour. The source converter can turn the key into RGBA alpha before encoding. PNG ancillary data, including text, `eXIf`, `iCCP`, and `tRNS`, and WAV data outside declared PCM samples, such as `LIST` chunks, are outside the hash. Verification does not read them, so a `tRNS` chunk added after encoding does not change the verdict. The output keeps this metadata, but anyone can change it and the verdict stays `Authentic`, so it should not be treated as evidence.
-- Verification reads a file more than once. A file changed during verification can produce a verdict that combines two file states. Timestamps and nonces alone do not prevent replay.
-- A wrong receiver key and an absent payload share one verdict. The sender public key must be trusted through a separate method.
-- Version 1 and version 2 masked-media files are not accepted. A readable version 2 bootstrap returns `Cannot Verify`; the verifier does not retry. The old `STG1` format was a separate protocol and was not interoperable; its code and tests have been removed. See [Repository History](history/repository-history.md) for the removal record.
-- The protocol does not implement key management, a trust store, PKI, networking, replay protection, public-key-only verification, or automatic packet discovery.
+- Only version 3 files are accepted. Version 1 and 2 files, and files from the removed `STG1` implementation, cannot be verified. See the [repository history](history/repository-history.md).
+- Video files made with an early 30-byte development context do not verify.
+- Overwritten cover bits cannot be recovered or checked. At `k` = 8 across the whole carrier, only the fixed bytes are checked.
+- Padding checks are format checks, not cryptographic checks.
+- Metadata outside the hash (PNG text, `eXIf`, `iCCP`, `tRNS`, WAV `LIST` chunks) can change without changing the verdict.
+- In RGBA images, the colour of fully transparent pixels can change.
+- Verification reads the file more than once. A file changed during verification can give a verdict based on two versions of it.
+- A wrong receiver key and a missing payload give the same verdict.
+- The sender's public key must be trusted through a separate channel. There is no key management, trust store, PKI, or replay protection.
