@@ -1,8 +1,8 @@
 # StegoVerify technical-design slides
 
-These are the slides for our technical-design presentation. If you only want to read them, open [`stego-slides.pdf`](stego-slides.pdf). To present them live, follow the steps below.
+These are the slides for our technical-design presentation. A PDF copy is in [`stego-slides.pdf`](stego-slides.pdf).
 
-The deck is built with Reveal.js and uses the same visual style as the web app. Reveal.js 5.2.1 and its speaker-notes plugin are included under `vendor/reveal/`, so the slides work without a network connection.
+The slides use Reveal.js 5.2.1, which is included in `vendor/reveal/`, so they work offline.
 
 ## Run
 
@@ -22,17 +22,22 @@ Open `http://127.0.0.1:8000`.
 
 ## Controls
 
-- `Right`, `Space`, or click the right control: next slide or fragment.
-- `Left`: previous slide or fragment.
-- `S`: open presenter view with speaker notes.
-- `O`: slide overview.
-- `F`: fullscreen.
-- On the capacity slide, select any LSB depth from 1 through 8 to update the example packet footprint and preserved-bit ratio.
+| Key | Action |
+| --- | --- |
+| `Right` or `Space` | Next slide or step |
+| `Left` | Previous slide or step |
+| `S` | Presenter view with speaker notes |
+| `O` | Slide overview |
+| `F` | Full screen |
+
+On the capacity slide, choose an LSB count from 1 to 8 to update the example.
 
 ## Export to PDF
 
-Open `http://127.0.0.1:8000/?print-pdf`, use the browser print dialog, select landscape, enable background graphics, and save as PDF.
+1. Open `http://127.0.0.1:8000/?print-pdf`.
+2. Print, with landscape layout and background graphics turned on.
+3. Save as PDF.
 
-`stego-slides.pdf` was exported from this `?print-pdf` view. Export it again after changing the slides.
+Export the PDF again after changing the slides.
 
-The slides describe protocol version 3. If the protocol changes, update the deck and [`docs/protocol.md`](../docs/protocol.md) together.
+The slides describe protocol version 3. If the protocol changes, update the slides and [`docs/protocol.md`](../docs/protocol.md) together.
