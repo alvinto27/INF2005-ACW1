@@ -113,7 +113,7 @@ File payloads store the raw file in `user_payload`. The MIME type and file name 
 kind=png;flow=typed-content;mime=image/png;name=generated.png
 ```
 
-There is no escaping, so values cannot contain `;` or `=`. The [web application guide](web-application.md#result-and-payload-handling) explains how these values are used for previews.
+There is no escaping, so values cannot contain `;` or `=`. The [web application guide](web-application.md#recovered-payloads) explains how these values are used for previews.
 
 ## Packet and signature
 
