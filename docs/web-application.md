@@ -231,7 +231,7 @@ The browser previews a payload only if its signed MIME type matches its first 4 
 | FR9 Hash verification | Done | Media hash recomputed without the original cover |
 | FR10 Verdict generation | Done | Seven verdicts, see [protocol](protocol.md#verification-verdicts) |
 | FR11 Positive and negative cases | Done | Notebook and tests cover all verdicts, LSB counts, and file payloads |
-| FR12 Evidence and reproducibility | Done | README, tests, notebook, and [`demo/`](../demo/README.md) |
+| FR12 Evidence and reproducibility | Done | README, tests, notebook, and the demonstration ZIP (see [`demo/`](../demo/README.md)) |
 | FR13 Innovation | Done | Receiver-only payload location (RSA-OAEP bootstrap), fully encrypted file payloads, and a lossless video carrier |
 
 ## Tests

@@ -29,7 +29,7 @@ Verification does not need the original cover file.
 | --- | --- |
 | Setup and tests | [Quick start](#quick-start), [Tests](#tests) |
 | Requirement coverage | [Web application guide](docs/web-application.md#requirement-coverage) |
-| Demonstration files and keys | [`demo/`](demo/README.md) |
+| Demonstration files and keys | Supplied as a separate ZIP; see [`demo/`](demo/README.md) |
 | End-to-end walkthrough | [Notebook](notebooks/FR1-12%20Prototype.ipynb) ([how to run](#demonstration-notebook)) |
 | Design | [Slides (PDF)](presentation/stego-slides.pdf), [guides](#documentation) |
 | Known limitations | [Known limitations](docs/known-limitations.md) |
@@ -131,7 +131,7 @@ pip install -r requirements-notebook.txt
 | `test_stego.py`, `test_video.py`, `test_webapp.py` | Python tests |
 | `notebooks/` | Demonstration notebook |
 | `presentation/` | Slides, with a PDF copy |
-| `demo/` | Demonstration files and keys |
+| `demo/` | Where to extract the demonstration ZIP (contents not in the repository) |
 | `docs/` | Guides and the assignment brief |
 | `scripts/` | Link checker and JavaScript tests |
 
@@ -163,4 +163,4 @@ Other material:
 | --- | --- |
 | [Slides (PDF)](presentation/stego-slides.pdf) | Technical-design presentation. [How to run the live slides](presentation/README.md). |
 | [Demonstration notebook](notebooks/FR1-12%20Prototype.ipynb) | Sender and receiver steps with expected and actual results |
-| [Demonstration files](demo/README.md) | Covers, stego files, keys, and verdict screenshots |
+| [Demonstration files](demo/README.md) | Covers, stego files, keys, and verdict screenshots, supplied as a separate ZIP |

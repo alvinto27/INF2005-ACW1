@@ -1,6 +1,6 @@
 # Demonstration files
 
-This folder holds the files from our demonstration. They are supplied as a separate ZIP; extract its contents here.
+This folder is where the demonstration files go. They are supplied as a separate ZIP and are not published in this repository, because some of the cover media may be copyrighted. Extract the ZIP here. Git ignores everything in this folder except this README.
 
 ## Layout
 

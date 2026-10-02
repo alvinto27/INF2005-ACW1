@@ -5,6 +5,10 @@ instance/
 /samples/*
 !/samples/Banana.png
 
+# Demonstration files are supplied separately as a ZIP, not published here
+/demo/*
+!/demo/README.md
+
 # Local development tooling
 AGENTS.md
 /.githooks/
