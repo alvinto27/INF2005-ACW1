@@ -23,15 +23,15 @@ Terms used above:
 
 Verification does not need the original cover file.
 
-## Where to find things
+## Quick links
 
-| To check | Go to |
+| Topic | Link |
 | --- | --- |
-| That it runs | [Quick start](#quick-start), then [Tests](#tests) |
-| Where each requirement is met | [Requirement coverage](docs/web-application.md#requirement-coverage) |
-| The demonstration files and keys | [`demo/`](demo/README.md) |
-| The full flow, step by step | The [notebook](#demonstration-notebook) |
-| The design | The [slides](presentation/README.md) and the [guides](#documentation) |
+| Setup and tests | [Quick start](#quick-start), [Tests](#tests) |
+| Requirement coverage | [Web application guide](docs/web-application.md#requirement-coverage) |
+| Demonstration files and keys | [`demo/`](demo/README.md) |
+| End-to-end walkthrough | [Notebook](#demonstration-notebook) |
+| Design | [Slides](presentation/README.md), [guides](#documentation) |
 | Known limitations | [Known limitations](docs/known-limitations.md) |
 
 ## Quick start
