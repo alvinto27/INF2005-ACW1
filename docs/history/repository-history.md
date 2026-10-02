@@ -1,150 +1,136 @@
-# Repository History
+# Repository history
 
-> Historical record. Current rules are in [Protocol](../protocol.md), [Carrier and Payload Flow](../carrier-and-payload-flow.md), and [Web Application](../web-application.md). The full original text is in git history at commit c412ad7.
+Record of two larger changes to the repository: the move to PyAV for all media handling, and the removal of old code. Numbers belong to the commit of measurement. The current rules are in the [protocol guide](../protocol.md), [carrier and payload flow](../carrier-and-payload-flow.md), and [web application guide](../web-application.md). The original, longer text of this record is in Git history at commit `c412ad7`.
 
-## PyAV media migration
+## Move to PyAV
 
-Stages S1–S4 were accepted. The migration made PyAV the sole runtime media library and a required
-dependency; Pillow remained test/notebook-only. It preserved protocol version 3, signatures,
-encryption, media hash, and verdicts. Source conversion is encode-side only: `Authentic` covers the
-decoded canonical carrier and signed record, not original JPEG/MP3 bytes, source metadata, or
-decoder settings.
+PyAV became the only media library at runtime and a required dependency. Pillow is now used only by the tests and the notebook. The move did not change protocol version 3, signatures, encryption, the media hash, or the verdicts.
 
-### Stages and commits
+### Stages
+
+All four stages were reviewed and accepted.
 
 | Stage | Commit | Change |
 | --- | --- | --- |
-| S1: PyAV PNG I/O | [`6378bdf`](https://github.com/alvinto27/INF2005-ACW1/commit/6378bdfd99331600fd4b1fd0e7fcb4d7ddfb4106) | Replaced Pillow carrier decode/encode; preserved strict 8-bit RGB/RGBA rules, chunk handling, errors, size checks; required PyAV and restored route tests. |
-| S2: 16-bit PNG | [`c66384d`](https://github.com/alvinto27/INF2005-ACW1/commit/c66384d33293e4a17481a7a061c36a3130173870) | Added strict 16-bit RGB/RGBA; specified sample order/context; added pre-decode 715,827,880-byte decoded-size cap. |
-| S3: source conversion | [`0a7f553`](https://github.com/alvinto27/INF2005-ACW1/commit/0a7f553053663a14ce47db1f31c3b8417bdbbd6c) | Converts accepted still-image/audio sources to temporary canonical PNG/WAV, while strict PNG/PCM WAV bypass conversion. Added orientation, depth, channel, metadata, and size rules. |
-| S4: web sources | [`38ecc23`](https://github.com/alvinto27/INF2005-ACW1/commit/38ecc23c91aa387edefc90f922171a46b05c2386) | Added common image/audio web encode sources, source metadata and UI conversion messages. At that stage web verification stayed PNG/WAV-only and web video was refused. |
+| S1: PNG through PyAV | [`6378bdf`](https://github.com/alvinto27/INF2005-ACW1/commit/6378bdfd99331600fd4b1fd0e7fcb4d7ddfb4106) | Replaced Pillow for reading and writing PNG carriers. Kept the strict 8-bit RGB/RGBA rules, chunk handling, error messages, and size checks. Made PyAV required and restored the route tests. |
+| S2: 16-bit PNG | [`c66384d`](https://github.com/alvinto27/INF2005-ACW1/commit/c66384d33293e4a17481a7a061c36a3130173870) | Added strict 16-bit RGB/RGBA. Defined the sample order and media context. Added the 715,827,880-byte decoded-size limit, checked before decoding. |
+| S3: source conversion | [`0a7f553`](https://github.com/alvinto27/INF2005-ACW1/commit/0a7f553053663a14ce47db1f31c3b8417bdbbd6c) | Converts accepted still images and audio to a temporary PNG or WAV. Strict PNG and PCM WAV skip conversion. Added the orientation, depth, channel, metadata, and size rules. |
+| S4: web sources | [`38ecc23`](https://github.com/alvinto27/INF2005-ACW1/commit/38ecc23c91aa387edefc90f922171a46b05c2386) | The web encode page accepted common image and audio formats and showed conversion messages. At this stage, web verification was still PNG and WAV only, and video was refused. |
 
-### Decisions and measured evidence
+### Decisions
 
-- **16-bit context:** 8-bit PNG retains the 9-byte `>IIB` context; 16-bit PNG uses 10-byte `>IIBB`
-  with depth 16. Carrier units are low bytes of numeric RGB values; fixed data includes matching
-  high bytes and alpha in the protocol-defined order.
-- **Image depth:** source integer depth ≤8 becomes 8-bit RGB/RGBA; depth 9–16 becomes 16-bit.
-  Expansion preserves top source bits. Floating-point and >16-bit integer images are refused.
-  Current detail is in Carrier and Payload Flow.
-- **PNG size:** decoded images above 715,827,880 bytes are refused before decode. This is separate
-  from file size.
-- **Metadata and colour:** retain tested RGB ICC profiles and applicable PNG colour chunks. Converted
-  snapshots drop metadata not describing canonical pixels, including pHYs, EXIF, and text. CMYK is
-  refused: its ICC profile is invalid on RGB output, and correct colour-managed conversion needs a
-  library beyond PyAV. Never silently drop or misapply the profile.
-- **Audio:** lossless integer PCM, FLAC, and ALAC preserve supported decoded width; lossy or
-  floating-point audio becomes 16-bit PCM at source rate. All decoded samples, including codec
-  delay/padding, are retained. Library conversion ignores video streams while selecting audio; the
-  web application refuses real video tracks. On 2026-09-27, lossless depths above 16 other than
-  24/32 were refused because a 16-bit fallback lost precision; depths below 16 still expand
-  losslessly.
-- **Authenticity boundary:** canonical conversion is not authentication of the original compressed
-  file. Verification checks canonical PNG, PCM WAV, or supported video only.
+| Topic | Decision |
+| --- | --- |
+| 16-bit media context | 8-bit PNG keeps the 9-byte `>IIB` context. 16-bit PNG uses the 10-byte `>IIBB` context with depth 16. Carrier units are the low bytes of the RGB values; the matching high bytes and alpha are fixed bytes, in the order the protocol defines. |
+| Image depth | Sources of up to 8 bits become 8-bit RGB/RGBA; 9 to 16 bits become 16-bit. Expansion keeps the source's top bits. Floating-point images and images over 16 bits are refused. |
+| PNG size | Decoded images over 715,827,880 bytes are refused before decoding. This limit is on the decoded size, not the file size. |
+| Metadata and colour | Tested RGB ICC profiles and relevant PNG colour chunks are kept. Converted files drop metadata that does not describe the converted pixels, such as `pHYs`, EXIF, and text. |
+| CMYK | Refused. A CMYK ICC profile is not valid on an RGB output, and a correct colour-managed conversion needs a library other than PyAV. The profile is never silently dropped or misapplied. |
+| Audio | Lossless integer PCM, FLAC, and ALAC keep the source sample width. Lossy or floating-point audio becomes 16-bit PCM at the original sample rate. All decoded samples are kept, including codec delay and padding. |
+| Audio depth (2026-09-27) | Lossless depths over 16 bits other than 24 and 32 are refused, because the 16-bit fallback lost precision. Depths under 16 bits still expand to 16 without loss. |
+| Audio next to video | The library's audio conversion ignores video streams when choosing the audio stream. At that stage, the web app refused files with a real video track. |
+| What `Authentic` covers | The decoded, converted carrier and the signed record. Not covered: the original JPEG or MP3 bytes, source metadata, or decoder settings. Verification accepts only PNG, PCM WAV, or supported video. |
 
-P0/S1 compared complete carrier-unit reads and identity rewrites for RGB/RGBA: output pixels matched
-exactly, and fixed-key checks matched. Encoded-file bytes were not compared because each encode uses
-a random nonce. S3a checked all eight EXIF orientations against Pillow's transform results;
-supported fixtures matched, without PyAV SideData.
+### Evidence
 
-Historical S1 host measurements used three fresh processes per operation, including Python
-startup/native buffers. Large image was 4341×26191 RGBA; these are not guarantees:
+- **Exact output (S1).** For RGB and RGBA, full carrier-unit reads and identity rewrites (no embedded data) matched exactly, and checks with a fixed key matched. Encoded files were not compared byte for byte, because each encode uses a random nonce.
+- **Orientation (S3a).** All eight EXIF orientations matched Pillow's results on the supported test files, without using PyAV's side data.
+- **ICC profiles.** Reading `ICC_PROFILE` through PyAV's side data crashed the process (`SIGSEGV`). The code therefore avoids side data and uses small, bounded parsers for JPEG, WebP, and PNG to find profiles. Tested RGB ICC profiles survived from a JPEG source to the final PNG's `iCCP` chunk byte for byte.
+- **EXIF.** A bounded parser reads JPEG APP1, PNG `eXIf`, WebP EXIF, and TIFF IFD0. Tested PyAV filters apply orientations 1 to 8 without unbounded metadata reads.
+- **AAC samples.** An AAC test file declared 240,000 samples per channel but decoded to 240,640. The extra 640 codec-delay and padding samples were kept in the PCM output.
 
-| Input | Operation | Before time / peak RSS | After time / peak RSS |
+### Measurements (S1)
+
+Each operation ran in three fresh processes. Times and peak memory include Python startup and native buffers. These figures come from one machine and are not guarantees.
+
+| Input | Operation | Before: time / peak memory | After: time / peak memory |
 | --- | --- | ---: | ---: |
 | Banana PNG | Encode | 0.350 s / 80.5 MiB | 0.098 s / 94.7 MiB |
 | Banana PNG | Verify | 0.063 s / 80.8 MiB | 0.038 s / 75.1 MiB |
-| 4341×26191 RGBA | Encode | 5.365 s / 948.1 MiB | 3.517 s / 1870.8 MiB |
-| 4341×26191 RGBA | Verify | 2.106 s / 948.0 MiB | 1.351 s / 938.2 MiB |
+| 4341 × 26191 RGBA | Encode | 5.365 s / 948.1 MiB | 3.517 s / 1,870.8 MiB |
+| 4341 × 26191 RGBA | Verify | 2.106 s / 948.0 MiB | 1.351 s / 938.2 MiB |
 
-Large encode got faster but used more peak memory. A 16-bit 7746×7746 RGBA test decoded to
-480,004,128 bytes: encode median 5.129 s / 2011.6 MiB peak RSS; verify 1.843 s / 1519.6 MiB. Later
-memory rules are in the current carrier guide.
+The large encode became faster but used more peak memory. A 16-bit 7746 × 7746 RGBA image (480,004,128 bytes decoded) took a median of 5.129 s and 2,011.6 MiB to encode, and 1.843 s and 1,519.6 MiB to verify.
 
-A PyAV ICC_PROFILE SideData probe caused process-level SIGSEGV. Production code therefore avoids
-SideData wrappers: bounded JPEG/WebP/PNG parsers detect profiles, and tested RGB ICC profiles
-survived JPEG snapshot and final PNG byte-for-byte in `iCCP`. A bounded EXIF parser reads JPEG APP1,
-PNG `eXIf`, WebP EXIF, and TIFF IFD0; verified PyAV filters apply orientations 1–8 without unbounded
-metadata reads. An AAC probe decoded 240,640 samples/channel despite 240,000 declared; the extra 640
-codec-delay/padding samples were kept in PCM.
+## Removal of old code and the `STG1` format
 
-## Removal of imported leftovers and the old `STG1` stack
+### Commits
 
-**Removal commit:**
-[`120c029`](https://github.com/alvinto27/INF2005-ACW1/commit/120c02972786ffa5923b43876af48795d8bc10b4),
-2026-09-25. The `yx` branch at `7831c44` fast-forwarded PR #9, merged as `3eb38e0`; the removed
-files had no commits touching them between `3eb38e0` and `313a79f`. The cleanup accounted for all 33
-paths in that merge's changed-path list. The pushed review baseline for source links was
-`a0eb1f51a85ccf7d627380632dba00f23098b161`.
+| Item | Value |
+| --- | --- |
+| Removal commit | [`120c029`](https://github.com/alvinto27/INF2005-ACW1/commit/120c02972786ffa5923b43876af48795d8bc10b4), 2026-09-25 |
+| Starting point | Branch `yx` at `7831c44` was fast-forwarded by PR #9, merged as `3eb38e0` |
+| Paths checked | All 33 paths changed by that merge (see [path record](#path-record)) |
+| Untouched since | No commits touched the removed files between `3eb38e0` and `313a79f` |
+| Review baseline for source links | `a0eb1f51a85ccf7d627380632dba00f23098b161` |
 
 ### What was removed and why
 
-The old `payload_protocol.py` made compact signed JSON records with media IDs, timestamps, exact
-cover-file hashes, nonces, and team metadata. Its `STG1` frame embedded payload and RSA-PSS
-signature with a shared-secret-derived start location. Verification required the sender public key
-and original cover for full hash checking. It had neither the v3 receiver bootstrap nor whole-record
-encryption, and was not interoperable with v3. No active route used it. Keeping it would maintain or
-imply a second obsolete protocol.
+**The `STG1` format** (`payload_protocol.py`) made compact, signed JSON records with media IDs, timestamps, exact cover-file hashes, nonces, and team metadata. The `STG1` frame embedded the payload and an RSA-PSS signature at a start location derived from a shared secret. Verification needed the sender's public key and the original cover. The format had no receiver bootstrap and no whole-record encryption, so `STG1` files could not work with version 3. No active route used the format, and keeping the code would mean maintaining, or appearing to support, a second outdated protocol.
 
-Also removed: seven legacy services (`cover_media.py`, `crypto_service.py`, `encoding_pipeline.py`,
-`payload_builder.py`, `start_location.py`, `steganography.py`, `verification_pipeline.py`), their
-`models.py` and `exceptions.py`, the dedicated 31-test `test_payload_protocol.py`, standalone
-`FR1_FR5.py`, and root duplicate `INF2005-ACW1-spec_v5-f2f - Copy (1).pdf`. The duplicate was
-412,841 bytes and byte-identical to `docs/assignment/INF2005-ACW1-spec_v5-f2f.pdf` (`cmp` returned 0);
-it had no links. `services/__init__.py` was kept but trimmed to a docstring because no package-level
-imports remained.
+Also removed:
 
-The removal retained `run.py`, the Flask app factory, routes, current protocol service, active
-JS/CSS/templates, `test_webapp.py`, and `requirements.txt`. The active chain is routes →
-`current_protocol.py` → `stego/core.py` and PNG/WAV adapters. Before removal, import searches
-confined legacy dependency edges to the removed set. A post-removal AST scan found no remaining
-imports of the removed protocol, test, models, exceptions, or seven services. Active v3 routes
-preserve the receiver-private-key requirement and do not guess formats or import an `STG1` reader.
-
-- Later cleanup removed the disconnected carrier-map sources and Three.js bundle, the unavailable layout-estimate route, and its obsolete test; manual start-unit selection remains active.
-
-### Authorship and provenance
-
-These credits describe recorded contributions, not ownership of current protocol behavior:
-
-- **Babydage:** first FR3/FR4/FR8–FR11 draft (`893ae74`) and legacy web UI (`5a0e9d5`).
-- **Sitt Min Naing** (`smn-sit10` appears as the Git author on later work): FR3/FR4 changes
-  (`f266b19`); Git author `smn-sit10` added video frame/audio steganography (`c56e0ea`).
-- **Yang Xuan** (`yx` is the same person in this Git log): extracted live v1 steganography from the
-  notebook (`c64eab7`) and originally extracted the image helper (`5398f2b`).
-
-### Merge path accounting
-
-The table accounts for the full 33-path PR #9 changed-path list; reproduce it with `git diff
---name-only 7831c44 3eb38e0`.
-
-| Path | Disposition and evidence |
+| Removed | Notes |
 | --- | --- |
-| `AGENTS.md` | Documentation updated; current instructions, no old stack. |
-| `AGENT_docs/AGENT_MAP.md` | Documentation updated; removed links to deleted code and indexed cleanup. |
-| `AGENT_docs/WEB-APPLICATION-GUIDE.md#decode-request` | Current route contract, not the legacy decoder. |
-| `AGENT_docs/WEB-APPLICATION-GUIDE.md` | Current protocol/API claims corrected. |
-| `AGENT_docs/CURRENT-PROTOCOL.md#limits-and-compatibility` | Records removal of `STG1`; v3 remains distinct. |
-| `AGENT_docs/README.md` | Removed legacy test entry and indexed cleanup. |
-| `AGENT_docs/WORK-NOT-BUILT.md` | No removed module is an active dependency. |
-| `FR1_FR5.py` | Removed; no importer; replaced by current media/core/bit APIs. |
-| `INF2005-ACW1-spec_v5-f2f - Copy (1).pdf` | Removed; identical retained PDF under `docs/`, no links. |
-| `README.md` | Removed claim that `STG1` remains. |
-| `payload_protocol.py` | Removed; imported only by legacy services/test. |
-| `requirements.txt` | Kept; current dependencies remain. |
-| `run.py` | Kept; imports current Flask factory. |
-| `stego_web/__init__.py` | Kept; active factory and route registration. |
-| `stego_web/exceptions.py`, `stego_web/models.py` | Removed; only legacy consumers. |
-| `stego_web/routes.py` | Kept; active encode/decode/download/key routes use current service. |
-| `stego_web/services/__init__.py` | Kept, trimmed to docstring; no package-level re-export consumers. |
-| `stego_web/services/cover_media.py`, `crypto_service.py`, `encoding_pipeline.py`, `payload_builder.py`, `start_location.py`, `steganography.py`, `verification_pipeline.py` | Removed; legacy-only dependencies; `steganography.py` implemented `STG1`. |
-| `stego_web/services/current_protocol.py` | Kept; active v3 adapter. |
-| `stego_web/static/app.js`, `motion.js`, `style.css`, `verify.js` | Kept; active browser code and styles. |
-| `stego_web/templates/index.html` | Kept; active Flask page. |
-| `test_payload_protocol.py` | Removed; tests only old format, accounts for 31-test reduction. |
-| `test_webapp.py` | Kept; active v3 Flask integration tests. |
+| Seven old services: `cover_media.py`, `crypto_service.py`, `encoding_pipeline.py`, `payload_builder.py`, `start_location.py`, `steganography.py`, `verification_pipeline.py` | `steganography.py` implemented `STG1`. |
+| `stego_web/models.py`, `stego_web/exceptions.py` | Used only by the old services |
+| `test_payload_protocol.py` | 31 tests, covering only the old format |
+| `FR1_FR5.py` | Standalone script with no importers |
+| `INF2005-ACW1-spec_v5-f2f - Copy (1).pdf` | 412,841 bytes and byte-identical to the kept copy of the brief (`cmp` returned 0). No links pointed to the copy. |
 
-The removal record classed documentation paths as “Docs — Stage C”: Stage B corrected current-state
-claims, while the approved later consolidation was reserved for historical material. Removed source
-files had no commits touching them in `3eb38e0..313a79f`.
+`stego_web/services/__init__.py` was kept but reduced to a docstring, because no code imported from the package level any more.
 
+### What was kept
+
+- `run.py`, the Flask app factory, the routes, the current protocol service, the active JavaScript, CSS, and templates, `test_webapp.py`, and `requirements.txt`.
+- The active chain: routes → `current_protocol.py` → `stego/core.py` and the PNG and WAV adapters.
+
+### Checks
+
+- Before removal, import searches showed that the old code was only used by other old code.
+- After removal, a syntax-tree (AST) scan found no imports of the removed protocol, test, models, exceptions, or services.
+- The version 3 routes still require the receiver's private key, do not guess formats, and do not import an `STG1` reader.
+
+A later cleanup removed the unconnected carrier-map code and the Three.js bundle, the unused layout-estimate route, and the route test. Manual start-unit selection is still active.
+
+### Authorship
+
+These credits record contributions, not ownership of the current protocol behaviour.
+
+| Contributor | Contributions |
+| --- | --- |
+| Babydage | First draft of FR3, FR4, and FR8 to FR11 (`893ae74`); the original web UI (`5a0e9d5`) |
+| Sitt Min Naing (Git author `smn-sit10`) | FR3 and FR4 changes (`f266b19`); video frame and audio steganography (`c56e0ea`) |
+| Yang Xuan (Git author `yx`) | Moved the working version 1 steganography out of the notebook (`c64eab7`); first extracted the image helper (`5398f2b`) |
+
+### Path record
+
+This table accounts for every path changed by PR #9. To reproduce the list, run `git diff --name-only 7831c44 3eb38e0`. Paths match the state at that time; several documentation files have since been moved or renamed.
+
+| Path | Outcome |
+| --- | --- |
+| `AGENTS.md` | Updated: current instructions, no old code |
+| `AGENT_docs/AGENT_MAP.md` | Updated: removed links to deleted code and recorded the cleanup |
+| `AGENT_docs/WEB-APPLICATION-GUIDE.md#decode-request` | Describes the current route, not the old decoder |
+| `AGENT_docs/WEB-APPLICATION-GUIDE.md` | Corrected the current protocol and API claims |
+| `AGENT_docs/CURRENT-PROTOCOL.md#limits-and-compatibility` | Records the removal of `STG1`; version 3 stays separate |
+| `AGENT_docs/README.md` | Removed the old test entry and recorded the cleanup |
+| `AGENT_docs/WORK-NOT-BUILT.md` | Confirmed that no removed module was still needed |
+| `FR1_FR5.py` | Removed: no importers; replaced by the current media, core, and bit APIs |
+| `INF2005-ACW1-spec_v5-f2f - Copy (1).pdf` | Removed: identical to the kept PDF, no links |
+| `README.md` | Removed the claim that `STG1` still existed |
+| `payload_protocol.py` | Removed: imported only by the old services and test |
+| `requirements.txt` | Kept: current dependencies |
+| `run.py` | Kept: imports the current Flask factory |
+| `stego_web/__init__.py` | Kept: active app factory and route registration |
+| `stego_web/exceptions.py`, `stego_web/models.py` | Removed: used only by old code |
+| `stego_web/routes.py` | Kept: the encode, decode, download, and key routes use the current service |
+| `stego_web/services/__init__.py` | Kept, reduced to a docstring: no importers |
+| `stego_web/services/cover_media.py`, `crypto_service.py`, `encoding_pipeline.py`, `payload_builder.py`, `start_location.py`, `steganography.py`, `verification_pipeline.py` | Removed: used only by old code; `steganography.py` implemented `STG1` |
+| `stego_web/services/current_protocol.py` | Kept: the active version 3 adapter |
+| `stego_web/static/app.js`, `motion.js`, `style.css`, `verify.js` | Kept: active browser code and styles |
+| `stego_web/templates/index.html` | Kept: active Flask page |
+| `test_payload_protocol.py` | Removed: tested only the old format; accounts for the 31 fewer tests |
+| `test_webapp.py` | Kept: active version 3 web tests |
+
+The documentation paths were handled in two steps. The first corrected statements about the current state. A later, approved consolidation step handled historical material.
